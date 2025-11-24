@@ -7,42 +7,22 @@ import { useLocation } from "wouter";
 import { api } from "@/lib/api";
 import { useSocket } from "@/hooks/useSocket";
 import { useToast } from "@/hooks/use-toast";
-import { Card, CardContent } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
-import { Input } from "@/components/ui/input";
-import { Textarea } from "@/components/ui/textarea";
-import { Label } from "@/components/ui/label";
-import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { Dialog, DialogContent, DialogHeader, DialogTitle } from "@/components/ui/dialog";
-import { Badge } from "@/components/ui/badge";
-import { Form, FormControl, FormField, FormItem, FormLabel, FormMessage } from "@/components/ui/form";
-import { Separator } from "@/components/ui/separator";
-import { ScrollArea } from "@/components/ui/scroll-area";
-import { 
-  MessageSquare, 
-  FileUp, 
-  History, 
-  Settings, 
-  Gauge, 
-  Send, 
-  FileText, 
-  CheckCircle, 
-  AlertTriangle, 
-  XCircle,
-  RefreshCw,
-  Bell,
-  User,
-  Phone,
-  Calendar,
-  Filter,
-  Search,
-  Eye,
-  RotateCcw,
-  QrCode,
+import {
   Wifi,
   WifiOff,
-  Megaphone
+  Bell,
+  RefreshCw,
+  QrCode
 } from "lucide-react";
+
+import { Sidebar } from "@/components/dashboard/Sidebar";
+import { StatusCards } from "@/components/dashboard/StatusCards";
+import { MessageForm } from "@/components/dashboard/MessageForm";
+import { ReportForm } from "@/components/dashboard/ReportForm";
+import { MessageHistory } from "@/components/dashboard/MessageHistory";
+import { AutoResponsePanel } from "@/components/dashboard/AutoResponsePanel";
 
 // Form schemas
 const messageSchema = z.object({
@@ -135,7 +115,7 @@ export default function Dashboard() {
 
   // Mutations
   const sendMessageMutation = useMutation({
-    mutationFn: ({ phoneNumber, content }: MessageFormData) => 
+    mutationFn: ({ phoneNumber, content }: MessageFormData) =>
       api.sendMessage(phoneNumber, content),
     onSuccess: () => {
       messageForm.reset();
@@ -156,7 +136,7 @@ export default function Dashboard() {
   });
 
   const sendReportMutation = useMutation({
-    mutationFn: ({ phoneNumber, sampleId, content, file }: ReportFormData) => 
+    mutationFn: ({ phoneNumber, sampleId, content, file }: ReportFormData) =>
       api.sendReport(phoneNumber, sampleId, file, content),
     onSuccess: () => {
       reportForm.reset();
@@ -340,845 +320,175 @@ export default function Dashboard() {
     }));
   };
 
-  const getStatusBadge = (status: string) => {
-    switch (status) {
-      case 'delivered':
-        return <Badge className="bg-green-100 text-green-800"><CheckCircle className="w-3 h-3 mr-1" />Delivered</Badge>;
-      case 'sent':
-        return <Badge className="bg-blue-100 text-blue-800"><Send className="w-3 h-3 mr-1" />Sent</Badge>;
-      case 'pending':
-        return <Badge className="bg-yellow-100 text-yellow-800"><AlertTriangle className="w-3 h-3 mr-1" />Pending</Badge>;
-      case 'failed':
-        return <Badge className="bg-red-100 text-red-800"><XCircle className="w-3 h-3 mr-1" />Failed</Badge>;
-      default:
-        return <Badge variant="outline">{status}</Badge>;
-    }
-  };
-
-  const getTypeIcon = (type: string) => {
-    switch (type) {
-      case 'report':
-        return <FileText className="w-4 h-4" />;
-      case 'text':
-        return <MessageSquare className="w-4 h-4" />;
-      default:
-        return <FileText className="w-4 h-4" />;
-    }
-  };
-
   const formatTimestamp = (timestamp: string) => {
     return new Date(timestamp).toLocaleString();
   };
 
   return (
-    <div className="flex h-screen bg-gray-50">
+    <div className="flex h-screen bg-background overflow-hidden">
       {/* Sidebar */}
-      <div className="w-64 bg-white shadow-lg border-r border-gray-200 flex flex-col">
-        <div className="p-6 border-b border-gray-200">
-          <div className="flex items-center space-x-3">
-            <div className="w-10 h-10 bg-primary rounded-lg flex items-center justify-center">
-              <MessageSquare className="text-white text-xl" />
-            </div>
-            <div>
-              <h1 className="text-lg font-semibold text-gray-900">WhatsApp System</h1>
-              <p className="text-sm text-gray-500">Message Management</p>
-            </div>
-          </div>
-        </div>
-
-        <nav className="flex-1 px-4 py-6 space-y-2">
-          <button 
-            onClick={() => setActiveSection("dashboard")} 
-            className={`w-full flex items-center px-4 py-3 rounded-lg font-medium transition-colors ${
-              activeSection === "dashboard" 
-                ? "text-primary bg-blue-50 border-r-2 border-primary" 
-                : "text-gray-600 hover:text-primary hover:bg-gray-50"
-            }`}
-          >
-            <Gauge className="w-5 mr-3" />
-            Dashboard
-          </button>
-          <button 
-            onClick={() => setLocation("/campaigns")} 
-            className="w-full flex items-center px-4 py-3 rounded-lg transition-colors text-gray-600 hover:text-primary hover:bg-gray-50"
-          >
-            <Megaphone className="w-5 mr-3" />
-            Campaigns
-          </button>
-          <button 
-            onClick={() => setActiveSection("history")} 
-            className={`w-full flex items-center px-4 py-3 rounded-lg transition-colors ${
-              activeSection === "history" 
-                ? "text-primary bg-blue-50 border-r-2 border-primary font-medium" 
-                : "text-gray-600 hover:text-primary hover:bg-gray-50"
-            }`}
-          >
-            <History className="w-5 mr-3" />
-            Message History
-          </button>
-          <button 
-            onClick={() => setActiveSection("auto-responses")} 
-            className={`w-full flex items-center px-4 py-3 rounded-lg transition-colors ${
-              activeSection === "auto-responses" 
-                ? "text-primary bg-blue-50 border-r-2 border-primary font-medium" 
-                : "text-gray-600 hover:text-primary hover:bg-gray-50"
-            }`}
-          >
-            <MessageSquare className="w-5 mr-3" />
-            Auto-Responses
-          </button>
-        </nav>
-
-        <div className="p-4 border-t border-gray-200">
-          <div className="flex items-center space-x-3">
-            <div className="w-8 h-8 bg-gray-300 rounded-full flex items-center justify-center">
-              <User className="text-gray-600 text-sm" />
-            </div>
-            <div>
-              <p className="text-sm font-medium text-gray-900">Admin</p>
-              <p className="text-xs text-gray-500">System Administrator</p>
-            </div>
-          </div>
-        </div>
-      </div>
+      <Sidebar
+        activeSection={activeSection}
+        setActiveSection={setActiveSection}
+        setLocation={setLocation}
+      />
 
       {/* Main Content */}
-      <div className="flex-1 flex flex-col overflow-hidden">
+      <div className="flex-1 flex flex-col overflow-hidden relative">
         {/* Header */}
-        <header className="bg-white shadow-sm border-b border-gray-200 px-6 py-4">
-          <div className="flex items-center justify-between">
-            <div>
-              <h2 className="text-2xl font-bold text-gray-900">Dashboard</h2>
-              <p className="text-gray-600">WhatsApp Message System</p>
+        <header className="bg-white/80 dark:bg-zinc-900/80 backdrop-blur-md border-b border-gray-200 dark:border-zinc-800 px-8 py-5 flex items-center justify-between z-10">
+          <div>
+            <h2 className="text-2xl font-bold text-foreground tracking-tight">Dashboard</h2>
+            <p className="text-muted-foreground text-sm">Overview & Quick Actions</p>
+          </div>
+          <div className="flex items-center space-x-4">
+            <div className="flex items-center px-3 py-1.5 rounded-full bg-gray-100 dark:bg-zinc-800 border border-gray-200 dark:border-zinc-700">
+              {isConnected ? (
+                <Wifi className="w-4 h-4 text-green-500 mr-2" />
+              ) : (
+                <WifiOff className="w-4 h-4 text-red-500 mr-2" />
+              )}
+              <span className="text-sm font-medium text-foreground">
+                {isConnected ? 'Connected' : 'Disconnected'}
+              </span>
             </div>
-            <div className="flex items-center space-x-4">
-              <div className="flex items-center space-x-2">
-                {isConnected ? (
-                  <Wifi className="w-4 h-4 text-green-500" />
-                ) : (
-                  <WifiOff className="w-4 h-4 text-red-500" />
-                )}
-                <span className="text-sm text-gray-600">
-                  {isConnected ? 'Connected' : 'Disconnected'}
-                </span>
-              </div>
-              
-              {/* Incoming Messages Bell Icon */}
-              <Button
-                variant="outline"
-                size="sm"
-                onClick={() => setShowIncomingPanel(true)}
-                className="relative"
-              >
-                <Bell className="w-4 h-4" />
-                {unreadCount > 0 && (
-                  <span className="absolute -top-1 -right-1 bg-red-500 text-white text-xs rounded-full w-5 h-5 flex items-center justify-center">
-                    {unreadCount}
-                  </span>
-                )}
-              </Button>
 
-              <Button
-                variant="outline"
-                size="sm"
-                onClick={() => queryClient.invalidateQueries()}
-                disabled={statusLoading}
-              >
-                <RefreshCw className={`w-4 h-4 mr-2 ${statusLoading ? 'animate-spin' : ''}`} />
-                Refresh
-              </Button>
-            </div>
+            <Button
+              variant="outline"
+              size="icon"
+              onClick={() => setShowIncomingPanel(true)}
+              className="relative rounded-full w-10 h-10 border-gray-200 dark:border-zinc-700"
+            >
+              <Bell className="w-5 h-5 text-muted-foreground" />
+              {unreadCount > 0 && (
+                <span className="absolute top-0 right-0 bg-red-500 text-white text-[10px] font-bold rounded-full w-4 h-4 flex items-center justify-center ring-2 ring-white dark:ring-zinc-900">
+                  {unreadCount}
+                </span>
+              )}
+            </Button>
+
+            <Button
+              variant="outline"
+              size="icon"
+              onClick={() => queryClient.invalidateQueries()}
+              disabled={statusLoading}
+              className="rounded-full w-10 h-10 border-gray-200 dark:border-zinc-700"
+            >
+              <RefreshCw className={`w-5 h-5 text-muted-foreground ${statusLoading ? 'animate-spin' : ''}`} />
+            </Button>
           </div>
         </header>
 
-        <main className="flex-1 overflow-y-auto p-6 space-y-6">
+        <main className="flex-1 overflow-y-auto p-8 space-y-8 scrollbar-hide">
           {/* Status Cards - Always visible */}
-          <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-6">
-            <Card>
-              <CardContent className="p-6">
-                <div className="flex items-center justify-between">
-                  <div>
-                    <p className="text-sm text-gray-600">WhatsApp Status</p>
-                    <p className="text-2xl font-bold text-green-600">
-                      {whatsappStatus.isConnected ? 'Connected' : 'Disconnected'}
-                    </p>
-                  </div>
-                  <div className="w-12 h-12 bg-green-100 rounded-lg flex items-center justify-center">
-                    <MessageSquare className="text-green-600 text-2xl" />
-                  </div>
-                </div>
-                <div className="mt-4 flex items-center">
-                  <div className={`w-2 h-2 rounded-full mr-2 ${whatsappStatus.isConnected ? 'bg-green-500' : 'bg-red-500'}`} />
-                  <span className="text-xs text-gray-500">
-                    {whatsappStatus.lastSeen ? `Last seen: ${formatTimestamp(whatsappStatus.lastSeen)}` : 'Never connected'}
-                  </span>
-                </div>
-                {!whatsappStatus.isConnected && (
-                  <Button
-                    size="sm"
-                    className="mt-2 w-full"
-                    onClick={() => generateQRMutation.mutate()}
-                    disabled={generateQRMutation.isPending}
-                  >
-                    <QrCode className="w-4 h-4 mr-2" />
-                    Connect WhatsApp
-                  </Button>
-                )}
-              </CardContent>
-            </Card>
-
-            <Card>
-              <CardContent className="p-6">
-                <div className="flex items-center justify-between">
-                  <div>
-                    <p className="text-sm text-gray-600">Messages Today</p>
-                    <p className="text-2xl font-bold text-gray-900">
-                      {status?.stats?.sentToday || 0}
-                    </p>
-                  </div>
-                  <div className="w-12 h-12 bg-blue-100 rounded-lg flex items-center justify-center">
-                    <Send className="text-blue-600 text-xl" />
-                  </div>
-                </div>
-                <div className="mt-4">
-                  <span className="text-xs text-green-600">
-                    +{status?.stats?.deliveredToday || 0} delivered
-                  </span>
-                </div>
-              </CardContent>
-            </Card>
-
-            <Card>
-              <CardContent className="p-6">
-                <div className="flex items-center justify-between">
-                  <div>
-                    <p className="text-sm text-gray-600">Total Messages</p>
-                    <p className="text-2xl font-bold text-gray-900">
-                      {status?.stats?.totalMessages || 0}
-                    </p>
-                  </div>
-                  <div className="w-12 h-12 bg-green-100 rounded-lg flex items-center justify-center">
-                    <FileText className="text-green-600 text-xl" />
-                  </div>
-                </div>
-                <div className="mt-4">
-                  <span className="text-xs text-gray-500">
-                    {status?.stats?.pendingCount || 0} pending
-                  </span>
-                </div>
-              </CardContent>
-            </Card>
-
-            <Card>
-              <CardContent className="p-6">
-                <div className="flex items-center justify-between">
-                  <div>
-                    <p className="text-sm text-gray-600">Failed Messages</p>
-                    <p className="text-2xl font-bold text-red-600">
-                      {status?.stats?.failedToday || 0}
-                    </p>
-                  </div>
-                  <div className="w-12 h-12 bg-red-100 rounded-lg flex items-center justify-center">
-                    <AlertTriangle className="text-red-600 text-xl" />
-                  </div>
-                </div>
-              </CardContent>
-            </Card>
-          </div>
+          <StatusCards
+            whatsappStatus={whatsappStatus}
+            status={status}
+            generateQRMutation={generateQRMutation}
+            formatTimestamp={formatTimestamp}
+          />
 
           {/* Dashboard View */}
           {activeSection === "dashboard" && (
-            <div className="grid grid-cols-1 lg:grid-cols-3 gap-6">
+            <div className="grid grid-cols-1 lg:grid-cols-3 gap-8">
               {/* Send Message Panel */}
-              <div className="lg:col-span-1 space-y-6">
-                <Card>
-                  <CardContent className="p-6">
-                    <h3 className="text-lg font-semibold text-gray-900 mb-4">Send Message</h3>
-                    
-                    <Form {...messageForm}>
-                      <form onSubmit={messageForm.handleSubmit(handleSendMessage)} className="space-y-4">
-                        <FormField
-                          control={messageForm.control}
-                          name="phoneNumber"
-                          render={({ field }) => (
-                            <FormItem>
-                              <FormLabel>Phone Number</FormLabel>
-                              <FormControl>
-                                <Input placeholder="+1234567890" {...field} />
-                              </FormControl>
-                              <FormMessage />
-                            </FormItem>
-                          )}
-                        />
-                        
-                        <FormField
-                          control={messageForm.control}
-                          name="content"
-                          render={({ field }) => (
-                            <FormItem>
-                              <FormLabel>Message</FormLabel>
-                              <FormControl>
-                                <Textarea 
-                                  rows={3}
-                                  placeholder="Type your message here..."
-                                  className="resize-none"
-                                  {...field}
-                                />
-                              </FormControl>
-                              <FormMessage />
-                            </FormItem>
-                          )}
-                        />
-                        
-                        <Button 
-                          type="submit" 
-                          className="w-full bg-green-600 hover:bg-green-700"
-                          disabled={sendMessageMutation.isPending}
-                        >
-                          <MessageSquare className="w-4 h-4 mr-2" />
-                          Send Message
-                        </Button>
-                      </form>
-                    </Form>
-                  </CardContent>
-                </Card>
+              <div className="lg:col-span-1 space-y-8">
+                <MessageForm
+                  form={messageForm}
+                  onSubmit={handleSendMessage}
+                  isLoading={sendMessageMutation.isPending}
+                />
 
-                {/* File Upload Panel */}
-                <Card>
-                  <CardContent className="p-6">
-                    <h3 className="text-lg font-semibold text-gray-900 mb-4">Send Report</h3>
-                    
-                    <div 
-                      className="border-2 border-dashed border-gray-300 rounded-lg p-6 text-center hover:border-primary transition-colors cursor-pointer mb-4"
-                      onDrop={handleFileDrop}
-                      onDragOver={(e) => e.preventDefault()}
-                      onClick={() => document.getElementById('file-input')?.click()}
-                    >
-                      <input
-                        id="file-input"
-                        type="file"
-                        accept=".pdf,.jpg,.jpeg,.png"
-                        onChange={handleFileSelect}
-                        className="hidden"
-                      />
-                      <div className="space-y-3">
-                        <div className="mx-auto w-12 h-12 bg-gray-100 rounded-lg flex items-center justify-center">
-                          <FileUp className="text-gray-400 text-xl" />
-                        </div>
-                        <div>
-                          {selectedFile ? (
-                            <p className="text-sm text-gray-900 font-medium">{selectedFile.name}</p>
-                          ) : (
-                            <>
-                              <p className="text-sm text-gray-600">Drag and drop your report here</p>
-                              <p className="text-xs text-gray-400">PDF, JPG, PNG up to 10MB</p>
-                            </>
-                          )}
-                        </div>
-                        <Button type="button" variant="outline" size="sm">
-                          Browse Files
-                        </Button>
-                      </div>
-                    </div>
-
-                    <Form {...reportForm}>
-                      <form onSubmit={reportForm.handleSubmit(handleSendReport)} className="space-y-4">
-                        <FormField
-                          control={reportForm.control}
-                          name="phoneNumber"
-                          render={({ field }) => (
-                            <FormItem>
-                              <FormLabel>Phone Number</FormLabel>
-                              <FormControl>
-                                <Input placeholder="+1234567890" {...field} />
-                              </FormControl>
-                              <FormMessage />
-                            </FormItem>
-                          )}
-                        />
-
-                        <FormField
-                          control={reportForm.control}
-                          name="sampleId"
-                          render={({ field }) => (
-                            <FormItem>
-                              <FormLabel>Patient/Sample ID</FormLabel>
-                              <FormControl>
-                                <Input placeholder="e.g. SAMPLE-2024-001" {...field} />
-                              </FormControl>
-                              <FormMessage />
-                            </FormItem>
-                          )}
-                        />
-
-                        <FormField
-                          control={reportForm.control}
-                          name="content"
-                          render={({ field }) => (
-                            <FormItem>
-                              <FormLabel>Message (Optional)</FormLabel>
-                              <FormControl>
-                                <Input placeholder="Custom message..." {...field} />
-                              </FormControl>
-                              <FormMessage />
-                            </FormItem>
-                          )}
-                        />
-                        
-                        <Button 
-                          type="submit" 
-                          className="w-full"
-                          disabled={sendReportMutation.isPending || !selectedFile}
-                        >
-                          <Send className="w-4 h-4 mr-2" />
-                          Send Report
-                        </Button>
-                      </form>
-                    </Form>
-                  </CardContent>
-                </Card>
+                <ReportForm
+                  form={reportForm}
+                  onSubmit={handleSendReport}
+                  isLoading={sendReportMutation.isPending}
+                  selectedFile={selectedFile}
+                  onFileSelect={handleFileSelect}
+                  onFileDrop={handleFileDrop}
+                />
               </div>
 
               {/* Message History */}
               <div className="lg:col-span-2">
-                <Card>
-                  <CardContent className="p-6">
-                    <div className="flex items-center justify-between mb-6">
-                      <h3 className="text-lg font-semibold text-gray-900">Message History</h3>
-                      <div className="flex items-center space-x-3">
-                        <Select 
-                          value={messageFilters.status} 
-                          onValueChange={(value) => handleFilterChange('status', value)}
-                        >
-                          <SelectTrigger className="w-40">
-                            <SelectValue />
-                          </SelectTrigger>
-                          <SelectContent>
-                            <SelectItem value="all">All Status</SelectItem>
-                            <SelectItem value="delivered">Delivered</SelectItem>
-                            <SelectItem value="sent">Sent</SelectItem>
-                            <SelectItem value="pending">Pending</SelectItem>
-                            <SelectItem value="failed">Failed</SelectItem>
-                          </SelectContent>
-                        </Select>
-                        
-                        <div className="relative">
-                          <Search className="absolute left-3 top-1/2 transform -translate-y-1/2 text-gray-400 w-4 h-4" />
-                          <Input
-                            placeholder="Search messages..."
-                            value={messageFilters.search}
-                            onChange={(e) => handleFilterChange('search', e.target.value)}
-                            className="pl-10 w-48"
-                          />
-                        </div>
-                      </div>
-                    </div>
-                    
-                    <div className="overflow-x-auto">
-                      <table className="w-full text-sm">
-                        <thead className="bg-gray-50 border-b border-gray-200">
-                          <tr>
-                            <th className="text-left py-3 px-4 font-medium text-gray-700">Timestamp</th>
-                            <th className="text-left py-3 px-4 font-medium text-gray-700">Recipient</th>
-                            <th className="text-left py-3 px-4 font-medium text-gray-700">Type</th>
-                            <th className="text-left py-3 px-4 font-medium text-gray-700">Content</th>
-                            <th className="text-left py-3 px-4 font-medium text-gray-700">Status</th>
-                            <th className="text-left py-3 px-4 font-medium text-gray-700">Actions</th>
-                          </tr>
-                        </thead>
-                        <tbody className="divide-y divide-gray-200">
-                          {messagesLoading ? (
-                            <tr>
-                              <td colSpan={6} className="py-8 text-center text-gray-500">
-                                Loading messages...
-                              </td>
-                            </tr>
-                          ) : messageHistory?.messages.length === 0 ? (
-                            <tr>
-                              <td colSpan={6} className="py-8 text-center text-gray-500">
-                                No messages found
-                              </td>
-                            </tr>
-                          ) : (
-                            messageHistory?.messages.map((message) => (
-                              <tr key={message.id} className="hover:bg-gray-50 transition-colors">
-                                <td className="py-3 px-4">
-                                  <div className="text-gray-900 font-mono text-xs">
-                                    {formatTimestamp(message.createdAt)}
-                                  </div>
-                                </td>
-                                <td className="py-3 px-4">
-                                  <div className="text-gray-900">{message.phoneNumber}</div>
-                                  {message.sampleId && (
-                                    <div className="text-xs text-gray-500">{message.sampleId}</div>
-                                  )}
-                                </td>
-                                <td className="py-3 px-4">
-                                  <div className="flex items-center space-x-2">
-                                    {getTypeIcon(message.type)}
-                                    <span className="capitalize">{message.type}</span>
-                                  </div>
-                                </td>
-                                <td className="py-3 px-4">
-                                  <div className="text-gray-900 truncate max-w-xs">
-                                    {message.content}
-                                  </div>
-                                </td>
-                                <td className="py-3 px-4">
-                                  {getStatusBadge(message.status)}
-                                </td>
-                                <td className="py-3 px-4">
-                                  <div className="flex items-center space-x-2">
-                                    <Button variant="ghost" size="sm">
-                                      <Eye className="w-4 h-4" />
-                                    </Button>
-                                    {message.status === 'failed' && (
-                                      <Button 
-                                        variant="ghost" 
-                                        size="sm"
-                                        onClick={() => resendMessageMutation.mutate(message.id)}
-                                        disabled={resendMessageMutation.isPending}
-                                      >
-                                        <RotateCcw className="w-4 h-4" />
-                                      </Button>
-                                    )}
-                                  </div>
-                                </td>
-                              </tr>
-                            ))
-                          )}
-                        </tbody>
-                      </table>
-                    </div>
-                    
-                    {messageHistory && messageHistory.messages.length > 0 && (
-                      <div className="flex items-center justify-between mt-6 pt-4 border-t border-gray-200">
-                        <div className="text-sm text-gray-700">
-                          Showing {messageHistory.messages.length} of {messageHistory.total} results
-                        </div>
-                        <div className="flex space-x-2">
-                          <Button
-                            variant="outline"
-                            size="sm"
-                            disabled={messageFilters.offset === 0}
-                            onClick={() => handleFilterChange('offset', Math.max(0, messageFilters.offset - messageFilters.limit).toString())}
-                          >
-                            Previous
-                          </Button>
-                          <Button
-                            variant="outline"
-                            size="sm"
-                            disabled={messageFilters.offset + messageFilters.limit >= messageHistory.total}
-                            onClick={() => handleFilterChange('offset', (messageFilters.offset + messageFilters.limit).toString())}
-                          >
-                            Next
-                          </Button>
-                        </div>
-                      </div>
-                    )}
-                  </CardContent>
-                </Card>
+                <MessageHistory
+                  messages={messageHistory?.messages || []}
+                  isLoading={messagesLoading}
+                  filters={messageFilters}
+                  onFilterChange={handleFilterChange}
+                  onResend={(id) => resendMessageMutation.mutate(id)}
+                  formatTimestamp={formatTimestamp}
+                />
               </div>
             </div>
           )}
 
           {/* History Section */}
           {activeSection === "history" && (
-            <Card>
-              <CardContent className="p-6">
-                <div className="flex items-center justify-between mb-6">
-                  <h3 className="text-lg font-semibold text-gray-900">Message History</h3>
-                  <div className="flex items-center space-x-3">
-                    <Select 
-                      value={messageFilters.status} 
-                      onValueChange={(value) => handleFilterChange('status', value)}
-                    >
-                      <SelectTrigger className="w-40">
-                        <SelectValue />
-                      </SelectTrigger>
-                      <SelectContent>
-                        <SelectItem value="all">All Status</SelectItem>
-                        <SelectItem value="delivered">Delivered</SelectItem>
-                        <SelectItem value="sent">Sent</SelectItem>
-                        <SelectItem value="pending">Pending</SelectItem>
-                        <SelectItem value="failed">Failed</SelectItem>
-                      </SelectContent>
-                    </Select>
-                    
-                    <div className="relative">
-                      <Search className="absolute left-3 top-1/2 transform -translate-y-1/2 text-gray-400 w-4 h-4" />
-                      <Input
-                        placeholder="Search messages..."
-                        value={messageFilters.search}
-                        onChange={(e) => handleFilterChange('search', e.target.value)}
-                        className="pl-10 w-48"
-                      />
-                    </div>
-                  </div>
-                </div>
-                
-                <div className="overflow-x-auto">
-                  <table className="w-full text-sm">
-                    <thead className="bg-gray-50 border-b border-gray-200">
-                      <tr>
-                        <th className="text-left py-3 px-4 font-medium text-gray-700">Timestamp</th>
-                        <th className="text-left py-3 px-4 font-medium text-gray-700">Recipient</th>
-                        <th className="text-left py-3 px-4 font-medium text-gray-700">Type</th>
-                        <th className="text-left py-3 px-4 font-medium text-gray-700">Content</th>
-                        <th className="text-left py-3 px-4 font-medium text-gray-700">Status</th>
-                        <th className="text-left py-3 px-4 font-medium text-gray-700">Actions</th>
-                      </tr>
-                    </thead>
-                    <tbody className="divide-y divide-gray-200">
-                      {messagesLoading ? (
-                        <tr>
-                          <td colSpan={6} className="py-8 text-center text-gray-500">
-                            Loading messages...
-                          </td>
-                        </tr>
-                      ) : messageHistory?.messages.length === 0 ? (
-                        <tr>
-                          <td colSpan={6} className="py-8 text-center text-gray-500">
-                            No messages found
-                          </td>
-                        </tr>
-                      ) : (
-                        messageHistory?.messages.map((message) => (
-                          <tr key={message.id} className="hover:bg-gray-50 transition-colors">
-                            <td className="py-3 px-4">
-                              <div className="text-gray-900 font-mono text-xs">
-                                {formatTimestamp(message.createdAt)}
-                              </div>
-                            </td>
-                            <td className="py-3 px-4">
-                              <div className="text-gray-900">{message.phoneNumber}</div>
-                              {message.sampleId && (
-                                <div className="text-xs text-gray-500">{message.sampleId}</div>
-                              )}
-                            </td>
-                            <td className="py-3 px-4">
-                              <div className="flex items-center space-x-2">
-                                {getTypeIcon(message.type)}
-                                <span className="capitalize">{message.type}</span>
-                              </div>
-                            </td>
-                            <td className="py-3 px-4">
-                              <div className="text-gray-900 truncate max-w-xs">
-                                {message.content}
-                              </div>
-                            </td>
-                            <td className="py-3 px-4">
-                              {getStatusBadge(message.status)}
-                            </td>
-                            <td className="py-3 px-4">
-                              <div className="flex items-center space-x-2">
-                                <Button variant="ghost" size="sm">
-                                  <Eye className="w-4 h-4" />
-                                </Button>
-                                {message.status === 'failed' && (
-                                  <Button 
-                                    variant="ghost" 
-                                    size="sm"
-                                    onClick={() => resendMessageMutation.mutate(message.id)}
-                                    disabled={resendMessageMutation.isPending}
-                                  >
-                                    <RotateCcw className="w-4 h-4" />
-                                  </Button>
-                                )}
-                              </div>
-                            </td>
-                          </tr>
-                        ))
-                      )}
-                    </tbody>
-                  </table>
-                </div>
-                
-                {messageHistory && messageHistory.messages.length > 0 && (
-                  <div className="flex items-center justify-between mt-6 pt-4 border-t border-gray-200">
-                    <div className="text-sm text-gray-700">
-                      Showing {messageHistory.messages.length} of {messageHistory.total} results
-                    </div>
-                    <div className="flex space-x-2">
-                      <Button
-                        variant="outline"
-                        size="sm"
-                        disabled={messageFilters.offset === 0}
-                        onClick={() => handleFilterChange('offset', Math.max(0, messageFilters.offset - messageFilters.limit).toString())}
-                      >
-                        Previous
-                      </Button>
-                      <Button
-                        variant="outline"
-                        size="sm"
-                        disabled={messageFilters.offset + messageFilters.limit >= messageHistory.total}
-                        onClick={() => handleFilterChange('offset', (messageFilters.offset + messageFilters.limit).toString())}
-                      >
-                        Next
-                      </Button>
-                    </div>
-                  </div>
-                )}
-              </CardContent>
-            </Card>
+            <MessageHistory
+              messages={messageHistory?.messages || []}
+              isLoading={messagesLoading}
+              filters={messageFilters}
+              onFilterChange={handleFilterChange}
+              onResend={(id) => resendMessageMutation.mutate(id)}
+              formatTimestamp={formatTimestamp}
+            />
           )}
 
           {/* Auto-Responses Section */}
           {activeSection === "auto-responses" && (
-            <Card>
-              <CardContent className="p-6">
-                <div className="flex items-center justify-between mb-6">
-                  <div>
-                    <h3 className="text-lg font-semibold text-gray-900">Auto-Responses</h3>
-                    <p className="text-sm text-gray-600">Manage keyword-based automatic replies</p>
-                  </div>
-                  <Button
-                    onClick={() => {
-                      const keyword = prompt("Enter keyword (e.g., YES, INTERESTED):");
-                      if (!keyword) return;
-                      const response = prompt("Enter auto-response message:");
-                      if (!response) return;
-                      createAutoResponseMutation.mutate({ keyword, response });
-                    }}
-                  >
-                    Add New
-                  </Button>
-                </div>
-
-                <div className="space-y-4">
-                  {autoResponses.length === 0 ? (
-                    <div className="text-center py-12 text-gray-500">
-                      <MessageSquare className="w-12 h-12 mx-auto mb-3 text-gray-400" />
-                      <p>No auto-responses configured</p>
-                      <p className="text-sm mt-1">Create your first auto-response to get started</p>
-                    </div>
-                  ) : (
-                    autoResponses.map((autoResponse: any) => (
-                      <div 
-                        key={autoResponse.id} 
-                        className="border border-gray-200 rounded-lg p-4 hover:border-gray-300 transition-colors"
-                      >
-                        <div className="flex items-start justify-between">
-                          <div className="flex-1">
-                            <div className="flex items-center space-x-2 mb-2">
-                              <Badge variant={autoResponse.isActive === 'true' ? 'default' : 'secondary'}>
-                                {autoResponse.keyword}
-                              </Badge>
-                              <span className="text-xs text-gray-500">
-                                {autoResponse.isActive === 'true' ? 'Active' : 'Inactive'}
-                              </span>
-                            </div>
-                            <p className="text-sm text-gray-700">{autoResponse.response}</p>
-                            <p className="text-xs text-gray-500 mt-2">
-                              Created: {new Date(autoResponse.createdAt).toLocaleDateString()}
-                            </p>
-                          </div>
-                          <div className="flex items-center space-x-2 ml-4">
-                            <Button
-                              variant="ghost"
-                              size="sm"
-                              onClick={() => {
-                                const newIsActive = autoResponse.isActive === 'true' ? false : true;
-                                updateAutoResponseMutation.mutate({ 
-                                  id: autoResponse.id, 
-                                  isActive: newIsActive 
-                                });
-                              }}
-                            >
-                              {autoResponse.isActive === 'true' ? '🔕' : '🔔'}
-                            </Button>
-                            <Button
-                              variant="ghost"
-                              size="sm"
-                              onClick={() => {
-                                const newKeyword = prompt("Enter new keyword:", autoResponse.keyword);
-                                if (!newKeyword) return;
-                                const newResponse = prompt("Enter new response:", autoResponse.response);
-                                if (!newResponse) return;
-                                updateAutoResponseMutation.mutate({ 
-                                  id: autoResponse.id, 
-                                  keyword: newKeyword,
-                                  response: newResponse
-                                });
-                              }}
-                            >
-                              ✏️
-                            </Button>
-                            <Button
-                              variant="ghost"
-                              size="sm"
-                              onClick={() => {
-                                if (confirm(`Delete auto-response for "${autoResponse.keyword}"?`)) {
-                                  deleteAutoResponseMutation.mutate(autoResponse.id);
-                                }
-                              }}
-                            >
-                              🗑️
-                            </Button>
-                          </div>
-                        </div>
-                      </div>
-                    ))
-                  )}
-                </div>
-
-                <div className="mt-6 p-4 bg-blue-50 border border-blue-200 rounded-lg">
-                  <h4 className="font-medium text-sm text-blue-900 mb-2">💡 How Auto-Responses Work</h4>
-                  <ul className="text-sm text-blue-800 space-y-1">
-                    <li>• Keywords are matched case-insensitively</li>
-                    <li>• First matching keyword triggers the response</li>
-                    <li>• Responses are sent automatically when recipients reply with matching keywords</li>
-                    <li>• Example: When someone replies "YES", send "Thank you for your interest!"</li>
-                  </ul>
-                </div>
-              </CardContent>
-            </Card>
+            <AutoResponsePanel
+              autoResponses={autoResponses}
+              onCreate={(data) => createAutoResponseMutation.mutate(data)}
+              onUpdate={(data) => updateAutoResponseMutation.mutate(data)}
+              onDelete={(id) => deleteAutoResponseMutation.mutate(id)}
+            />
           )}
         </main>
       </div>
 
       {/* QR Code Modal */}
       <Dialog open={showQRModal} onOpenChange={setShowQRModal}>
-        <DialogContent className="max-w-md">
+        <DialogContent className="max-w-md border-none shadow-2xl bg-white/95 dark:bg-zinc-900/95 backdrop-blur-xl">
           <DialogHeader>
-            <DialogTitle>Connect WhatsApp</DialogTitle>
+            <DialogTitle className="text-center text-xl font-bold">Connect WhatsApp</DialogTitle>
           </DialogHeader>
-          
+
           <div className="text-center">
-            <div className="w-64 h-64 bg-gray-100 dark:bg-gray-800 rounded-lg mx-auto mb-4 flex items-center justify-center">
+            <div className="w-64 h-64 bg-white rounded-2xl mx-auto mb-6 flex items-center justify-center shadow-inner border border-gray-100 p-2">
               {qrCode ? (
-                <div className="text-center">
-                  <img 
-                    src={qrCode} 
-                    alt="WhatsApp QR Code" 
-                    className="w-full h-full object-contain rounded-lg"
+                <div className="text-center w-full h-full">
+                  <img
+                    src={qrCode}
+                    alt="WhatsApp QR Code"
+                    className="w-full h-full object-contain rounded-xl"
                     onError={(e) => {
                       console.error('QR Code image failed to load:', qrCode);
                       (e.target as HTMLImageElement).style.display = 'none';
-                    }}
-                    onLoad={() => {
-                      console.log('QR Code image loaded successfully');
                     }}
                   />
                 </div>
               ) : (
                 <div className="text-center">
-                  <QrCode className="w-16 h-16 text-gray-400 mx-auto mb-2" />
-                  <p className="text-sm text-gray-500">Generating WhatsApp QR code...</p>
-                  <p className="text-xs text-gray-400 mt-1">This may take a few seconds</p>
+                  <QrCode className="w-16 h-16 text-gray-300 mx-auto mb-3" />
+                  <p className="text-sm text-gray-500 font-medium">Generating QR code...</p>
                 </div>
               )}
             </div>
-            
-            <div className="space-y-2 text-sm text-gray-600 mb-6">
-              <p><strong>📱 To connect your WhatsApp:</strong></p>
-              <p>1. Open <strong>WhatsApp</strong> on your phone</p>
-              <p>2. Go to <strong>Settings</strong> → <strong>Linked Devices</strong></p>
-              <p>3. Tap <strong>"Link a Device"</strong></p>
-              <p>4. Scan the QR code above with your phone camera</p>
-              <p className="text-green-600 font-medium">✅ This is a REAL WhatsApp QR code!</p>
+
+            <div className="space-y-3 text-sm text-muted-foreground mb-8 text-left bg-gray-50 dark:bg-zinc-800/50 p-4 rounded-xl">
+              <p className="font-semibold text-foreground flex items-center">
+                <Wifi className="w-4 h-4 mr-2 text-primary" />
+                To connect your WhatsApp:
+              </p>
+              <ol className="list-decimal list-inside space-y-1 ml-1">
+                <li>Open <strong>WhatsApp</strong> on your phone</li>
+                <li>Go to <strong>Settings</strong> → <strong>Linked Devices</strong></li>
+                <li>Tap <strong>"Link a Device"</strong></li>
+                <li>Scan the QR code above</li>
+              </ol>
             </div>
-            
+
             <div className="flex space-x-3">
               <Button
                 variant="outline"
@@ -1190,7 +500,7 @@ export default function Dashboard() {
                 Refresh QR
               </Button>
               <Button
-                className="flex-1"
+                className="flex-1 bg-primary hover:bg-primary/90 text-primary-foreground"
                 onClick={() => setShowQRModal(false)}
               >
                 Done

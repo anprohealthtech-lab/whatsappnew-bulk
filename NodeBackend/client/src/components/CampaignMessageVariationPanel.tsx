@@ -7,7 +7,7 @@ import { Textarea } from '@/components/ui/textarea';
 import { Badge } from '@/components/ui/badge';
 import { Alert, AlertDescription } from '@/components/ui/alert';
 import { Checkbox } from '@/components/ui/checkbox';
-import { Loader2, Upload, Send, RefreshCw } from 'lucide-react';
+import { Loader2, Upload, Send, RefreshCw, Plus, Trash2, Link, MessageSquare, AlertCircle, FileText, Users } from 'lucide-react';
 
 interface Campaign {
   id: string;
@@ -68,13 +68,13 @@ export function CampaignMessageVariationPanel({
     const regex = /\{\{(\w+)\}\}/g;
     const placeholders = new Set<string>();
     let match;
-    
+
     while ((match = regex.exec(message)) !== null) {
       if (match[1] !== 'name') { // Exclude {{name}} as it's per-contact
         placeholders.add(match[1]);
       }
     }
-    
+
     return Array.from(placeholders);
   };
 
@@ -118,7 +118,7 @@ export function CampaignMessageVariationPanel({
     try {
       const response = await fetch(`/api/campaigns/${campaignId}`);
       const data = await response.json();
-      
+
       if (data.success) {
         setCampaign(data.data);
         setSelectedVariation(data.data.selectedVariation || '');
@@ -134,7 +134,7 @@ export function CampaignMessageVariationPanel({
     try {
       const response = await fetch(`/api/campaigns/${campaignId}/contacts`);
       const data = await response.json();
-      
+
       if (data.success) {
         setContacts(data.data);
       }
@@ -147,7 +147,7 @@ export function CampaignMessageVariationPanel({
     try {
       const response = await fetch(`/api/campaigns/${campaignId}/variations`);
       const data = await response.json();
-      
+
       if (data.success) {
         setVariations(data.data);
       }
@@ -173,7 +173,7 @@ export function CampaignMessageVariationPanel({
       });
 
       const data = await response.json();
-      
+
       if (data.success) {
         setCampaignId(data.data.id);
         setCampaign(data.data);
@@ -191,7 +191,7 @@ export function CampaignMessageVariationPanel({
 
   const generateVariation = async () => {
     if (!campaign) return;
-    
+
     try {
       setIsGenerating(true);
       setError('');
@@ -214,7 +214,7 @@ export function CampaignMessageVariationPanel({
       });
 
       const data = await response.json();
-      
+
       if (data.success && data.tweaked_message) {
         // Save variation to database
         const saveResponse = await fetch(`/api/campaigns/${campaignId}/variations`, {
@@ -254,7 +254,7 @@ export function CampaignMessageVariationPanel({
       });
 
       const data = await response.json();
-      
+
       if (data.success) {
         setSuccess(`Contacts loaded: ${data.total}`);
         await loadContacts();
@@ -298,7 +298,7 @@ export function CampaignMessageVariationPanel({
       });
 
       const data = await response.json();
-      
+
       if (data.success) {
         setSuccess(`Campaign sent! Total: ${data.total}, Sent: ${data.sent}, Failed: ${data.failed}`);
         if (data.failed > 0) {
@@ -316,19 +316,24 @@ export function CampaignMessageVariationPanel({
 
   if (!campaignId) {
     return (
-      <Card className="w-full max-w-4xl mx-auto">
+      <Card className="w-full max-w-4xl mx-auto border-none shadow-xl bg-white/50 dark:bg-zinc-900/50 backdrop-blur-sm">
         <CardHeader>
-          <CardTitle>Create New Campaign</CardTitle>
+          <CardTitle className="text-2xl font-bold flex items-center">
+            <Plus className="w-6 h-6 mr-2 text-primary" />
+            Create New Campaign
+          </CardTitle>
           <CardDescription>Set up a new WhatsApp campaign with message variations</CardDescription>
         </CardHeader>
-        <CardContent className="space-y-4">
+        <CardContent className="space-y-6">
           {error && (
             <Alert variant="destructive">
+              <AlertCircle className="h-4 w-4" />
               <AlertDescription>{error}</AlertDescription>
             </Alert>
           )}
           {success && (
-            <Alert>
+            <Alert className="bg-green-50 text-green-800 border-green-200">
+              <CheckCircle className="h-4 w-4" />
               <AlertDescription>{success}</AlertDescription>
             </Alert>
           )}
@@ -340,6 +345,7 @@ export function CampaignMessageVariationPanel({
               value={newCampaignName}
               onChange={(e) => setNewCampaignName(e.target.value)}
               placeholder="e.g., Appointment Reminders"
+              className="bg-white dark:bg-zinc-950"
             />
           </div>
 
@@ -351,22 +357,27 @@ export function CampaignMessageVariationPanel({
               onChange={(e) => setOriginalMessage(e.target.value)}
               placeholder="Hi {{name}}, reminder for your appointment on {{date}} at {{time}}."
               rows={4}
+              className="bg-white dark:bg-zinc-950 resize-none"
             />
-            <p className="text-sm text-muted-foreground">
+            <p className="text-sm text-muted-foreground flex items-center">
+              <Info className="w-3 h-3 mr-1" />
               Use {'{{name}}'} for recipient name. Other placeholders like {'{{date}}'}, {'{{time}}'} will show as fields below.
             </p>
           </div>
 
           {placeholders.length > 0 && (
-            <div className="space-y-4 border rounded-lg p-4 bg-muted/50">
-              <Label className="text-base font-semibold">Fixed Parameters</Label>
+            <div className="space-y-4 border border-border rounded-xl p-6 bg-accent/20">
+              <Label className="text-base font-semibold flex items-center">
+                <FileText className="w-4 h-4 mr-2" />
+                Fixed Parameters
+              </Label>
               <p className="text-sm text-muted-foreground">
                 Fill in values for placeholders found in your message:
               </p>
               {placeholders.map((placeholder) => (
                 <div key={placeholder} className="space-y-2">
                   <Label htmlFor={placeholder} className="flex items-center gap-2">
-                    <code className="text-xs bg-secondary px-2 py-1 rounded">
+                    <code className="text-xs bg-primary/10 text-primary px-2 py-1 rounded">
                       {'{{' + placeholder + '}}'}
                     </code>
                     {placeholder.charAt(0).toUpperCase() + placeholder.slice(1)}
@@ -376,6 +387,7 @@ export function CampaignMessageVariationPanel({
                     value={fixedParams[placeholder] || ''}
                     onChange={(e) => updateFixedParam(placeholder, e.target.value)}
                     placeholder={`Enter value for ${placeholder}`}
+                    className="bg-white dark:bg-zinc-950"
                   />
                 </div>
               ))}
@@ -383,10 +395,13 @@ export function CampaignMessageVariationPanel({
           )}
 
           {/* Button Configuration Section */}
-          <div className="space-y-4 border rounded-lg p-4">
+          <div className="space-y-4 border border-border rounded-xl p-6 bg-accent/20">
             <div className="flex items-center justify-between">
               <div>
-                <Label className="text-base font-semibold">Interactive Buttons (Optional)</Label>
+                <Label className="text-base font-semibold flex items-center">
+                  <Link className="w-4 h-4 mr-2" />
+                  Interactive Buttons (Optional)
+                </Label>
                 <p className="text-sm text-muted-foreground mt-1">
                   Add clickable links to reduce spam reports and boost engagement
                 </p>
@@ -401,7 +416,7 @@ export function CampaignMessageVariationPanel({
             </div>
 
             {showButtons && (
-              <div className="space-y-4 mt-4">
+              <div className="space-y-4 mt-4 animate-in fade-in slide-in-from-top-2">
                 {buttons.map((button, index) => (
                   <div key={index} className="flex gap-2 items-end">
                     <div className="flex-1 space-y-2">
@@ -411,6 +426,7 @@ export function CampaignMessageVariationPanel({
                         value={button.text}
                         onChange={(e) => updateButton(index, 'text', e.target.value)}
                         placeholder="e.g., Visit Website"
+                        className="bg-white dark:bg-zinc-950"
                       />
                     </div>
                     <div className="flex-1 space-y-2">
@@ -420,6 +436,7 @@ export function CampaignMessageVariationPanel({
                         value={button.url || ''}
                         onChange={(e) => updateButton(index, 'url', e.target.value)}
                         placeholder="https://example.com"
+                        className="bg-white dark:bg-zinc-950"
                       />
                     </div>
                     <Button
@@ -427,16 +444,18 @@ export function CampaignMessageVariationPanel({
                       size="icon"
                       onClick={() => removeButton(index)}
                     >
-                      ✕
+                      <Trash2 className="w-4 h-4" />
                     </Button>
                   </div>
                 ))}
-                <Button variant="outline" onClick={addButton} className="w-full">
-                  + Add Button
+                <Button variant="outline" onClick={addButton} className="w-full border-dashed">
+                  <Plus className="w-4 h-4 mr-2" />
+                  Add Button
                 </Button>
-                <Alert>
+                <Alert className="bg-blue-50 text-blue-800 border-blue-200">
+                  <Info className="h-4 w-4" />
                   <AlertDescription className="text-xs">
-                    💡 <strong>Tip:</strong> Add a "Visit Website" button or "This is helpful" to encourage positive interaction and reduce spam reports.
+                    <strong>Tip:</strong> Add a "Visit Website" button or "This is helpful" to encourage positive interaction and reduce spam reports.
                   </AlertDescription>
                 </Alert>
               </div>
@@ -444,7 +463,7 @@ export function CampaignMessageVariationPanel({
           </div>
 
           {/* Stop Button Option */}
-          <div className="space-y-2 border rounded-lg p-4">
+          <div className="space-y-2 border border-border rounded-xl p-6 bg-accent/20">
             <div className="flex items-center space-x-2">
               <Checkbox
                 id="includeStopButton"
@@ -459,15 +478,16 @@ export function CampaignMessageVariationPanel({
               Users can tap to instantly unsubscribe. Numbers will be automatically blocked from future campaigns.
             </p>
             {includeStopButton && (
-              <Alert className="ml-6 mt-2">
+              <Alert className="ml-6 mt-2 bg-green-50 text-green-800 border-green-200">
+                <CheckCircle className="h-4 w-4" />
                 <AlertDescription className="text-xs">
-                  ✅ When enabled, messages will include a quick reply button saying "🚫 Stop Receiving Messages" that users can tap to opt out.
+                  When enabled, messages will include a quick reply button saying "🚫 Stop Receiving Messages" that users can tap to opt out.
                 </AlertDescription>
               </Alert>
             )}
           </div>
 
-          <Button onClick={createCampaign} className="w-full">
+          <Button onClick={createCampaign} className="w-full bg-primary hover:bg-primary/90 text-primary-foreground shadow-lg shadow-primary/20">
             Create Campaign
           </Button>
         </CardContent>
@@ -479,47 +499,67 @@ export function CampaignMessageVariationPanel({
     <div className="space-y-6 w-full max-w-4xl mx-auto">
       {/* Campaign Info */}
       {campaign && (
-        <Card>
+        <Card className="border-none shadow-lg bg-white/50 dark:bg-zinc-900/50 backdrop-blur-sm">
           <CardHeader>
-            <CardTitle>{campaign.name}</CardTitle>
-            <CardDescription>Campaign ID: {campaignId}</CardDescription>
+            <div className="flex items-center justify-between">
+              <div>
+                <CardTitle className="text-xl">{campaign.name}</CardTitle>
+                <CardDescription>Campaign ID: {campaignId}</CardDescription>
+              </div>
+              <Badge variant="secondary" className="text-sm px-3 py-1">
+                <Users className="w-4 h-4 mr-2" />
+                {campaign.totalContacts} Contacts
+              </Badge>
+            </div>
           </CardHeader>
           <CardContent>
             <div className="space-y-2">
               <div>
-                <Label>Original Message</Label>
-                <p className="text-sm mt-1 p-2 bg-muted rounded">{campaign.originalMessage}</p>
+                <Label className="text-xs uppercase tracking-wider text-muted-foreground">Original Message</Label>
+                <div className="mt-2 p-4 bg-muted/50 rounded-xl border border-border text-sm">
+                  {campaign.originalMessage}
+                </div>
               </div>
-              <Badge variant="secondary">Contacts: {campaign.totalContacts}</Badge>
             </div>
           </CardContent>
         </Card>
       )}
 
       {/* Upload Recipients Panel */}
-      <Card>
+      <Card className="border-none shadow-lg bg-white/50 dark:bg-zinc-900/50 backdrop-blur-sm">
         <CardHeader>
-          <CardTitle>Upload Recipients</CardTitle>
+          <CardTitle className="flex items-center">
+            <Users className="w-5 h-5 mr-2 text-primary" />
+            Upload Recipients
+          </CardTitle>
           <CardDescription>Upload contacts from Excel file (.xlsx, .xls, .csv)</CardDescription>
         </CardHeader>
-        <CardContent className="space-y-4">
+        <CardContent className="space-y-6">
           <div className="space-y-2">
-            <Label htmlFor="contactFile">Contact File</Label>
-            <Input
-              id="contactFile"
-              type="file"
-              accept=".xlsx,.xls,.csv"
-              onChange={(e) => setUploadFile(e.target.files?.[0] || null)}
-            />
-            <p className="text-sm text-muted-foreground">
-              Expected columns: <strong>name</strong>, <strong>phone</strong>
-            </p>
+            <div className="border-2 border-dashed border-border rounded-xl p-8 text-center hover:border-primary/50 hover:bg-primary/5 transition-all duration-300 cursor-pointer group">
+              <input
+                type="file"
+                id="contactFile"
+                accept=".xlsx,.xls,.csv"
+                onChange={(e) => setUploadFile(e.target.files?.[0] || null)}
+                className="hidden"
+              />
+              <label htmlFor="contactFile" className="cursor-pointer w-full h-full block">
+                <Upload className="w-12 h-12 mx-auto mb-4 text-muted-foreground group-hover:text-primary transition-colors" />
+                <p className="font-medium text-foreground">
+                  {uploadFile ? uploadFile.name : "Click to upload or drag and drop"}
+                </p>
+                <p className="text-sm text-muted-foreground mt-1">
+                  Expected columns: <strong>name</strong>, <strong>phone</strong>
+                </p>
+              </label>
+            </div>
           </div>
 
-          <Button 
-            onClick={handleFileUpload} 
+          <Button
+            onClick={handleFileUpload}
             disabled={!uploadFile || isUploading}
-            className="w-full"
+            className="w-full bg-primary hover:bg-primary/90 text-primary-foreground shadow-lg shadow-primary/20"
           >
             {isUploading ? (
               <><Loader2 className="mr-2 h-4 w-4 animate-spin" /> Uploading...</>
@@ -529,16 +569,20 @@ export function CampaignMessageVariationPanel({
           </Button>
 
           {contacts.length > 0 && (
-            <div className="mt-4">
-              <p className="font-semibold mb-2">Contacts loaded: {contacts.length}</p>
-              <div className="max-h-48 overflow-y-auto border rounded p-2 space-y-1">
+            <div className="mt-4 border border-border rounded-xl overflow-hidden">
+              <div className="bg-muted/50 px-4 py-2 border-b border-border flex justify-between items-center">
+                <span className="font-medium text-sm">Contacts Preview</span>
+                <Badge variant="outline">{contacts.length} total</Badge>
+              </div>
+              <div className="max-h-48 overflow-y-auto p-2 space-y-1 bg-white dark:bg-zinc-950">
                 {contacts.slice(0, 10).map((contact, idx) => (
-                  <div key={idx} className="text-sm">
-                    {contact.name} – {contact.phone}
+                  <div key={idx} className="text-sm px-3 py-2 rounded hover:bg-muted/50 flex justify-between">
+                    <span className="font-medium">{contact.name}</span>
+                    <span className="text-muted-foreground font-mono">{contact.phone}</span>
                   </div>
                 ))}
                 {contacts.length > 10 && (
-                  <p className="text-sm text-muted-foreground">
+                  <p className="text-xs text-center text-muted-foreground py-2 italic">
                     ...and {contacts.length - 10} more
                   </p>
                 )}
@@ -549,50 +593,55 @@ export function CampaignMessageVariationPanel({
       </Card>
 
       {/* Message Variations Panel */}
-      <Card>
+      <Card className="border-none shadow-lg bg-white/50 dark:bg-zinc-900/50 backdrop-blur-sm">
         <CardHeader>
-          <CardTitle>Message Variations</CardTitle>
+          <CardTitle className="flex items-center">
+            <MessageSquare className="w-5 h-5 mr-2 text-primary" />
+            Message Variations
+          </CardTitle>
           <CardDescription>Generate and manage message variations</CardDescription>
         </CardHeader>
-        <CardContent className="space-y-4">
-          <Button 
-            onClick={generateVariation} 
+        <CardContent className="space-y-6">
+          <Button
+            onClick={generateVariation}
             disabled={isGenerating}
-            className="w-full"
+            className="w-full bg-secondary hover:bg-secondary/80 text-secondary-foreground border border-border"
+            variant="outline"
           >
             {isGenerating ? (
               <><Loader2 className="mr-2 h-4 w-4 animate-spin" /> Generating...</>
             ) : (
-              <><RefreshCw className="mr-2 h-4 w-4" /> Generate New Variation</>
+              <><RefreshCw className="mr-2 h-4 w-4" /> Generate New Variation with AI</>
             )}
           </Button>
 
           {selectedVariation && (
             <div className="space-y-2">
-              <Label>Current Variation</Label>
+              <Label className="text-xs uppercase tracking-wider text-muted-foreground">Current Variation</Label>
               <Textarea
                 value={selectedVariation}
                 onChange={(e) => setSelectedVariation(e.target.value)}
                 rows={4}
-                className="font-mono text-sm"
+                className="font-mono text-sm bg-white dark:bg-zinc-950 resize-none"
               />
             </div>
           )}
 
           {variations.length > 0 && (
             <div className="space-y-2">
-              <Label>History ({variations.length} variations)</Label>
-              <div className="max-h-48 overflow-y-auto border rounded p-2 space-y-2">
+              <Label className="text-xs uppercase tracking-wider text-muted-foreground">History ({variations.length})</Label>
+              <div className="max-h-48 overflow-y-auto border border-border rounded-xl p-2 space-y-2 bg-muted/20">
                 {variations.map((v) => (
-                  <div 
+                  <div
                     key={v.id}
-                    className="text-sm p-2 bg-muted rounded cursor-pointer hover:bg-muted/80"
+                    className="text-sm p-3 bg-white dark:bg-zinc-950 rounded-lg border border-border cursor-pointer hover:border-primary/50 hover:shadow-sm transition-all"
                     onClick={() => setSelectedVariation(v.variation)}
                   >
-                    <p className="text-xs text-muted-foreground mb-1">
-                      {new Date(v.createdAt).toLocaleString()}
-                    </p>
-                    <p>{v.variation}</p>
+                    <div className="flex justify-between items-center mb-2">
+                      <span className="text-xs font-medium text-primary">Variation</span>
+                      <span className="text-[10px] text-muted-foreground">{new Date(v.createdAt).toLocaleString()}</span>
+                    </div>
+                    <p className="text-muted-foreground line-clamp-2">{v.variation}</p>
                   </div>
                 ))}
               </div>
@@ -602,54 +651,104 @@ export function CampaignMessageVariationPanel({
       </Card>
 
       {/* Send Campaign Panel */}
-      <Card>
+      <Card className="border-none shadow-lg bg-white/50 dark:bg-zinc-900/50 backdrop-blur-sm">
         <CardHeader>
-          <CardTitle>Send Campaign</CardTitle>
+          <CardTitle className="flex items-center">
+            <Send className="w-5 h-5 mr-2 text-primary" />
+            Send Campaign
+          </CardTitle>
           <CardDescription>Bulk send messages to all contacts</CardDescription>
         </CardHeader>
-        <CardContent className="space-y-4">
+        <CardContent className="space-y-6">
           {error && (
             <Alert variant="destructive">
+              <AlertCircle className="h-4 w-4" />
               <AlertDescription>{error}</AlertDescription>
             </Alert>
           )}
           {success && (
-            <Alert>
+            <Alert className="bg-green-50 text-green-800 border-green-200">
+              <CheckCircle className="h-4 w-4" />
               <AlertDescription>{success}</AlertDescription>
             </Alert>
           )}
 
-          <div className="space-y-2">
-            <div className="flex items-center gap-2">
-              <Badge variant={selectedVariation ? 'default' : 'secondary'}>
-                Active variation: {selectedVariation ? 'Set' : 'Not set'}
-              </Badge>
-              <Badge variant={contacts.length > 0 ? 'default' : 'secondary'}>
-                Contacts loaded: {contacts.length}
-              </Badge>
+          <div className="grid grid-cols-2 gap-4">
+            <div className={`p-4 rounded-xl border ${selectedVariation ? 'bg-green-50 border-green-200' : 'bg-red-50 border-red-200'} transition-colors`}>
+              <p className="text-xs font-medium uppercase tracking-wider mb-1">Variation</p>
+              <p className={`font-semibold ${selectedVariation ? 'text-green-700' : 'text-red-700'}`}>
+                {selectedVariation ? 'Ready' : 'Missing'}
+              </p>
+            </div>
+            <div className={`p-4 rounded-xl border ${contacts.length > 0 ? 'bg-green-50 border-green-200' : 'bg-red-50 border-red-200'} transition-colors`}>
+              <p className="text-xs font-medium uppercase tracking-wider mb-1">Contacts</p>
+              <p className={`font-semibold ${contacts.length > 0 ? 'text-green-700' : 'text-red-700'}`}>
+                {contacts.length > 0 ? `${contacts.length} Loaded` : 'Empty'}
+              </p>
             </div>
           </div>
 
-          <Button 
-            onClick={sendBulkMessages} 
+          <Button
+            onClick={sendBulkMessages}
             disabled={isSending || !selectedVariation || contacts.length === 0}
-            className="w-full"
-            variant="default"
+            className="w-full h-12 text-lg bg-primary hover:bg-primary/90 text-primary-foreground shadow-lg shadow-primary/20"
           >
             {isSending ? (
-              <><Loader2 className="mr-2 h-4 w-4 animate-spin" /> Sending Campaign...</>
+              <><Loader2 className="mr-2 h-5 w-5 animate-spin" /> Sending Campaign...</>
             ) : (
-              <><Send className="mr-2 h-4 w-4" /> Send to All Contacts</>
+              <><Send className="mr-2 h-5 w-5" /> Send to All Contacts</>
             )}
           </Button>
 
-          <p className="text-sm text-muted-foreground">
+          <p className="text-sm text-center text-muted-foreground">
             {contacts.length > 0 && (
-              <>Estimated time: {Math.ceil(contacts.length * 1.25)} minutes (1-1.5 min per contact)</>
+              <>Estimated time: <strong>{Math.ceil(contacts.length * 1.25)} minutes</strong> (approx 1-1.5 min per contact)</>
             )}
           </p>
         </CardContent>
       </Card>
     </div>
   );
+}
+
+// Helper components for icons that were missing in imports
+function Info(props: any) {
+  return (
+    <svg
+      {...props}
+      xmlns="http://www.w3.org/2000/svg"
+      width="24"
+      height="24"
+      viewBox="0 0 24 24"
+      fill="none"
+      stroke="currentColor"
+      strokeWidth="2"
+      strokeLinecap="round"
+      strokeLinejoin="round"
+    >
+      <circle cx="12" cy="12" r="10" />
+      <path d="M12 16v-4" />
+      <path d="M12 8h.01" />
+    </svg>
+  )
+}
+
+function CheckCircle(props: any) {
+  return (
+    <svg
+      {...props}
+      xmlns="http://www.w3.org/2000/svg"
+      width="24"
+      height="24"
+      viewBox="0 0 24 24"
+      fill="none"
+      stroke="currentColor"
+      strokeWidth="2"
+      strokeLinecap="round"
+      strokeLinejoin="round"
+    >
+      <path d="M22 11.08V12a10 10 0 1 1-5.93-9.14" />
+      <polyline points="22 4 12 14.01 9 11.01" />
+    </svg>
+  )
 }
