@@ -1,4 +1,13 @@
+import { useState } from "react";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
+import {
+    Dialog,
+    DialogContent,
+    DialogHeader,
+    DialogTitle,
+    DialogDescription,
+    DialogFooter,
+} from "@/components/ui/dialog";
 import { Input } from "@/components/ui/input";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { Badge } from "@/components/ui/badge";
@@ -11,7 +20,8 @@ import {
     AlertTriangle,
     XCircle,
     FileText,
-    MessageSquare
+    MessageSquare,
+    Eye
 } from "lucide-react";
 
 interface MessageHistoryProps {
@@ -24,6 +34,8 @@ interface MessageHistoryProps {
 }
 
 export function MessageHistory({ messages, isLoading, filters, onFilterChange, onResend, formatTimestamp }: MessageHistoryProps) {
+    const [selectedMessage, setSelectedMessage] = useState<any>(null);
+
     const getStatusBadge = (status: string) => {
         switch (status) {
             case 'delivered':
@@ -133,17 +145,28 @@ export function MessageHistory({ messages, isLoading, filters, onFilterChange, o
                                             {getStatusBadge(msg.status)}
                                         </td>
                                         <td className="py-4 px-6">
-                                            {msg.status === 'failed' && (
+                                            <div className="flex items-center space-x-2">
                                                 <Button
                                                     variant="ghost"
                                                     size="sm"
-                                                    onClick={() => onResend(msg.id)}
-                                                    className="text-primary hover:text-primary hover:bg-primary/10"
+                                                    onClick={() => setSelectedMessage(msg)}
+                                                    className="text-blue-500 hover:text-blue-600 hover:bg-blue-50 dark:hover:bg-blue-900/20"
                                                 >
-                                                    <RefreshCw className="w-4 h-4 mr-1" />
-                                                    Resend
+                                                    <Eye className="w-4 h-4 mr-1" />
+                                                    View
                                                 </Button>
-                                            )}
+                                                {msg.status === 'failed' && (
+                                                    <Button
+                                                        variant="ghost"
+                                                        size="sm"
+                                                        onClick={() => onResend(msg.id)}
+                                                        className="text-primary hover:text-primary hover:bg-primary/10"
+                                                    >
+                                                        <RefreshCw className="w-4 h-4 mr-1" />
+                                                        Resend
+                                                    </Button>
+                                                )}
+                                            </div>
                                         </td>
                                     </tr>
                                 ))
@@ -151,7 +174,64 @@ export function MessageHistory({ messages, isLoading, filters, onFilterChange, o
                         </tbody>
                     </table>
                 </div>
-            </CardContent>
-        </Card>
+            </CardContent >
+
+            <Dialog open={!!selectedMessage} onOpenChange={(open) => !open && setSelectedMessage(null)}>
+                <DialogContent className="sm:max-w-[600px]">
+                    <DialogHeader>
+                        <DialogTitle>Message Details</DialogTitle>
+                        <DialogDescription>
+                            View full message content and metadata
+                        </DialogDescription>
+                    </DialogHeader>
+
+                    {selectedMessage && (
+                        <div className="space-y-4">
+                            <div className="grid grid-cols-2 gap-4 text-sm">
+                                <div>
+                                    <span className="font-semibold text-muted-foreground">Status:</span>
+                                    <div className="mt-1">{getStatusBadge(selectedMessage.status)}</div>
+                                </div>
+                                <div>
+                                    <span className="font-semibold text-muted-foreground">Type:</span>
+                                    <div className="mt-1 flex items-center">
+                                        {getTypeIcon(selectedMessage.type)}
+                                        <span className="ml-2 capitalize">{selectedMessage.type}</span>
+                                    </div>
+                                </div>
+                                <div>
+                                    <span className="font-semibold text-muted-foreground">Recipient:</span>
+                                    <div className="mt-1 font-mono">{selectedMessage.to || selectedMessage.phoneNumber}</div>
+                                </div>
+                                <div>
+                                    <span className="font-semibold text-muted-foreground">Timestamp:</span>
+                                    <div className="mt-1">{formatTimestamp(selectedMessage.createdAt)}</div>
+                                </div>
+                            </div>
+
+                            <div className="space-y-2">
+                                <span className="font-semibold text-muted-foreground text-sm">Content:</span>
+                                <div className="p-4 bg-muted/50 rounded-lg text-sm whitespace-pre-wrap max-h-[300px] overflow-y-auto border border-border">
+                                    {selectedMessage.content}
+                                </div>
+                            </div>
+
+                            {selectedMessage.metadata && (
+                                <div className="space-y-2">
+                                    <span className="font-semibold text-muted-foreground text-sm">Metadata:</span>
+                                    <pre className="p-4 bg-muted/50 rounded-lg text-xs font-mono overflow-x-auto border border-border">
+                                        {JSON.stringify(selectedMessage.metadata, null, 2)}
+                                    </pre>
+                                </div>
+                            )}
+                        </div>
+                    )}
+
+                    <DialogFooter>
+                        <Button onClick={() => setSelectedMessage(null)}>Close</Button>
+                    </DialogFooter>
+                </DialogContent>
+            </Dialog>
+        </Card >
     );
 }
