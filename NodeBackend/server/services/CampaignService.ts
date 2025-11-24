@@ -23,10 +23,10 @@ interface BulkSendResult {
 }
 
 export class CampaignService {
-  
+
   async createCampaign(
-    name: string, 
-    originalMessage: string, 
+    name: string,
+    originalMessage: string,
     fixedParams?: Record<string, any>,
     buttons?: Array<{ text: string; url?: string; phoneNumber?: string }>,
     includeStopButton?: boolean
@@ -38,7 +38,7 @@ export class CampaignService {
       buttons: buttons || [],
       includeStopButton: includeStopButton ? 'true' : 'false',
     }).returning();
-    
+
     return campaign;
   }
 
@@ -47,20 +47,34 @@ export class CampaignService {
       .select()
       .from(campaigns)
       .where(eq(campaigns.id, campaignId));
-    
+
     return campaign;
   }
 
   async updateCampaignVariation(campaignId: string, variation: string) {
     const [updated] = await db
       .update(campaigns)
-      .set({ 
+      .set({
         selectedVariation: variation,
         updatedAt: new Date(),
       })
       .where(eq(campaigns.id, campaignId))
       .returning();
-    
+
+    return updated;
+  }
+
+  async updateCampaignAttachment(campaignId: string, filePath: string, fileName: string) {
+    const [updated] = await db
+      .update(campaigns)
+      .set({
+        attachmentPath: filePath,
+        attachmentName: fileName,
+        updatedAt: new Date(),
+      })
+      .where(eq(campaigns.id, campaignId))
+      .returning();
+
     return updated;
   }
 
@@ -72,7 +86,7 @@ export class CampaignService {
         message: variation, // Updated: variation column renamed to message
       })
       .returning();
-    
+
     return saved;
   }
 
@@ -82,7 +96,7 @@ export class CampaignService {
       .from(messageVariations)
       .where(eq(messageVariations.campaignId, campaignId))
       .orderBy(messageVariations.createdAt);
-    
+
     return variations;
   }
 
@@ -96,7 +110,7 @@ export class CampaignService {
     // Remove duplicates based on phone number (keep first occurrence)
     const uniqueContacts: ContactRow[] = [];
     const seenPhones = new Set<string>();
-    
+
     for (const contact of contacts) {
       const cleanPhone = contact.phone.replace(/\D/g, '');
       if (!seenPhones.has(cleanPhone)) {
@@ -125,7 +139,7 @@ export class CampaignService {
     // Update campaign total contacts
     await db
       .update(campaigns)
-      .set({ 
+      .set({
         totalContacts: insertedContacts.length,
         updatedAt: new Date(),
       })
@@ -143,12 +157,12 @@ export class CampaignService {
       .select()
       .from(campaignRecipients)
       .where(eq(campaignRecipients.campaignId, campaignId));
-    
+
     return contacts;
   }
 
   async sendBulkMessages(
-    campaignId: string, 
+    campaignId: string,
     variationMessage: string,
     contactsInput?: ContactRow[]
   ): Promise<BulkSendResult> {
@@ -196,7 +210,7 @@ export class CampaignService {
     for (let i = 0; i < contacts.length; i++) {
       const contact = contacts[i];
       const contactNum = i + 1;
-      
+
       try {
         // Check if number is blocked
         const isBlocked = await storage.isNumberBlocked(contact.phone);
@@ -232,7 +246,7 @@ export class CampaignService {
         let personalizedMessage = variationResult.tweakedMessage
           .replace(/\{\{name\}\}/g, contact.name)
           .replace(/\{\{phone\}\}/g, contact.phone);
-        
+
         // Replace additional placeholders from extra fields
         if (contact.extra) {
           Object.keys(contact.extra).forEach(key => {
@@ -251,24 +265,51 @@ export class CampaignService {
         }
 
         log(`  ↪ Sending personalized message...`);
-        
+
         // Check if stop button should be included
         const includeStop = campaign.includeStopButton === 'true';
-        
-        // Send via WhatsApp service (with buttons if configured)
+
+        // Prepare message with buttons if needed
+        let fullMessage = personalizedMessage;
+
+        // Append buttons to message (similar to WhatsAppService logic)
         if (campaign.buttons && Array.isArray(campaign.buttons) && campaign.buttons.length > 0) {
-          await whatsAppService.sendMessageWithButtons(contact.phone, personalizedMessage, campaign.buttons, includeStop);
-        } else if (includeStop) {
-          // Send with only stop button
-          await whatsAppService.sendMessageWithButtons(contact.phone, personalizedMessage, [], true);
-        } else {
-          await whatsAppService.sendTextMessage(contact.phone, personalizedMessage);
+          fullMessage += '\n\n';
+          for (const btn of campaign.buttons) {
+            if (btn.text) { // Ensure button has text
+              if (btn.url) {
+                fullMessage += `🔗 ${btn.text}: ${btn.url}\n`;
+              } else if (btn.phoneNumber) {
+                fullMessage += `📞 ${btn.text}: ${btn.phoneNumber}\n`;
+              } else {
+                fullMessage += `✅ ${btn.text}\n`;
+              }
+            }
+          }
         }
-        
+
+        if (includeStop) {
+          fullMessage += '\n━━━━━━━━━━━━━━━━━━━━\n';
+          fullMessage += '🚫 *To stop receiving messages*\n';
+          fullMessage += 'Reply with: *STOP*\n';
+        }
+
+        // Send message (with attachment if present)
+        if (campaign.attachmentPath) {
+          await whatsAppService.sendMediaMessage(
+            contact.phone,
+            campaign.attachmentPath,
+            fullMessage.trim()
+          );
+        } else {
+          // Send text message (already includes buttons formatted as text)
+          await whatsAppService.sendTextMessage(contact.phone, fullMessage.trim());
+        }
+
         // Update recipient status
         await db
           .update(campaignRecipients)
-          .set({ 
+          .set({
             status: 'sent',
             sentAt: new Date(),
           })
@@ -292,7 +333,7 @@ export class CampaignService {
       } catch (error: any) {
         failed++;
         const errorReason = error.message || 'Unknown error';
-        
+
         failedList.push({
           phone: contact.phone,
           name: contact.name,
@@ -302,7 +343,7 @@ export class CampaignService {
         // Update recipient status
         await db
           .update(campaignRecipients)
-          .set({ 
+          .set({
             status: 'failed',
             errorReason,
           })
@@ -314,7 +355,7 @@ export class CampaignService {
           );
 
         log(`  ❌ Failed to send to ${contact.name} (${contact.phone}): ${errorReason}`);
-        
+
         // Continue with next contact after a shorter delay
         if (i < contacts.length - 1) {
           log(`  ⏳ Waiting 10 seconds before next attempt...`);

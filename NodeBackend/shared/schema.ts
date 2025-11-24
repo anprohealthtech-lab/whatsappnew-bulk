@@ -42,6 +42,8 @@ export const campaigns = pgTable("campaigns", {
   buttons: jsonb("buttons"), // Array of { text: string; url?: string; phoneNumber?: string }
   includeStopButton: text("include_stop_button").default("false"), // "true" or "false"
   totalContacts: integer("total_contacts").default(0),
+  attachmentPath: text("attachment_path"),
+  attachmentName: text("attachment_name"),
   createdAt: timestamp("created_at").defaultNow(),
   updatedAt: timestamp("updated_at").defaultNow(),
 });

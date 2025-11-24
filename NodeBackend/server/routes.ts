@@ -87,7 +87,7 @@ export async function registerRoutes(app: Express): Promise<Server> {
   const setupWhatsAppEventListeners = () => {
     // Don't remove all listeners as it breaks ongoing QR code broadcasting
     // Only set up listeners if they don't exist already
-    
+
     whatsAppService.on('qr-code', (data) => {
       console.log('🎯 ROUTES: Received qr-code event from WhatsApp service');
       console.log('🎯 QR Data received:', data);
@@ -125,13 +125,13 @@ export async function registerRoutes(app: Express): Promise<Server> {
 
     whatsAppService.on('button-clicked', async (data) => {
       console.log('📱 Button clicked event received:', data);
-      
+
       // Handle STOP_MESSAGES button
       if (data.buttonId === 'STOP_MESSAGES') {
         try {
           await storage.addToBlocklist(data.phoneNumber, 'user_requested');
           console.log(`✅ Added ${data.phoneNumber} to blocklist`);
-          
+
           // Send confirmation message
           await whatsAppService.sendTextMessage(
             data.phoneNumber,
@@ -141,14 +141,14 @@ export async function registerRoutes(app: Express): Promise<Server> {
           console.error('Failed to block number:', error);
         }
       }
-      
+
       broadcast('button-clicked', data);
     });
 
     // Handle incoming messages
     whatsAppService.on('incoming-message', async (data) => {
       console.log('📥 Incoming message received:', data);
-      
+
       try {
         // Save incoming message to database with retry
         await withRetry(() => storage.createMessage({
@@ -159,7 +159,7 @@ export async function registerRoutes(app: Express): Promise<Server> {
         }));
 
         // Check and trigger auto-responses with retry
-        const responded = await withRetry(() => 
+        const responded = await withRetry(() =>
           autoResponseService.handleIncomingMessage(
             data.phoneNumber,
             data.content
@@ -177,7 +177,7 @@ export async function registerRoutes(app: Express): Promise<Server> {
       }
     });
   };
-  
+
   setupWhatsAppEventListeners();
 
   // API Routes
@@ -194,9 +194,9 @@ export async function registerRoutes(app: Express): Promise<Server> {
       res.json({ success: true, message });
     } catch (error) {
       log(`Send message error: ${error.message}`);
-      res.status(400).json({ 
-        success: false, 
-        error: error.message || 'Failed to send message' 
+      res.status(400).json({
+        success: false,
+        error: error.message || 'Failed to send message'
       });
     }
   });
@@ -212,12 +212,12 @@ export async function registerRoutes(app: Express): Promise<Server> {
       }
 
       const validatedData = sendReportSchema.parse(req.body);
-      
+
       // Save uploaded file with persistent storage for deployment
-      const fileInfo = process.env.DATABASE_URL 
+      const fileInfo = process.env.DATABASE_URL
         ? await persistentFileService.saveFile(req.file)
         : await fileService.saveFile(req.file);
-      
+
       try {
         // Send report message
         const message = await messageService.sendReportMessage(
@@ -242,9 +242,9 @@ export async function registerRoutes(app: Express): Promise<Server> {
       }
     } catch (error) {
       log(`Send report error: ${error.message}`);
-      res.status(400).json({ 
-        success: false, 
-        error: error.message || 'Failed to send report' 
+      res.status(400).json({
+        success: false,
+        error: error.message || 'Failed to send report'
       });
     }
   });
@@ -254,7 +254,7 @@ export async function registerRoutes(app: Express): Promise<Server> {
     const startTime = Date.now();
     const dbHealthy = await getDbHealth();
     const dbLatency = Date.now() - startTime;
-    
+
     const health = {
       success: true,
       message: 'Server is running',
@@ -288,9 +288,9 @@ export async function registerRoutes(app: Express): Promise<Server> {
       });
     } catch (error) {
       log(`Status error: ${error.message}`);
-      res.status(500).json({ 
-        success: false, 
-        error: 'Failed to get system status' 
+      res.status(500).json({
+        success: false,
+        error: 'Failed to get system status'
       });
     }
   });
@@ -299,7 +299,7 @@ export async function registerRoutes(app: Express): Promise<Server> {
   app.get('/api/messages', async (req, res) => {
     try {
       const { status, phoneNumber, type, limit = '50', offset = '0', search } = req.query;
-      
+
       const filters: any = {
         limit: parseInt(limit as string),
         offset: parseInt(offset as string),
@@ -315,7 +315,7 @@ export async function registerRoutes(app: Express): Promise<Server> {
       let { messages } = result;
       if (search && typeof search === 'string') {
         const searchLower = search.toLowerCase();
-        messages = messages.filter(msg => 
+        messages = messages.filter(msg =>
           msg.content.toLowerCase().includes(searchLower) ||
           msg.phoneNumber.includes(search) ||
           (msg.sampleId && msg.sampleId.toLowerCase().includes(searchLower))
@@ -333,9 +333,9 @@ export async function registerRoutes(app: Express): Promise<Server> {
       });
     } catch (error) {
       log(`Get messages error: ${error.message}`);
-      res.status(500).json({ 
-        success: false, 
-        error: 'Failed to get message history' 
+      res.status(500).json({
+        success: false,
+        error: 'Failed to get message history'
       });
     }
   });
@@ -361,18 +361,18 @@ export async function registerRoutes(app: Express): Promise<Server> {
       // Return the last generated QR code
       const currentQR = whatsAppService.getCurrentQR();
       if (currentQR) {
-        res.json({ 
-          success: true, 
-          data: { 
-            qr: currentQR.qr, 
+        res.json({
+          success: true,
+          data: {
+            qr: currentQR.qr,
             generated: currentQR.timestamp,
             message: 'QR code available for scanning'
-          } 
+          }
         });
       } else {
-        res.json({ 
-          success: false, 
-          message: 'No QR code available. WhatsApp service initializing...' 
+        res.json({
+          success: false,
+          message: 'No QR code available. WhatsApp service initializing...'
         });
       }
     } catch (error: any) {
@@ -388,16 +388,16 @@ export async function registerRoutes(app: Express): Promise<Server> {
   app.get('/api/whatsapp/status', async (req, res) => {
     try {
       const status = whatsAppService.getStatus();
-      res.json({ 
-        success: true, 
+      res.json({
+        success: true,
         data: status
       });
     } catch (error) {
       const errorMessage = error instanceof Error ? error.message : 'Unknown error';
       log(`WhatsApp status error: ${errorMessage}`);
-      res.status(500).json({ 
-        success: false, 
-        error: 'Failed to get WhatsApp status' 
+      res.status(500).json({
+        success: false,
+        error: 'Failed to get WhatsApp status'
       });
     }
   });
@@ -406,18 +406,18 @@ export async function registerRoutes(app: Express): Promise<Server> {
     try {
       // Re-setup event listeners before connecting
       setupWhatsAppEventListeners();
-      
+
       const result = await whatsAppService.initialize();
-      res.json({ 
-        success: true, 
+      res.json({
+        success: true,
         message: 'WhatsApp connection initiated'
       });
     } catch (error) {
       const errorMessage = error instanceof Error ? error.message : 'Unknown error';
       log(`WhatsApp connect error: ${errorMessage}`);
-      res.status(400).json({ 
-        success: false, 
-        error: errorMessage || 'Failed to connect to WhatsApp' 
+      res.status(400).json({
+        success: false,
+        error: errorMessage || 'Failed to connect to WhatsApp'
       });
     }
   });
@@ -425,16 +425,16 @@ export async function registerRoutes(app: Express): Promise<Server> {
   app.post('/api/whatsapp/disconnect', async (req, res) => {
     try {
       await whatsAppService.disconnect();
-      res.json({ 
-        success: true, 
+      res.json({
+        success: true,
         message: 'WhatsApp disconnected successfully'
       });
     } catch (error) {
       const errorMessage = error instanceof Error ? error.message : 'Unknown error';
       log(`WhatsApp disconnect error: ${errorMessage}`);
-      res.status(400).json({ 
-        success: false, 
-        error: errorMessage || 'Failed to disconnect from WhatsApp' 
+      res.status(400).json({
+        success: false,
+        error: errorMessage || 'Failed to disconnect from WhatsApp'
       });
     }
   });
@@ -443,16 +443,16 @@ export async function registerRoutes(app: Express): Promise<Server> {
     try {
       // For now, return a placeholder since qrCode isn't in the status type
       // The QR code will be handled via WebSocket events
-      res.json({ 
-        success: false, 
-        error: 'QR code available via WebSocket events only. Use /api/generate-qr endpoint.' 
+      res.json({
+        success: false,
+        error: 'QR code available via WebSocket events only. Use /api/generate-qr endpoint.'
       });
     } catch (error) {
       const errorMessage = error instanceof Error ? error.message : 'Unknown error';
       log(`WhatsApp QR error: ${errorMessage}`);
-      res.status(500).json({ 
-        success: false, 
-        error: 'Failed to get QR code' 
+      res.status(500).json({
+        success: false,
+        error: 'Failed to get QR code'
       });
     }
   });
@@ -462,14 +462,14 @@ export async function registerRoutes(app: Express): Promise<Server> {
     try {
       const { id } = req.params;
       const message = await messageService.resendMessage(id);
-      
+
       res.json({ success: true, message });
     } catch (error) {
       const errorMessage = error instanceof Error ? error.message : 'Unknown error';
       log(`Resend message error: ${errorMessage}`);
-      res.status(400).json({ 
-        success: false, 
-        error: errorMessage || 'Failed to resend message' 
+      res.status(400).json({
+        success: false,
+        error: errorMessage || 'Failed to resend message'
       });
     }
   });
@@ -487,9 +487,9 @@ export async function registerRoutes(app: Express): Promise<Server> {
     } catch (error) {
       const errorMessage = error instanceof Error ? error.message : 'Unknown error';
       log(`Get logs error: ${errorMessage}`);
-      res.status(500).json({ 
-        success: false, 
-        error: 'Failed to get system logs' 
+      res.status(500).json({
+        success: false,
+        error: 'Failed to get system logs'
       });
     }
   });
@@ -512,9 +512,44 @@ export async function registerRoutes(app: Express): Promise<Server> {
     } catch (error) {
       const errorMessage = error instanceof Error ? error.message : 'Unknown error';
       log(`Create campaign error: ${errorMessage}`);
-      res.status(400).json({ 
-        success: false, 
-        error: errorMessage 
+      res.status(400).json({
+        success: false,
+        error: errorMessage
+      });
+    }
+  });
+
+  // Upload attachment for campaign
+  app.post('/api/campaigns/:campaignId/attachment', upload.single('file'), async (req, res) => {
+    try {
+      const { campaignId } = req.params;
+
+      if (!req.file) {
+        return res.status(400).json({
+          success: false,
+          error: 'No file provided'
+        });
+      }
+
+      // Save uploaded file
+      const fileInfo = process.env.DATABASE_URL
+        ? await persistentFileService.saveFile(req.file)
+        : await fileService.saveFile(req.file);
+
+      // Update campaign with attachment path
+      const campaign = await campaignService.updateCampaignAttachment(
+        campaignId,
+        fileInfo.filePath,
+        fileInfo.fileName
+      );
+
+      res.json({ success: true, data: campaign });
+    } catch (error) {
+      const errorMessage = error instanceof Error ? error.message : 'Unknown error';
+      log(`Upload attachment error: ${errorMessage}`);
+      res.status(400).json({
+        success: false,
+        error: errorMessage
       });
     }
   });
@@ -526,9 +561,9 @@ export async function registerRoutes(app: Express): Promise<Server> {
       const campaign = await campaignService.getCampaign(campaignId);
 
       if (!campaign) {
-        return res.status(404).json({ 
-          success: false, 
-          error: 'Campaign not found' 
+        return res.status(404).json({
+          success: false,
+          error: 'Campaign not found'
         });
       }
 
@@ -536,9 +571,9 @@ export async function registerRoutes(app: Express): Promise<Server> {
     } catch (error) {
       const errorMessage = error instanceof Error ? error.message : 'Unknown error';
       log(`Get campaign error: ${errorMessage}`);
-      res.status(500).json({ 
-        success: false, 
-        error: errorMessage 
+      res.status(500).json({
+        success: false,
+        error: errorMessage
       });
     }
   });
@@ -582,9 +617,9 @@ export async function registerRoutes(app: Express): Promise<Server> {
     } catch (error) {
       const errorMessage = error instanceof Error ? error.message : 'Unknown error';
       log(`Upload contacts error: ${errorMessage}`);
-      res.status(400).json({ 
-        success: false, 
-        error: errorMessage 
+      res.status(400).json({
+        success: false,
+        error: errorMessage
       });
     }
   });
@@ -595,17 +630,17 @@ export async function registerRoutes(app: Express): Promise<Server> {
       const { campaignId } = req.params;
       const contacts = await campaignService.getContacts(campaignId);
 
-      res.json({ 
-        success: true, 
+      res.json({
+        success: true,
         data: contacts,
-        total: contacts.length 
+        total: contacts.length
       });
     } catch (error) {
       const errorMessage = error instanceof Error ? error.message : 'Unknown error';
       log(`Get contacts error: ${errorMessage}`);
-      res.status(500).json({ 
-        success: false, 
-        error: errorMessage 
+      res.status(500).json({
+        success: false,
+        error: errorMessage
       });
     }
   });
@@ -630,9 +665,9 @@ export async function registerRoutes(app: Express): Promise<Server> {
     } catch (error) {
       const errorMessage = error instanceof Error ? error.message : 'Unknown error';
       log(`Save variation error: ${errorMessage}`);
-      res.status(400).json({ 
-        success: false, 
-        error: errorMessage 
+      res.status(400).json({
+        success: false,
+        error: errorMessage
       });
     }
   });
@@ -643,16 +678,16 @@ export async function registerRoutes(app: Express): Promise<Server> {
       const { campaignId } = req.params;
       const variations = await campaignService.getMessageVariations(campaignId);
 
-      res.json({ 
-        success: true, 
-        data: variations 
+      res.json({
+        success: true,
+        data: variations
       });
     } catch (error) {
       const errorMessage = error instanceof Error ? error.message : 'Unknown error';
       log(`Get variations error: ${errorMessage}`);
-      res.status(500).json({ 
-        success: false, 
-        error: errorMessage 
+      res.status(500).json({
+        success: false,
+        error: errorMessage
       });
     }
   });
@@ -673,9 +708,9 @@ export async function registerRoutes(app: Express): Promise<Server> {
     } catch (error) {
       const errorMessage = error instanceof Error ? error.message : 'Unknown error';
       log(`Bulk send error: ${errorMessage}`);
-      res.status(400).json({ 
-        success: false, 
-        error: errorMessage 
+      res.status(400).json({
+        success: false,
+        error: errorMessage
       });
     }
   });
@@ -684,13 +719,13 @@ export async function registerRoutes(app: Express): Promise<Server> {
   app.post('/api/blocklist/add', async (req, res) => {
     try {
       const { phoneNumber, reason } = req.body;
-      
+
       if (!phoneNumber) {
         return res.status(400).json({ success: false, error: 'Phone number is required' });
       }
 
       await storage.addToBlocklist(phoneNumber, reason || 'user_requested');
-      
+
       log(`Blocked number: ${phoneNumber}`);
       res.json({ success: true, message: 'Number blocked successfully' });
     } catch (error) {
@@ -704,13 +739,13 @@ export async function registerRoutes(app: Express): Promise<Server> {
   app.post('/api/blocklist/remove', async (req, res) => {
     try {
       const { phoneNumber } = req.body;
-      
+
       if (!phoneNumber) {
         return res.status(400).json({ success: false, error: 'Phone number is required' });
       }
 
       await storage.removeFromBlocklist(phoneNumber);
-      
+
       log(`Unblocked number: ${phoneNumber}`);
       res.json({ success: true, message: 'Number unblocked successfully' });
     } catch (error) {
@@ -725,7 +760,7 @@ export async function registerRoutes(app: Express): Promise<Server> {
     try {
       const { phoneNumber } = req.params;
       const isBlocked = await storage.isNumberBlocked(phoneNumber);
-      
+
       res.json({ isBlocked });
     } catch (error) {
       const errorMessage = error instanceof Error ? error.message : 'Unknown error';
@@ -747,7 +782,7 @@ export async function registerRoutes(app: Express): Promise<Server> {
   });
 
   // Auto-response routes
-  
+
   // Get all auto-responses (active only)
   app.get('/api/auto-responses', async (req, res) => {
     try {
@@ -779,11 +814,11 @@ export async function registerRoutes(app: Express): Promise<Server> {
   app.post('/api/auto-responses', async (req, res) => {
     try {
       const { keyword, response, isActive } = req.body;
-      
+
       if (!keyword || !response) {
-        return res.status(400).json({ 
-          success: false, 
-          error: 'Keyword and response are required' 
+        return res.status(400).json({
+          success: false,
+          error: 'Keyword and response are required'
         });
       }
 
@@ -817,9 +852,9 @@ export async function registerRoutes(app: Express): Promise<Server> {
       }));
 
       if (!autoResponse) {
-        return res.status(404).json({ 
-          success: false, 
-          error: 'Auto-response not found' 
+        return res.status(404).json({
+          success: false,
+          error: 'Auto-response not found'
         });
       }
 

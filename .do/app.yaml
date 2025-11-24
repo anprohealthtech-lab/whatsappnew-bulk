@@ -2,13 +2,15 @@
 # DigitalOcean App Platform Configuration
 # This file configures deployment to DigitalOcean App Platform
 #
-name: whatsapp-lims-app
+name: whatsapp-management-app
 
 services:
-- name: whatsapp-lims-api
+- name: whatsapp-api
   github:
-    repo: anprohealthtech-lab/WHATSAPP-PERSISTENT
-    branch: master
+    repo: YOUR-USERNAME/YOUR-REPO-NAME  # ⚠️ UPDATE THIS with your new GitHub repo
+    branch: main  # or 'master' depending on your default branch
+    deploy_on_push: true
+  
   build_command: npm run build
   run_command: npm start
   environment_slug: node-js
@@ -36,46 +38,47 @@ services:
     
   - key: ALLOWED_FILE_TYPES
     value: "pdf,jpg,jpeg,png"
+  
+  # Optional: Add these if using Supabase for campaigns
+  # - key: VITE_SUPABASE_URL
+  #   scope: RUN_AND_BUILD_TIME
+  #   type: SECRET
+  #   
+  # - key: VITE_SUPABASE_ANON_KEY
+  #   scope: RUN_AND_BUILD_TIME
+  #   type: SECRET
 
   health_check:
-    http_path: /api/health
+    http_path: /api/status
     initial_delay_seconds: 30
     period_seconds: 30
     timeout_seconds: 10
     failure_threshold: 3
-
-# Optional: Static site service if you want to serve frontend separately
-# - name: whatsapp-lims-frontend  
-#   source_dir: /NodeBackend
-#   build_command: |
-#     npm ci
-#     npm run build:frontend
-#   output_dir: /dist
-#   type: STATIC_SITE
+  
+  # IMPORTANT: Volume for WhatsApp session persistence
+  # Uncomment this to prevent WhatsApp disconnections on redeploy
+  # volumes:
+  # - name: whatsapp-sessions
+  #   size: 2GiB
+  #   mount_path: /app/NodeBackend/.local
 
 databases:
-- name: whatsapp-lims-db
+- name: whatsapp-db
   engine: PG
   version: "15"
   size: db-s-1vcpu-1gb
   num_nodes: 1
 
 # Optional: Add Redis for session storage in production
-# - name: whatsapp-lims-redis
+# - name: whatsapp-redis
 #   engine: REDIS
 #   version: "7"
 #   size: db-s-1vcpu-1gb
 
-# Storage for persistent files (consider for uploads)
-# volumes:
-# - name: uploads-storage
-#   size: 5GiB
-#   mount_path: /app/uploads
-
-# Domain configuration
-domains:
-- domain: your-domain.com
-  type: PRIMARY
-  wildcard: false
-  certificate:
-    type: LETS_ENCRYPT
+# Optional: Domain configuration
+# domains:
+# - domain: your-domain.com
+#   type: PRIMARY
+#   wildcard: false
+#   certificate:
+#     type: LETS_ENCRYPT

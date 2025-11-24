@@ -16,12 +16,7 @@ interface Campaign {
   fixedParams: Record<string, any>;
   selectedVariation?: string;
   totalContacts: number;
-}
-
-interface Contact {
-  name: string;
-  phone: string;
-  extra?: Record<string, any>;
+  attachmentName?: string;
 }
 
 interface MessageVariation {
@@ -62,6 +57,7 @@ export function CampaignMessageVariationPanel({
   const [buttons, setButtons] = useState<Array<{ text: string; url?: string }>>([]);
   const [showButtons, setShowButtons] = useState(false);
   const [includeStopButton, setIncludeStopButton] = useState(false);
+  const [attachmentFile, setAttachmentFile] = useState<File | null>(null);
 
   // Extract placeholders from message
   const extractPlaceholders = (message: string): string[] => {
@@ -175,12 +171,30 @@ export function CampaignMessageVariationPanel({
       const data = await response.json();
 
       if (data.success) {
-        setCampaignId(data.data.id);
+        const newCampaignId = data.data.id;
+
+        // Upload attachment if present
+        if (attachmentFile) {
+          try {
+            const formData = new FormData();
+            formData.append('file', attachmentFile);
+            await fetch(`/api/campaigns/${newCampaignId}/attachment`, {
+              method: 'POST',
+              body: formData,
+            });
+          } catch (uploadErr) {
+            console.error('Failed to upload attachment:', uploadErr);
+            // Don't fail the whole campaign creation, just log it
+          }
+        }
+
+        setCampaignId(newCampaignId);
         setCampaign(data.data);
         setSuccess('Campaign created successfully!');
         setNewCampaignName('');
         setOriginalMessage('');
         setFixedParams({});
+        setAttachmentFile(null);
       } else {
         setError(data.error);
       }
@@ -487,6 +501,37 @@ export function CampaignMessageVariationPanel({
             )}
           </div>
 
+          {/* Attachment Upload */}
+          <div className="space-y-2 border border-border rounded-xl p-6 bg-accent/20">
+            <Label htmlFor="attachment" className="text-base font-semibold flex items-center">
+              <Upload className="w-4 h-4 mr-2" />
+              Attachment (Optional)
+            </Label>
+            <div className="border-2 border-dashed border-border rounded-xl p-6 text-center hover:border-primary/50 hover:bg-primary/5 transition-all duration-300 cursor-pointer group bg-background/50">
+              <input
+                type="file"
+                id="attachment"
+                onChange={(e) => setAttachmentFile(e.target.files?.[0] || null)}
+                className="hidden"
+              />
+              <label htmlFor="attachment" className="cursor-pointer w-full h-full block">
+                {attachmentFile ? (
+                  <div className="flex items-center justify-center text-primary">
+                    <FileText className="w-8 h-8 mr-2" />
+                    <span className="font-medium">{attachmentFile.name}</span>
+                  </div>
+                ) : (
+                  <>
+                    <Upload className="w-8 h-8 mx-auto mb-2 text-muted-foreground group-hover:text-primary transition-colors" />
+                    <p className="font-medium text-sm text-foreground">
+                      Click to upload image or document
+                    </p>
+                  </>
+                )}
+              </label>
+            </div>
+          </div>
+
           <Button onClick={createCampaign} className="w-full bg-primary hover:bg-primary/90 text-primary-foreground shadow-lg shadow-primary/20">
             Create Campaign
           </Button>
@@ -521,9 +566,20 @@ export function CampaignMessageVariationPanel({
                 </div>
               </div>
             </div>
+
+            {campaign.attachmentName && (
+              <div>
+                <Label className="text-xs uppercase tracking-wider text-muted-foreground">Attachment</Label>
+                <div className="mt-2 p-3 bg-muted/50 rounded-xl border border-border text-sm flex items-center">
+                  <FileText className="w-4 h-4 mr-2 text-primary" />
+                  {campaign.attachmentName}
+                </div>
+              </div>
+            )}
           </CardContent>
         </Card>
-      )}
+      )
+      }
 
       {/* Upload Recipients Panel */}
       <Card className="border-none shadow-lg bg-white/50 dark:bg-zinc-900/50 backdrop-blur-sm">
@@ -707,7 +763,7 @@ export function CampaignMessageVariationPanel({
           </p>
         </CardContent>
       </Card>
-    </div>
+    </div >
   );
 }
 
