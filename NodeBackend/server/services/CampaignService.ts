@@ -161,11 +161,21 @@ export class CampaignService {
     return contacts;
   }
 
+  private stopFlags = new Map<string, boolean>();
+
+  stopCampaign(campaignId: string) {
+    this.stopFlags.set(campaignId, true);
+    log(`🛑 Stop signal received for campaign ${campaignId}`);
+  }
+
   async sendBulkMessages(
     campaignId: string,
     variationMessage: string,
     contactsInput?: ContactRow[]
   ): Promise<BulkSendResult> {
+    // Reset stop flag
+    this.stopFlags.set(campaignId, false);
+
     // Get campaign
     const campaign = await this.getCampaign(campaignId);
     if (!campaign) {
@@ -191,6 +201,7 @@ export class CampaignService {
 
     log(`🚀 Starting bulk send for campaign ${campaignId} - ${contacts.length} contacts`);
     log(`📝 Original message: ${campaign.originalMessage}`);
+    log(`📎 Attachment path: ${campaign.attachmentPath || 'None'}`);
     log(`🔧 Fixed params: ${JSON.stringify(campaign.fixedParams)}`);
 
     // Pre-warm 3 variations to have ready immediately
@@ -208,6 +219,12 @@ export class CampaignService {
 
     // Send messages with on-demand variation generation
     for (let i = 0; i < contacts.length; i++) {
+      // Check for stop signal
+      if (this.stopFlags.get(campaignId)) {
+        log(`🛑 Campaign ${campaignId} stopped by user request.`);
+        break;
+      }
+
       const contact = contacts[i];
       const contactNum = i + 1;
 
@@ -296,6 +313,7 @@ export class CampaignService {
 
         // Send message (with attachment if present)
         if (campaign.attachmentPath) {
+          log(`  📎 Sending with attachment: ${campaign.attachmentPath}`);
           await whatsAppService.sendMediaMessage(
             contact.phone,
             campaign.attachmentPath,
@@ -327,7 +345,12 @@ export class CampaignService {
         if (i < contacts.length - 1) {
           const delaySeconds = 60 + Math.floor(Math.random() * 31); // 60-90 seconds
           log(`  ⏳ Waiting ${delaySeconds} seconds before next message...`);
-          await this.delay(delaySeconds * 1000);
+
+          // Check for stop signal during delay
+          for (let d = 0; d < delaySeconds; d++) {
+            if (this.stopFlags.get(campaignId)) break;
+            await this.delay(1000);
+          }
         }
 
       } catch (error: any) {

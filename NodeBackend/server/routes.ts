@@ -554,6 +554,30 @@ export async function registerRoutes(app: Express): Promise<Server> {
     }
   });
 
+  // Download campaign attachment
+  app.get('/api/campaigns/:campaignId/attachment/download', async (req, res) => {
+    try {
+      const { campaignId } = req.params;
+      const campaign = await campaignService.getCampaign(campaignId);
+
+      if (!campaign || !campaign.attachmentPath) {
+        return res.status(404).json({
+          success: false,
+          error: 'Attachment not found'
+        });
+      }
+
+      res.download(campaign.attachmentPath, campaign.attachmentName || 'attachment');
+    } catch (error) {
+      const errorMessage = error instanceof Error ? error.message : 'Unknown error';
+      log(`Download attachment error: ${errorMessage}`);
+      res.status(500).json({
+        success: false,
+        error: errorMessage
+      });
+    }
+  });
+
   // Get campaign
   app.get('/api/campaigns/:campaignId', async (req, res) => {
     try {

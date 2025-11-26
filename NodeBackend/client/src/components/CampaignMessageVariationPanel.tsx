@@ -7,7 +7,7 @@ import { Textarea } from '@/components/ui/textarea';
 import { Badge } from '@/components/ui/badge';
 import { Alert, AlertDescription } from '@/components/ui/alert';
 import { Checkbox } from '@/components/ui/checkbox';
-import { Loader2, Upload, Send, RefreshCw, Plus, Trash2, Link, MessageSquare, AlertCircle, FileText, Users } from 'lucide-react';
+import { Loader2, Upload, Send, RefreshCw, Plus, Trash2, Link, MessageSquare, AlertCircle, FileText, Users, Download } from 'lucide-react';
 
 interface Campaign {
   id: string;
@@ -23,6 +23,12 @@ interface MessageVariation {
   id: string;
   variation: string;
   createdAt: string;
+}
+
+interface Contact {
+  name: string;
+  phone: string;
+  extra?: Record<string, any>;
 }
 
 interface CampaignMessageVariationPanelProps {
@@ -249,6 +255,36 @@ export function CampaignMessageVariationPanel({
       setError('Failed to generate variation: ' + err.message);
     } finally {
       setIsGenerating(false);
+    }
+  };
+
+  const handleAttachmentUpdate = async (file: File) => {
+    if (!campaignId) return;
+
+    try {
+      setIsUploading(true);
+      setError('');
+
+      const formData = new FormData();
+      formData.append('file', file);
+
+      const response = await fetch(`/api/campaigns/${campaignId}/attachment`, {
+        method: 'POST',
+        body: formData,
+      });
+
+      const data = await response.json();
+
+      if (data.success) {
+        setSuccess('Attachment updated successfully!');
+        await loadCampaign();
+      } else {
+        setError(data.error);
+      }
+    } catch (err: any) {
+      setError('Failed to upload attachment: ' + err.message);
+    } finally {
+      setIsUploading(false);
     }
   };
 
@@ -567,15 +603,83 @@ export function CampaignMessageVariationPanel({
               </div>
             </div>
 
-            {campaign.attachmentName && (
-              <div>
-                <Label className="text-xs uppercase tracking-wider text-muted-foreground">Attachment</Label>
-                <div className="mt-2 p-3 bg-muted/50 rounded-xl border border-border text-sm flex items-center">
-                  <FileText className="w-4 h-4 mr-2 text-primary" />
-                  {campaign.attachmentName}
+            <div className="space-y-2 mt-4">
+              <Label className="text-xs uppercase tracking-wider text-muted-foreground">Attachment</Label>
+
+              {campaign.attachmentName ? (
+                <div className="p-3 bg-muted/50 rounded-xl border border-border text-sm flex items-center justify-between">
+                  <div className="flex items-center overflow-hidden">
+                    <FileText className="w-4 h-4 mr-2 text-primary flex-shrink-0" />
+                    <span className="truncate">{campaign.attachmentName}</span>
+                  </div>
+                  <div className="flex items-center gap-2 flex-shrink-0">
+                    <Button
+                      variant="ghost"
+                      size="sm"
+                      onClick={() => window.open(`/api/campaigns/${campaignId}/attachment/download`, '_blank')}
+                      className="h-8 px-2"
+                    >
+                      <Download className="w-4 h-4 mr-1" />
+                      Download
+                    </Button>
+                    <div className="relative">
+                      <input
+                        type="file"
+                        id="update-attachment"
+                        className="hidden"
+                        onChange={(e) => {
+                          const file = e.target.files?.[0];
+                          if (file) handleAttachmentUpdate(file);
+                        }}
+                      />
+                      <Button
+                        variant="ghost"
+                        size="sm"
+                        className="h-8 px-2"
+                        disabled={isUploading}
+                        onClick={() => document.getElementById('update-attachment')?.click()}
+                      >
+                        {isUploading ? (
+                          <Loader2 className="w-4 h-4 animate-spin" />
+                        ) : (
+                          <>
+                            <Upload className="w-4 h-4 mr-1" />
+                            Update
+                          </>
+                        )}
+                      </Button>
+                    </div>
+                  </div>
                 </div>
-              </div>
-            )}
+              ) : (
+                <div className="border-2 border-dashed border-border rounded-xl p-4 text-center hover:border-primary/50 hover:bg-primary/5 transition-all duration-300 cursor-pointer group bg-background/50">
+                  <input
+                    type="file"
+                    id="add-attachment"
+                    className="hidden"
+                    onChange={(e) => {
+                      const file = e.target.files?.[0];
+                      if (file) handleAttachmentUpdate(file);
+                    }}
+                  />
+                  <label htmlFor="add-attachment" className="cursor-pointer w-full h-full flex flex-col items-center justify-center py-2">
+                    {isUploading ? (
+                      <Loader2 className="w-6 h-6 text-muted-foreground animate-spin" />
+                    ) : (
+                      <>
+                        <Upload className="w-6 h-6 mb-2 text-muted-foreground group-hover:text-primary transition-colors" />
+                        <p className="font-medium text-sm text-foreground">
+                          Upload Attachment
+                        </p>
+                        <p className="text-xs text-muted-foreground">
+                          Click to add a file
+                        </p>
+                      </>
+                    )}
+                  </label>
+                </div>
+              )}
+            </div>
           </CardContent>
         </Card>
       )
@@ -744,17 +848,39 @@ export function CampaignMessageVariationPanel({
             </div>
           </div>
 
-          <Button
-            onClick={sendBulkMessages}
-            disabled={isSending || !selectedVariation || contacts.length === 0}
-            className="w-full h-12 text-lg bg-primary hover:bg-primary/90 text-primary-foreground shadow-lg shadow-primary/20"
-          >
-            {isSending ? (
-              <><Loader2 className="mr-2 h-5 w-5 animate-spin" /> Sending Campaign...</>
-            ) : (
-              <><Send className="mr-2 h-5 w-5" /> Send to All Contacts</>
+          <div className="flex gap-4">
+            <Button
+              onClick={sendBulkMessages}
+              disabled={isSending || !selectedVariation || contacts.length === 0}
+              className="flex-1 h-12 text-lg bg-primary hover:bg-primary/90 text-primary-foreground shadow-lg shadow-primary/20"
+            >
+              {isSending ? (
+                <><Loader2 className="mr-2 h-5 w-5 animate-spin" /> Sending Campaign...</>
+              ) : (
+                <><Send className="mr-2 h-5 w-5" /> Send to All Contacts</>
+              )}
+            </Button>
+
+            {isSending && (
+              <Button
+                onClick={async () => {
+                  if (confirm('Are you sure you want to stop the campaign?')) {
+                    try {
+                      await fetch(`/api/campaigns/${campaignId}/stop`, { method: 'POST' });
+                      setSuccess('Campaign stopped successfully');
+                      setIsSending(false);
+                    } catch (err) {
+                      console.error('Failed to stop campaign:', err);
+                    }
+                  }
+                }}
+                variant="destructive"
+                className="h-12 px-6"
+              >
+                <Trash2 className="mr-2 h-5 w-5" /> Stop
+              </Button>
             )}
-          </Button>
+          </div>
 
           <p className="text-sm text-center text-muted-foreground">
             {contacts.length > 0 && (

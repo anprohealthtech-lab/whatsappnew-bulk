@@ -19,18 +19,19 @@ export class PersistentFileService {
     }
   }
 
-  async saveFile(file: Express.Multer.File): Promise<{ fileUrl: string; fileName: string; fileSize: number }> {
+  async saveFile(file: { originalname: string; size: number; mimetype: string; buffer: Buffer }): Promise<{ fileUrl: string; fileName: string; filePath: string; fileSize: number }> {
     await this.ensureUploadDirectory();
-    
+
     const fileExtension = path.extname(file.originalname || '');
     const fileName = `${randomUUID()}${fileExtension}`;
     const filePath = path.join(this.uploadDir, fileName);
-    
+
     await fs.writeFile(filePath, file.buffer);
-    
+
     return {
       fileUrl: `/uploads/${fileName}`,
       fileName,
+      filePath,
       fileSize: file.size
     };
   }
