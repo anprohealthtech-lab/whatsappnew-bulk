@@ -341,9 +341,9 @@ export class CampaignService {
         sent++;
         log(`  ✅ Message sent successfully to ${contact.name}`);
 
-        // Add random delay between messages (60-90 seconds as specified)
+        // Add random delay between messages (20-40 seconds)
         if (i < contacts.length - 1) {
-          const delaySeconds = 60 + Math.floor(Math.random() * 31); // 60-90 seconds
+          const delaySeconds = 20 + Math.floor(Math.random() * 21); // 20-40 seconds
           log(`  ⏳ Waiting ${delaySeconds} seconds before next message...`);
 
           // Check for stop signal during delay
