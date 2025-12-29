@@ -32,7 +32,7 @@ export async function initializeChatbotConfig() {
         "Price"
       ],
       ragBaseUrl: "https://tnfqq3vcirfyalnqzg3c4wwy.agents.do-ai.run",
-      ragAccessKey: "", // Add your access key here if needed
+      ragAccessKey: "abc@123",
       contextMessageCount: 5,
       isActive: true,
     };
