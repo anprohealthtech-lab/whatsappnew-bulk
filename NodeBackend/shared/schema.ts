@@ -86,6 +86,30 @@ export const autoResponses = pgTable("auto_responses", {
   updatedAt: timestamp("updated_at").defaultNow(),
 });
 
+export const contacts = pgTable("contacts", {
+  id: varchar("id").primaryKey().default(sql`gen_random_uuid()`),
+  phoneNumber: text("phone_number").notNull().unique(),
+  name: text("name"),
+  isLead: text("is_lead").default("false").notNull(), // "true" or "false"
+  leadTriggerKeyword: text("lead_trigger_keyword"),
+  conversationState: jsonb("conversation_state"),
+  lastMessageAt: timestamp("last_message_at"),
+  createdAt: timestamp("created_at").defaultNow(),
+  updatedAt: timestamp("updated_at").defaultNow(),
+});
+
+export const chatbotConfigs = pgTable("chatbot_configs", {
+  id: varchar("id").primaryKey().default(sql`gen_random_uuid()`),
+  agentName: text("agent_name").notNull(),
+  triggerKeywords: jsonb("trigger_keywords").notNull(), // array of strings
+  ragBaseUrl: text("rag_base_url").notNull(),
+  ragAccessKey: text("rag_access_key").notNull(),
+  contextMessageCount: integer("context_message_count").default(3),
+  isActive: text("is_active").default("true").notNull(), // "true" or "false"
+  createdAt: timestamp("created_at").defaultNow(),
+  updatedAt: timestamp("updated_at").defaultNow(),
+});
+
 export const insertUserSchema = createInsertSchema(users).pick({
   username: true,
   password: true,
@@ -114,6 +138,8 @@ export type CampaignRecipient = typeof campaignRecipients.$inferSelect;
 export type MessageVariation = typeof messageVariations.$inferSelect;
 export type BlockedNumber = typeof blockedNumbers.$inferSelect;
 export type AutoResponse = typeof autoResponses.$inferSelect;
+export type Contact = typeof contacts.$inferSelect;
+export type ChatbotConfig = typeof chatbotConfigs.$inferSelect;
 
 // Additional schemas for API requests
 export const sendMessageSchema = z.object({
@@ -148,7 +174,24 @@ export const bulkSendSchema = z.object({
   })).optional(),
 });
 
+export const chatbotConfigSchema = z.object({
+  agentName: z.string().min(1, "Agent name is required"),
+  triggerKeywords: z.array(z.string()).min(1, "At least one trigger keyword is required"),
+  ragBaseUrl: z.string().url("Valid RAG base URL is required"),
+  ragAccessKey: z.string().min(1, "RAG access key is required"),
+  contextMessageCount: z.number().int().min(1).max(10).optional(),
+  isActive: z.boolean().optional(),
+});
+
+export const flagLeadSchema = z.object({
+  phoneNumber: z.string().min(1, "Phone number is required"),
+  keyword: z.string().optional(),
+  name: z.string().optional(),
+});
+
 export type SendMessageRequest = z.infer<typeof sendMessageSchema>;
 export type SendReportRequest = z.infer<typeof sendReportSchema>;
 export type CreateCampaignRequest = z.infer<typeof createCampaignSchema>;
 export type BulkSendRequest = z.infer<typeof bulkSendSchema>;
+export type ChatbotConfigRequest = z.infer<typeof chatbotConfigSchema>;
+export type FlagLeadRequest = z.infer<typeof flagLeadSchema>;

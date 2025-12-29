@@ -10,7 +10,8 @@ import { fileService } from "./services/FileService";
 import { persistentFileService } from "./services/PersistentFileService";
 import { campaignService } from "./services/CampaignService";
 import { autoResponseService } from "./services/AutoResponseService";
-import { sendMessageSchema, sendReportSchema, createCampaignSchema, bulkSendSchema } from "@shared/schema";
+import { ChatbotService } from "./services/ChatbotService";
+import { sendMessageSchema, sendReportSchema, createCampaignSchema, bulkSendSchema, chatbotConfigSchema, flagLeadSchema } from "@shared/schema";
 import { log } from "./utils";
 import { getDbHealth } from "./db";
 import { withRetry } from "./dbRetry";
@@ -158,16 +159,47 @@ export async function registerRoutes(app: Express): Promise<Server> {
           status: 'received',
         }));
 
-        // Check and trigger auto-responses with retry
-        const responded = await withRetry(() =>
-          autoResponseService.handleIncomingMessage(
-            data.phoneNumber,
-            data.content
-          )
-        );
+        // Check if number is blocked
+        const isBlocked = await withRetry(() => storage.isNumberBlocked(data.phoneNumber));
+        if (isBlocked) {
+          console.log(`⛔ Ignoring message from blocked number: ${data.phoneNumber}`);
+          broadcast('incoming-message', data);
+          return;
+        }
 
-        if (responded) {
-          console.log(`✅ Auto-response sent to ${data.phoneNumber}`);
+        // Initialize chatbot service
+        const chatbotService = new ChatbotService(storage, whatsAppService);
+
+        // Check if message contains lead trigger keyword
+        const triggerKeyword = await chatbotService.detectLeadTrigger(data.content);
+        if (triggerKeyword) {
+          console.log(`🎯 Lead trigger detected: "${triggerKeyword}" from ${data.phoneNumber}`);
+          await withRetry(() => chatbotService.flagAsLead(
+            data.phoneNumber,
+            triggerKeyword
+          ));
+        }
+
+        // Check if this phone number is a lead
+        const isLead = await withRetry(() => chatbotService.isLead(data.phoneNumber));
+
+        if (isLead) {
+          // Process through chatbot for leads
+          console.log(`🤖 Processing lead message from ${data.phoneNumber}`);
+          await chatbotService.processLeadMessage(data.phoneNumber, data.content);
+          broadcast('chatbot-response-sent', { phoneNumber: data.phoneNumber });
+        } else {
+          // Check and trigger regular auto-responses for non-leads
+          const responded = await withRetry(() =>
+            autoResponseService.handleIncomingMessage(
+              data.phoneNumber,
+              data.content
+            )
+          );
+
+          if (responded) {
+            console.log(`✅ Auto-response sent to ${data.phoneNumber}`);
+          }
         }
 
         // Broadcast to WebSocket clients
@@ -921,6 +953,177 @@ export async function registerRoutes(app: Express): Promise<Server> {
       res.status(500).json({ success: false, error: errorMessage || 'Failed to get incoming messages' });
     }
   });
+
+  // ==================== CHATBOT & LEADS API ====================
+
+  // Get chatbot configuration
+  app.get('/api/chatbot/config', async (req, res) => {
+    try {
+      const config = await withRetry(() => storage.getChatbotConfig());
+      
+      if (!config) {
+        return res.json({
+          success: true,
+          config: null,
+        });
+      }
+
+      // Mask the access key for security
+      const maskedConfig = {
+        ...config,
+        ragAccessKey: config.ragAccessKey ? `${config.ragAccessKey.substring(0, 4)}...${config.ragAccessKey.substring(config.ragAccessKey.length - 4)}` : '',
+      };
+
+      res.json({
+        success: true,
+        config: maskedConfig,
+      });
+    } catch (error) {
+      const errorMessage = error instanceof Error ? error.message : 'Unknown error';
+      log(`Get chatbot config error: ${errorMessage}`);
+      res.status(500).json({ success: false, error: errorMessage });
+    }
+  });
+
+  // Update chatbot configuration
+  app.put('/api/chatbot/config', async (req, res) => {
+    try {
+      const validation = chatbotConfigSchema.safeParse(req.body);
+      
+      if (!validation.success) {
+        return res.status(400).json({
+          success: false,
+          error: validation.error.errors[0].message,
+        });
+      }
+
+      const { agentName, triggerKeywords, ragBaseUrl, ragAccessKey, contextMessageCount, isActive } = validation.data;
+
+      const config = await withRetry(() => storage.updateChatbotConfig({
+        agentName,
+        triggerKeywords,
+        ragBaseUrl,
+        ragAccessKey,
+        contextMessageCount,
+        isActive,
+      }));
+
+      // Mask the access key in response
+      const maskedConfig = {
+        ...config,
+        ragAccessKey: config.ragAccessKey ? `${config.ragAccessKey.substring(0, 4)}...${config.ragAccessKey.substring(config.ragAccessKey.length - 4)}` : '',
+      };
+
+      res.json({
+        success: true,
+        config: maskedConfig,
+      });
+    } catch (error) {
+      const errorMessage = error instanceof Error ? error.message : 'Unknown error';
+      log(`Update chatbot config error: ${errorMessage}`);
+      res.status(400).json({ success: false, error: errorMessage });
+    }
+  });
+
+  // Test chatbot RAG endpoint connection
+  app.post('/api/chatbot/test', async (req, res) => {
+    try {
+      const config = await withRetry(() => storage.getChatbotConfig());
+      
+      if (!config) {
+        return res.status(400).json({
+          success: false,
+          error: 'Chatbot not configured. Please save configuration first.',
+        });
+      }
+
+      const chatbotService = new ChatbotService(storage, whatsAppService);
+      const result = await chatbotService.testConnection(config);
+
+      res.json(result);
+    } catch (error) {
+      const errorMessage = error instanceof Error ? error.message : 'Unknown error';
+      log(`Test chatbot connection error: ${errorMessage}`);
+      res.status(500).json({
+        success: false,
+        message: `Test failed: ${errorMessage}`,
+      });
+    }
+  });
+
+  // Get all leads
+  app.get('/api/leads', async (req, res) => {
+    try {
+      const limit = parseInt(req.query.limit as string) || 50;
+      const offset = parseInt(req.query.offset as string) || 0;
+
+      const leads = await withRetry(() => storage.getLeads({ limit, offset }));
+
+      res.json({
+        success: true,
+        leads,
+        count: leads.length,
+      });
+    } catch (error) {
+      const errorMessage = error instanceof Error ? error.message : 'Unknown error';
+      log(`Get leads error: ${errorMessage}`);
+      res.status(500).json({ success: false, error: errorMessage });
+    }
+  });
+
+  // Get lead details with conversation
+  app.get('/api/leads/:phoneNumber/conversation', async (req, res) => {
+    try {
+      const { phoneNumber } = req.params;
+      const limit = parseInt(req.query.limit as string) || 20;
+
+      const contact = await withRetry(() => storage.getContact(phoneNumber));
+      const conversation = await withRetry(() => storage.getConversationHistory(phoneNumber, limit));
+
+      res.json({
+        success: true,
+        contact,
+        conversation: conversation.reverse(), // Return chronologically (oldest first)
+      });
+    } catch (error) {
+      const errorMessage = error instanceof Error ? error.message : 'Unknown error';
+      log(`Get lead conversation error: ${errorMessage}`);
+      res.status(500).json({ success: false, error: errorMessage });
+    }
+  });
+
+  // Manually flag a number as lead
+  app.post('/api/leads/flag', async (req, res) => {
+    try {
+      const validation = flagLeadSchema.safeParse(req.body);
+      
+      if (!validation.success) {
+        return res.status(400).json({
+          success: false,
+          error: validation.error.errors[0].message,
+        });
+      }
+
+      const { phoneNumber, keyword, name } = validation.data;
+
+      const contact = await withRetry(() => storage.flagAsLead(
+        phoneNumber,
+        keyword || 'Manual flag',
+        name
+      ));
+
+      res.json({
+        success: true,
+        contact,
+      });
+    } catch (error) {
+      const errorMessage = error instanceof Error ? error.message : 'Unknown error';
+      log(`Flag lead error: ${errorMessage}`);
+      res.status(400).json({ success: false, error: errorMessage });
+    }
+  });
+
+  // ==================== END CHATBOT & LEADS API ====================
 
   // Cleanup old files periodically
   setInterval(async () => {

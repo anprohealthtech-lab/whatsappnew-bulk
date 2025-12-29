@@ -1,7 +1,7 @@
-import { eq, desc, and, gte, lte, sql } from 'drizzle-orm';
+import { eq, desc, and, gte, lte, sql, or } from 'drizzle-orm';
 import { db } from '../db';
-import { users, messages, systemLogs, blockedNumbers, autoResponses } from '@shared/schema';
-import type { User, InsertUser, Message, InsertMessage, SystemLog, InsertSystemLog, BlockedNumber, AutoResponse } from '@shared/schema';
+import { users, messages, systemLogs, blockedNumbers, autoResponses, contacts, chatbotConfigs } from '@shared/schema';
+import type { User, InsertUser, Message, InsertMessage, SystemLog, InsertSystemLog, BlockedNumber, AutoResponse, Contact, ChatbotConfig } from '@shared/schema';
 import type { IStorage } from '../storage';
 
 export class DatabaseStorage implements IStorage {
@@ -211,5 +211,179 @@ export class DatabaseStorage implements IStorage {
 
   async deleteAutoResponse(id: string): Promise<void> {
     await db.delete(autoResponses).where(eq(autoResponses.id, id));
+  }
+
+  // Contact/Lead methods
+  private normalizePhoneNumber(phone: string): string {
+    // Remove all non-digit characters
+    const cleaned = phone.replace(/\D/g, '');
+    
+    // If it's a 10-digit Indian number, add '91'
+    if (cleaned.length === 10) {
+      return '91' + cleaned;
+    }
+    
+    return cleaned;
+  }
+
+  async flagAsLead(phoneNumber: string, keyword: string, name?: string): Promise<Contact> {
+    const normalizedPhone = this.normalizePhoneNumber(phoneNumber);
+    
+    // Check if contact exists
+    const existing = await db.select()
+      .from(contacts)
+      .where(eq(contacts.phoneNumber, normalizedPhone))
+      .limit(1);
+
+    if (existing.length > 0) {
+      // Update existing contact
+      const result = await db.update(contacts)
+        .set({
+          isLead: 'true',
+          leadTriggerKeyword: keyword,
+          lastMessageAt: new Date(),
+          updatedAt: new Date(),
+          ...(name && { name }),
+        })
+        .where(eq(contacts.phoneNumber, normalizedPhone))
+        .returning();
+      
+      return result[0];
+    } else {
+      // Create new contact
+      const result = await db.insert(contacts)
+        .values({
+          phoneNumber: normalizedPhone,
+          name: name || null,
+          isLead: 'true',
+          leadTriggerKeyword: keyword,
+          lastMessageAt: new Date(),
+        })
+        .returning();
+      
+      return result[0];
+    }
+  }
+
+  async isLead(phoneNumber: string): Promise<boolean> {
+    const normalizedPhone = this.normalizePhoneNumber(phoneNumber);
+    
+    const result = await db.select()
+      .from(contacts)
+      .where(and(
+        eq(contacts.phoneNumber, normalizedPhone),
+        eq(contacts.isLead, 'true')
+      ))
+      .limit(1);
+    
+    return result.length > 0;
+  }
+
+  async getLeads(filters?: { limit?: number; offset?: number }): Promise<Contact[]> {
+    let query = db.select()
+      .from(contacts)
+      .where(eq(contacts.isLead, 'true'))
+      .orderBy(desc(contacts.lastMessageAt));
+
+    if (filters?.limit) {
+      query = query.limit(filters.limit) as any;
+    }
+    
+    if (filters?.offset) {
+      query = query.offset(filters.offset) as any;
+    }
+
+    return await query;
+  }
+
+  async getContact(phoneNumber: string): Promise<Contact | undefined> {
+    const normalizedPhone = this.normalizePhoneNumber(phoneNumber);
+    
+    const result = await db.select()
+      .from(contacts)
+      .where(eq(contacts.phoneNumber, normalizedPhone))
+      .limit(1);
+    
+    return result[0];
+  }
+
+  async updateContact(phoneNumber: string, updates: Partial<Contact>): Promise<Contact | undefined> {
+    const normalizedPhone = this.normalizePhoneNumber(phoneNumber);
+    
+    const updateData: any = {
+      ...updates,
+      updatedAt: new Date(),
+    };
+
+    const result = await db.update(contacts)
+      .set(updateData)
+      .where(eq(contacts.phoneNumber, normalizedPhone))
+      .returning();
+    
+    return result[0];
+  }
+
+  async getConversationHistory(phoneNumber: string, limit: number = 10): Promise<Message[]> {
+    const normalizedPhone = this.normalizePhoneNumber(phoneNumber);
+    
+    // Get messages from this phone number, both incoming and outgoing (text responses)
+    const result = await db.select()
+      .from(messages)
+      .where(and(
+        eq(messages.phoneNumber, normalizedPhone),
+        or(
+          eq(messages.type, 'incoming'),
+          eq(messages.type, 'text')
+        )
+      ))
+      .orderBy(desc(messages.createdAt))
+      .limit(limit);
+    
+    return result;
+  }
+
+  // Chatbot config methods
+  async getChatbotConfig(): Promise<ChatbotConfig | undefined> {
+    const result = await db.select()
+      .from(chatbotConfigs)
+      .orderBy(desc(chatbotConfigs.updatedAt))
+      .limit(1);
+    
+    return result[0];
+  }
+
+  async updateChatbotConfig(config: Partial<ChatbotConfig> & { agentName: string }): Promise<ChatbotConfig> {
+    // Check if config exists
+    const existing = await this.getChatbotConfig();
+
+    if (existing) {
+      // Update existing config
+      const updateData: any = {
+        ...config,
+        isActive: typeof config.isActive === 'boolean' ? (config.isActive ? 'true' : 'false') : existing.isActive,
+        updatedAt: new Date(),
+      };
+
+      const result = await db.update(chatbotConfigs)
+        .set(updateData)
+        .where(eq(chatbotConfigs.id, existing.id))
+        .returning();
+      
+      return result[0];
+    } else {
+      // Create new config
+      const result = await db.insert(chatbotConfigs)
+        .values({
+          agentName: config.agentName,
+          triggerKeywords: config.triggerKeywords || [],
+          ragBaseUrl: config.ragBaseUrl || '',
+          ragAccessKey: config.ragAccessKey || '',
+          contextMessageCount: config.contextMessageCount || 3,
+          isActive: typeof config.isActive === 'boolean' ? (config.isActive ? 'true' : 'false') : 'true',
+        })
+        .returning();
+      
+      return result[0];
+    }
   }
 }

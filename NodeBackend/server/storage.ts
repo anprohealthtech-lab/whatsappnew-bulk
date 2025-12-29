@@ -1,4 +1,4 @@
-import { type User, type InsertUser, type Message, type InsertMessage, type SystemLog, type InsertSystemLog, type BlockedNumber, type AutoResponse } from "@shared/schema";
+import { type User, type InsertUser, type Message, type InsertMessage, type SystemLog, type InsertSystemLog, type BlockedNumber, type AutoResponse, type Contact, type ChatbotConfig } from "@shared/schema";
 import { randomUUID } from "crypto";
 
 export interface IStorage {
@@ -32,6 +32,18 @@ export interface IStorage {
   createAutoResponse(data: { keyword: string; response: string; isActive?: boolean }): Promise<AutoResponse>;
   updateAutoResponse(id: string, data: { keyword?: string; response?: string; isActive?: boolean }): Promise<AutoResponse | undefined>;
   deleteAutoResponse(id: string): Promise<void>;
+
+  // Contact/Lead methods
+  flagAsLead(phoneNumber: string, keyword: string, name?: string): Promise<Contact>;
+  isLead(phoneNumber: string): Promise<boolean>;
+  getLeads(filters?: { limit?: number; offset?: number }): Promise<Contact[]>;
+  getContact(phoneNumber: string): Promise<Contact | undefined>;
+  updateContact(phoneNumber: string, updates: Partial<Contact>): Promise<Contact | undefined>;
+  getConversationHistory(phoneNumber: string, limit?: number): Promise<Message[]>;
+
+  // Chatbot config methods
+  getChatbotConfig(): Promise<ChatbotConfig | undefined>;
+  updateChatbotConfig(config: Partial<ChatbotConfig> & { agentName: string }): Promise<ChatbotConfig>;
 }
 
 export class MemStorage implements IStorage {
@@ -231,6 +243,120 @@ export class MemStorage implements IStorage {
 
   async deleteAutoResponse(id: string): Promise<void> {
     this.autoResponses.delete(id);
+  }
+
+  // Contact/Lead methods (MemStorage stub implementations)
+  private contacts: Map<string, Contact> = new Map();
+
+  async flagAsLead(phoneNumber: string, keyword: string, name?: string): Promise<Contact> {
+    const existing = Array.from(this.contacts.values()).find(c => c.phoneNumber === phoneNumber);
+    
+    if (existing) {
+      const updated: Contact = {
+        ...existing,
+        isLead: 'true',
+        leadTriggerKeyword: keyword,
+        lastMessageAt: new Date(),
+        updatedAt: new Date(),
+        name: name || existing.name,
+      };
+      this.contacts.set(existing.id, updated);
+      return updated;
+    } else {
+      const id = randomUUID();
+      const contact: Contact = {
+        id,
+        phoneNumber,
+        name: name || null,
+        isLead: 'true',
+        leadTriggerKeyword: keyword,
+        conversationState: null,
+        lastMessageAt: new Date(),
+        createdAt: new Date(),
+        updatedAt: new Date(),
+      };
+      this.contacts.set(id, contact);
+      return contact;
+    }
+  }
+
+  async isLead(phoneNumber: string): Promise<boolean> {
+    const contact = Array.from(this.contacts.values()).find(c => c.phoneNumber === phoneNumber);
+    return contact?.isLead === 'true';
+  }
+
+  async getLeads(filters?: { limit?: number; offset?: number }): Promise<Contact[]> {
+    const leads = Array.from(this.contacts.values())
+      .filter(c => c.isLead === 'true')
+      .sort((a, b) => {
+        const aTime = a.lastMessageAt ? new Date(a.lastMessageAt).getTime() : 0;
+        const bTime = b.lastMessageAt ? new Date(b.lastMessageAt).getTime() : 0;
+        return bTime - aTime;
+      });
+
+    const offset = filters?.offset || 0;
+    const limit = filters?.limit || leads.length;
+    
+    return leads.slice(offset, offset + limit);
+  }
+
+  async getContact(phoneNumber: string): Promise<Contact | undefined> {
+    return Array.from(this.contacts.values()).find(c => c.phoneNumber === phoneNumber);
+  }
+
+  async updateContact(phoneNumber: string, updates: Partial<Contact>): Promise<Contact | undefined> {
+    const contact = Array.from(this.contacts.values()).find(c => c.phoneNumber === phoneNumber);
+    if (!contact) return undefined;
+
+    const updated: Contact = {
+      ...contact,
+      ...updates,
+      updatedAt: new Date(),
+    };
+    
+    this.contacts.set(contact.id, updated);
+    return updated;
+  }
+
+  async getConversationHistory(phoneNumber: string, limit: number = 10): Promise<Message[]> {
+    const messages = await this.getMessages({
+      phoneNumber,
+      limit,
+    });
+
+    return messages.filter(msg => msg.type === 'incoming' || msg.type === 'text');
+  }
+
+  // Chatbot config methods (MemStorage stub implementations)
+  private chatbotConfig: ChatbotConfig | undefined;
+
+  async getChatbotConfig(): Promise<ChatbotConfig | undefined> {
+    return this.chatbotConfig;
+  }
+
+  async updateChatbotConfig(config: Partial<ChatbotConfig> & { agentName: string }): Promise<ChatbotConfig> {
+    if (this.chatbotConfig) {
+      this.chatbotConfig = {
+        ...this.chatbotConfig,
+        ...config,
+        isActive: config.isActive !== undefined ? (config.isActive ? 'true' : 'false') : this.chatbotConfig.isActive,
+        updatedAt: new Date(),
+      };
+    } else {
+      const id = randomUUID();
+      this.chatbotConfig = {
+        id,
+        agentName: config.agentName,
+        triggerKeywords: config.triggerKeywords || [],
+        ragBaseUrl: config.ragBaseUrl || '',
+        ragAccessKey: config.ragAccessKey || '',
+        contextMessageCount: config.contextMessageCount || 3,
+        isActive: config.isActive !== undefined ? (config.isActive ? 'true' : 'false') : 'true',
+        createdAt: new Date(),
+        updatedAt: new Date(),
+      };
+    }
+    return this.chatbotConfig;
   }
 }
 
