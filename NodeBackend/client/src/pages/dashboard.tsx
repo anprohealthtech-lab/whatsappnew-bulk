@@ -23,6 +23,7 @@ import { MessageForm } from "@/components/dashboard/MessageForm";
 import { ReportForm } from "@/components/dashboard/ReportForm";
 import { MessageHistory } from "@/components/dashboard/MessageHistory";
 import { AutoResponsePanel } from "@/components/dashboard/AutoResponsePanel";
+import { LeadsPanel } from "@/components/dashboard/LeadsPanel";
 
 // Form schemas
 const messageSchema = z.object({
@@ -444,6 +445,9 @@ export default function Dashboard() {
               onDelete={(id) => deleteAutoResponseMutation.mutate(id)}
             />
           )}
+
+          {/* Leads Section */}
+          {activeSection === "leads" && <LeadsPanel />}
         </main>
       </div>
 

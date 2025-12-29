@@ -8,10 +8,15 @@
  * - Calls Digital Ocean RAG endpoint with conversation context
  * - Formats messages in OpenAI-compatible format
  * - Auto-replies to leads via WhatsApp
+ * - Downloads and sends images from URLs provided by chatbot
  */
 
 import type { IStorage } from "../storage";
 import type { ChatbotConfig, Contact, Message } from "@shared/schema";
+import * as fs from 'fs';
+import * as path from 'path';
+import * as https from 'https';
+import * as http from 'http';
 
 interface RagMessage {
   role: "user" | "assistant" | "system";
@@ -219,22 +224,32 @@ export class ChatbotService {
       // Call RAG endpoint
       const botResponse = await this.callRagEndpoint(ragMessages, config);
 
+      // Extract image URL if present
+      const { textMessage, imageUrl } = this.extractImageUrl(botResponse);
+
       log(`Sending auto-reply to ${phoneNumber}`);
 
-      // Send reply via WhatsApp
-      await this.whatsappService.sendMessage(phoneNumber, botResponse);
+      // Send text reply via WhatsApp
+      await this.whatsappService.sendMessage(phoneNumber, textMessage);
 
       // Store the outgoing message in DB
       await this.storage.createMessage({
         phoneNumber,
-        content: botResponse,
+        content: textMessage,
         type: "text",
         status: "sent",
         metadata: {
           chatbot_reply: true,
           rag_endpoint: config.ragBaseUrl,
+          had_image: !!imageUrl,
         },
       });
+
+      // If image URL found, download and send it
+      if (imageUrl) {
+        log(`📷 Image URL detected: ${imageUrl}`);
+        await this.downloadAndSendImage(phoneNumber, imageUrl);
+      }
 
       log(`✅ Auto-reply sent successfully`);
 
@@ -263,6 +278,136 @@ export class ChatbotService {
       //   "Sorry, I'm having trouble processing your message right now. Please try again later."
       // );
     }
+  }
+
+  /**
+   * Extract image URL from chatbot response
+   * Format: "image url: [URL]" at the end of the message
+   */
+  private extractImageUrl(response: string): { textMessage: string; imageUrl: string | null } {
+    const imageUrlPattern = /image url:\s*(.+?)$/im;
+    const match = response.match(imageUrlPattern);
+
+    if (match) {
+      const imageUrl = match[1].trim();
+      const textMessage = response.replace(imageUrlPattern, '').trim();
+      return { textMessage, imageUrl };
+    }
+
+    return { textMessage: response, imageUrl: null };
+  }
+
+  /**
+   * Download image from URL and send via WhatsApp
+   */
+  private async downloadAndSendImage(phoneNumber: string, imageUrl: string): Promise<void> {
+    const log = (msg: string) => console.log(`[ChatbotService] ${msg}`);
+    
+    try {
+      log(`Downloading image from: ${imageUrl}`);
+
+      // Create uploads directory if not exists
+      const uploadsDir = path.join(process.cwd(), 'uploads', 'chatbot-images');
+      if (!fs.existsSync(uploadsDir)) {
+        fs.mkdirSync(uploadsDir, { recursive: true });
+      }
+
+      // Generate filename
+      const timestamp = Date.now();
+      const urlObj = new URL(imageUrl);
+      const extension = path.extname(urlObj.pathname) || '.jpg';
+      const filename = `chatbot_${phoneNumber}_${timestamp}${extension}`;
+      const filePath = path.join(uploadsDir, filename);
+
+      // Download image
+      await this.downloadFile(imageUrl, filePath);
+
+      log(`✅ Image downloaded: ${filename}`);
+
+      // Send via WhatsApp
+      await this.whatsappService.sendFileMessage(phoneNumber, filePath, 'Reference image');
+
+      log(`✅ Image sent successfully to ${phoneNumber}`);
+
+      // Store the image message in DB
+      await this.storage.createMessage({
+        phoneNumber,
+        content: 'Image attachment',
+        type: "image",
+        status: "sent",
+        fileUrl: `/uploads/chatbot-images/${filename}`,
+        fileName: filename,
+        metadata: {
+          chatbot_reply: true,
+          image_url: imageUrl,
+        },
+      });
+
+      // Clean up file after 5 minutes
+      setTimeout(() => {
+        if (fs.existsSync(filePath)) {
+          fs.unlinkSync(filePath);
+          log(`🗑️ Cleaned up temporary image: ${filename}`);
+        }
+      }, 5 * 60 * 1000);
+
+    } catch (error: any) {
+      log(`❌ Failed to download/send image: ${error.message}`);
+      
+      await this.storage.createSystemLog({
+        level: "error",
+        message: `Failed to send image to ${phoneNumber}: ${error.message}`,
+        metadata: {
+          phoneNumber,
+          imageUrl,
+          error: error.message,
+        },
+      });
+    }
+  }
+
+  /**
+   * Download file from URL to local path
+   */
+  private downloadFile(url: string, destPath: string): Promise<void> {
+    return new Promise((resolve, reject) => {
+      const protocol = url.startsWith('https') ? https : http;
+      
+      const file = fs.createWriteStream(destPath);
+      
+      protocol.get(url, (response) => {
+        // Handle redirects
+        if (response.statusCode === 301 || response.statusCode === 302) {
+          const redirectUrl = response.headers.location;
+          if (redirectUrl) {
+            file.close();
+            fs.unlinkSync(destPath);
+            this.downloadFile(redirectUrl, destPath).then(resolve).catch(reject);
+            return;
+          }
+        }
+
+        if (response.statusCode !== 200) {
+          reject(new Error(`Failed to download: HTTP ${response.statusCode}`));
+          return;
+        }
+
+        response.pipe(file);
+
+        file.on('finish', () => {
+          file.close();
+          resolve();
+        });
+
+        file.on('error', (err) => {
+          fs.unlinkSync(destPath);
+          reject(err);
+        });
+      }).on('error', (err) => {
+        fs.unlinkSync(destPath);
+        reject(err);
+      });
+    });
   }
 
   /**

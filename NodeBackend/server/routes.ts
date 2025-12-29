@@ -11,6 +11,7 @@ import { persistentFileService } from "./services/PersistentFileService";
 import { campaignService } from "./services/CampaignService";
 import { autoResponseService } from "./services/AutoResponseService";
 import { ChatbotService } from "./services/ChatbotService";
+import { initializeChatbotConfig } from "./initChatbot";
 import { sendMessageSchema, sendReportSchema, createCampaignSchema, bulkSendSchema, chatbotConfigSchema, flagLeadSchema } from "@shared/schema";
 import { log } from "./utils";
 import { getDbHealth } from "./db";
@@ -46,6 +47,9 @@ export async function registerRoutes(app: Express): Promise<Server> {
   } catch (error) {
     log(`Failed to initialize WhatsApp service: ${error.message}`);
   }
+
+  // Initialize chatbot configuration
+  await initializeChatbotConfig();
 
   // Create HTTP server
   const httpServer = createServer(app);

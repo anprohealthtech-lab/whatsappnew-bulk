@@ -3,7 +3,8 @@ import {
     History,
     Gauge,
     Megaphone,
-    User
+    User,
+    Users
 } from "lucide-react";
 import { cn } from "@/lib/utils";
 
@@ -19,6 +20,7 @@ export function Sidebar({ activeSection, setActiveSection, setLocation }: Sideba
         { id: "campaigns", label: "Campaigns", icon: Megaphone, action: () => setLocation("/campaigns") },
         { id: "history", label: "Message History", icon: History, action: () => setActiveSection("history") },
         { id: "auto-responses", label: "Auto-Responses", icon: MessageSquare, action: () => setActiveSection("auto-responses") },
+        { id: "leads", label: "Leads", icon: Users, action: () => setActiveSection("leads") },
     ];
 
     return (
