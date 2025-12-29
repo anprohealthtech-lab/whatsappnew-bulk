@@ -145,6 +145,7 @@ export class ChatbotService {
 
     log(`Calling RAG endpoint: ${endpoint}`);
     log(`Conversation context: ${conversationHistory.length} messages`);
+    log(`Access key: ${config.ragAccessKey ? config.ragAccessKey.substring(0, 3) + '...' : 'NOT SET'}`);
 
     try {
       const response = await fetch(endpoint, {
@@ -156,8 +157,13 @@ export class ChatbotService {
         body: JSON.stringify(requestBody),
       });
 
+      log(`RAG endpoint response status: ${response.status} ${response.statusText}`);
+
+      log(`RAG endpoint response status: ${response.status} ${response.statusText}`);
+
       if (!response.ok) {
         const errorText = await response.text();
+        log(`❌ RAG endpoint error response: ${errorText}`);
         throw new Error(`RAG endpoint returned ${response.status}: ${errorText}`);
       }
 
