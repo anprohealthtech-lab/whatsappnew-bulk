@@ -180,7 +180,8 @@ export class WhatsAppService extends EventEmitter {
       throw new Error('WhatsApp not connected');
     }
 
-    const jid = `${this.formatPhoneNumber(phoneNumber)}@s.whatsapp.net`;
+    // Preserve original JID format if already provided (@lid or @s.whatsapp.net)
+    const jid = phoneNumber.includes('@') ? phoneNumber : `${this.formatPhoneNumber(phoneNumber)}@s.whatsapp.net`;
     const result = await this.socket.sendMessage(jid, { text: message });
     
     this.status.lastSeen = new Date();
@@ -208,7 +209,8 @@ export class WhatsAppService extends EventEmitter {
       throw new Error('WhatsApp not connected');
     }
 
-    const jid = `${this.formatPhoneNumber(phoneNumber)}@s.whatsapp.net`;
+    // Preserve original JID format if already provided (@lid or @s.whatsapp.net)
+    const jid = phoneNumber.includes('@') ? phoneNumber : `${this.formatPhoneNumber(phoneNumber)}@s.whatsapp.net`;
 
     // Baileys v6.x doesn't fully support new interactive message format yet
     // Using text fallback with clear formatting for better compatibility
@@ -241,7 +243,8 @@ export class WhatsAppService extends EventEmitter {
       throw new Error('WhatsApp not connected');
     }
 
-    const jid = `${this.formatPhoneNumber(phoneNumber)}@s.whatsapp.net`;
+    // Preserve original JID format if already provided (@lid or @s.whatsapp.net)
+    const jid = phoneNumber.includes('@') ? phoneNumber : `${this.formatPhoneNumber(phoneNumber)}@s.whatsapp.net`;
     const fileBuffer = fs.readFileSync(filePath);
     const fileExtension = path.extname(filePath).toLowerCase();
     
