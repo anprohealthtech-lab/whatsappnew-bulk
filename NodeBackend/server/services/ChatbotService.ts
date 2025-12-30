@@ -230,7 +230,7 @@ export class ChatbotService {
         {
           phoneNumber,
           content: messageText,
-          type: "text" as const,
+          type: "incoming" as const, // incoming = from user/lead
           status: "received" as const,
           timestamp: new Date(),
         }
