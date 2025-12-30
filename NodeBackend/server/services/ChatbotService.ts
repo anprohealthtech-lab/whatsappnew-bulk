@@ -218,14 +218,26 @@ export class ChatbotService {
         return;
       }
 
-      // Get conversation history (including the current message)
+      // Get conversation history (excluding the current message which isn't stored yet)
       const limit = config.contextMessageCount || 3;
       const history = await this.getConversationHistory(phoneNumber, limit);
 
       log(`Retrieved ${history.length} messages from conversation history`);
 
+      // Add current message to history for context
+      const fullConversation = [
+        ...history,
+        {
+          phoneNumber,
+          content: messageText,
+          type: "text" as const,
+          status: "received" as const,
+          timestamp: new Date(),
+        }
+      ];
+
       // Format for RAG
-      const ragMessages = this.formatConversationForRAG(history);
+      const ragMessages = this.formatConversationForRAG(fullConversation);
 
       // Call RAG endpoint
       const botResponse = await this.callRagEndpoint(ragMessages, config);
