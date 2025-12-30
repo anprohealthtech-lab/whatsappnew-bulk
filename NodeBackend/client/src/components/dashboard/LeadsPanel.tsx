@@ -10,7 +10,7 @@ import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/com
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table";
 import { Badge } from "@/components/ui/badge";
 import { Dialog, DialogContent, DialogDescription, DialogHeader, DialogTitle, DialogTrigger } from "@/components/ui/dialog";
-import { UserPlus, MessageSquare, Calendar } from "lucide-react";
+import { UserPlus, MessageSquare, Calendar, Trash2 } from "lucide-react";
 import { useToast } from "@/hooks/use-toast";
 
 const flagLeadSchema = z.object({
@@ -73,6 +73,36 @@ export function LeadsPanel() {
       queryClient.invalidateQueries({ queryKey: ["/api/leads"] });
       form.reset();
       setIsDialogOpen(false);
+    },
+    onError: (error: Error) => {
+      toast({
+        title: "Error",
+        description: error.message,
+        variant: "destructive",
+      });
+    },
+  });
+
+  // Mutation to delete a lead
+  const deleteLeadMutation = useMutation({
+    mutationFn: async (phoneNumber: string) => {
+      const response = await fetch(`/api/leads/${encodeURIComponent(phoneNumber)}`, {
+        method: "DELETE",
+      });
+
+      if (!response.ok) {
+        const error = await response.json();
+        throw new Error(error.error || "Failed to delete lead");
+      }
+
+      return response.json();
+    },
+    onSuccess: () => {
+      toast({
+        title: "Success",
+        description: "Lead removed successfully",
+      });
+      queryClient.invalidateQueries({ queryKey: ["/api/leads"] });
     },
     onError: (error: Error) => {
       toast({
@@ -225,20 +255,34 @@ export function LeadsPanel() {
                         </div>
                       </TableCell>
                       <TableCell>
-                        <Button
-                          variant="ghost"
-                          size="sm"
-                          onClick={() => {
-                            // TODO: Open conversation view
-                            toast({
-                              title: "Coming soon",
-                              description: "Conversation view will be available soon",
-                            });
-                          }}
-                        >
-                          <MessageSquare className="h-4 w-4 mr-1" />
-                          View Chat
-                        </Button>
+                        <div className="flex items-center gap-2">
+                          <Button
+                            variant="ghost"
+                            size="sm"
+                            onClick={() => {
+                              // TODO: Open conversation view
+                              toast({
+                                title: "Coming soon",
+                                description: "Conversation view will be available soon",
+                              });
+                            }}
+                          >
+                            <MessageSquare className="h-4 w-4 mr-1" />
+                            View Chat
+                          </Button>
+                          <Button
+                            variant="ghost"
+                            size="sm"
+                            onClick={() => {
+                              if (confirm(`Remove ${lead.phoneNumber} from leads?`)) {
+                                deleteLeadMutation.mutate(lead.phoneNumber);
+                              }
+                            }}
+                            disabled={deleteLeadMutation.isPending}
+                          >
+                            <Trash2 className="h-4 w-4 text-destructive" />
+                          </Button>
+                        </div>
                       </TableCell>
                     </TableRow>
                   ))}

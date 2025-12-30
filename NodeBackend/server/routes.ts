@@ -1140,6 +1140,28 @@ export async function registerRoutes(app: Express): Promise<Server> {
     }
   });
 
+  // Delete/unflag lead
+  app.delete('/api/leads/:phoneNumber', async (req, res) => {
+    try {
+      const { phoneNumber } = req.params;
+
+      // Unflag the contact (set isLead to false)
+      await withRetry(() => storage.updateContact(phoneNumber, {
+        isLead: 'false',
+        leadTriggerKeyword: null,
+      }));
+
+      res.json({
+        success: true,
+        message: 'Lead removed successfully',
+      });
+    } catch (error) {
+      const errorMessage = error instanceof Error ? error.message : 'Unknown error';
+      log(`Delete lead error: ${errorMessage}`);
+      res.status(400).json({ success: false, error: errorMessage });
+    }
+  });
+
   // ==================== END CHATBOT & LEADS API ====================
 
   // Cleanup old files periodically
