@@ -1110,7 +1110,8 @@ export async function registerRoutes(app: Express): Promise<Server> {
 
       const { phoneNumber, keyword, name } = validation.data;
 
-      const contact = await withRetry(() => storage.flagAsLead(
+      // Use chatbot service to flag lead (sends greeting message automatically)
+      const contact = await withRetry(() => chatbotService.flagAsLead(
         phoneNumber,
         keyword || 'Manual flag',
         name
