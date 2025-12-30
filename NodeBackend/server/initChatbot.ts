@@ -14,9 +14,21 @@ export async function initializeChatbotConfig() {
     const existingConfig = await storage.getChatbotConfig();
     
     if (existingConfig) {
-      log("✅ Chatbot configuration already exists");
-      log(`   Agent: ${existingConfig.agentName}`);
-      log(`   Status: ${existingConfig.isActive === 'true' ? 'Active' : 'Inactive'}`);
+      // Check if access key is missing and update it
+      if (!existingConfig.ragAccessKey || existingConfig.ragAccessKey === '') {
+        log("⚠️  Existing config has no access key, updating...");
+        const updatedConfig = {
+          ...existingConfig,
+          ragAccessKey: process.env.RAG_ACCESS_KEY || "71VkYUHciWpo0I8DsK4n8nUfA-Vjr70j",
+          isActive: existingConfig.isActive === 'true' || existingConfig.isActive === true,
+        };
+        await storage.updateChatbotConfig(updatedConfig);
+        log("✅ Access key updated successfully");
+      } else {
+        log("✅ Chatbot configuration already exists");
+        log(`   Agent: ${existingConfig.agentName}`);
+        log(`   Status: ${existingConfig.isActive === 'true' ? 'Active' : 'Inactive'}`);
+      }
       return;
     }
 
