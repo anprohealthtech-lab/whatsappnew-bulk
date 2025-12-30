@@ -51,7 +51,7 @@ export class ChatbotService {
   ) {}
 
   /**
-   * Detect if message text matches any configured trigger keyword (exact match, case-insensitive)
+   * Detect if message text contains any configured trigger keyword (case-insensitive word match)
    */
   async detectLeadTrigger(messageText: string): Promise<string | null> {
     const config = await this.storage.getChatbotConfig();
@@ -65,8 +65,16 @@ export class ChatbotService {
 
     for (const keyword of keywords) {
       const normalizedKeyword = keyword.trim().toLowerCase();
+      
+      // Check for exact match first (for multi-word keywords)
       if (normalizedMessage === normalizedKeyword) {
-        return keyword; // Return the original keyword (not normalized)
+        return keyword;
+      }
+      
+      // Check if keyword appears as a whole word in the message
+      const wordBoundaryRegex = new RegExp(`\\b${normalizedKeyword.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}\\b`, 'i');
+      if (wordBoundaryRegex.test(messageText)) {
+        return keyword;
       }
     }
 

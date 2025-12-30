@@ -186,6 +186,7 @@ export async function registerRoutes(app: Express): Promise<Server> {
 
         // Check if this phone number is a lead
         const isLead = await withRetry(() => chatbotService.isLead(data.phoneNumber));
+        console.log(`🔍 Lead check for ${data.phoneNumber}: ${isLead ? 'YES (will process through chatbot)' : 'NO (checking auto-responses)'}`);
 
         if (isLead) {
           // Process through chatbot for leads
@@ -209,7 +210,15 @@ export async function registerRoutes(app: Express): Promise<Server> {
         // Broadcast to WebSocket clients
         broadcast('incoming-message', data);
       } catch (error) {
-        console.error('Failed to handle incoming message:', error);
+        console.error('❌ Failed to handle incoming message:', error);
+        console.error('Error details:', {
+          phoneNumber: data?.phoneNumber,
+          content: data?.content?.substring(0, 50),
+          errorMessage: error instanceof Error ? error.message : 'Unknown error',
+          stack: error instanceof Error ? error.stack : undefined
+        });
+        // Still broadcast the message even if processing failed
+        broadcast('incoming-message', data);
       }
     });
   };
