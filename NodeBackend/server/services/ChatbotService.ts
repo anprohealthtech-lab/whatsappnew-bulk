@@ -74,7 +74,7 @@ export class ChatbotService {
   }
 
   /**
-   * Flag a phone number as a lead
+   * Flag a phone number as a lead and send initial greeting
    */
   async flagAsLead(phoneNumber: string, keyword: string, name?: string): Promise<Contact> {
     const log = (msg: string) => console.log(`[ChatbotService] ${msg}`);
@@ -84,6 +84,31 @@ export class ChatbotService {
     const contact = await this.storage.flagAsLead(phoneNumber, keyword, name);
     
     log(`✅ ${phoneNumber} flagged as lead`);
+    
+    // Send initial greeting message
+    try {
+      const greetingMessage = "Hello! 👋 Welcome to AnPro Solutions. I'm excited to hear you're interested in a Laboratory Information Management System (LIMS).\n\nOur AI-powered LIMS is designed to transform how pathology labs operate 🚀 Would you like to tell me a bit about your lab? What specific challenges are you looking to solve with a new LIMS? The more I know, the better I can show you how AnPro can help streamline your operations.";
+      
+      log(`Sending greeting message to new lead ${phoneNumber}`);
+      await this.whatsappService.sendMessage(phoneNumber, greetingMessage);
+      
+      // Store the greeting message in DB
+      await this.storage.createMessage({
+        phoneNumber,
+        content: greetingMessage,
+        type: "text",
+        status: "sent",
+        metadata: {
+          chatbot_greeting: true,
+          trigger_keyword: keyword,
+        },
+      });
+      
+      log(`✅ Greeting message sent to ${phoneNumber}`);
+    } catch (error: any) {
+      log(`⚠️ Failed to send greeting message: ${error.message}`);
+      // Don't throw - lead is still flagged even if greeting fails
+    }
     
     return contact;
   }
