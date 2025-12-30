@@ -324,13 +324,12 @@ export class DatabaseStorage implements IStorage {
   }
 
   async getConversationHistory(phoneNumber: string, limit: number = 10): Promise<Message[]> {
-    const normalizedPhone = this.normalizePhoneNumber(phoneNumber);
-    
-    // Get messages from this phone number, both incoming and outgoing (text responses)
+    // Don't normalize - messages are stored with full JID (@lid or @s.whatsapp.net)
+    // Just use the phoneNumber as-is to match what was saved
     const result = await db.select()
       .from(messages)
       .where(and(
-        eq(messages.phoneNumber, normalizedPhone),
+        eq(messages.phoneNumber, phoneNumber),
         or(
           eq(messages.type, 'incoming'),
           eq(messages.type, 'text')
