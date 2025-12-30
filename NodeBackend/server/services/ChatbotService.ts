@@ -90,7 +90,7 @@ export class ChatbotService {
       const greetingMessage = "Hello! 👋 Welcome to AnPro Solutions. I'm excited to hear you're interested in a Laboratory Information Management System (LIMS).\n\nOur AI-powered LIMS is designed to transform how pathology labs operate 🚀 Would you like to tell me a bit about your lab? What specific challenges are you looking to solve with a new LIMS? The more I know, the better I can show you how AnPro can help streamline your operations.";
       
       log(`Sending greeting message to new lead ${phoneNumber}`);
-      await this.whatsappService.sendMessage(phoneNumber, greetingMessage);
+      await this.whatsappService.sendTextMessage(phoneNumber, greetingMessage);
       
       // Store the greeting message in DB
       await this.storage.createMessage({
@@ -273,7 +273,7 @@ export class ChatbotService {
       log(`Sending auto-reply to ${phoneNumber}`);
 
       // Send text reply via WhatsApp
-      await this.whatsappService.sendMessage(phoneNumber, textMessage);
+      await this.whatsappService.sendTextMessage(phoneNumber, textMessage);
 
       // Store the outgoing message in DB
       await this.storage.createMessage({
@@ -368,7 +368,7 @@ export class ChatbotService {
       log(`✅ Image downloaded: ${filename}`);
 
       // Send via WhatsApp
-      await this.whatsappService.sendFileMessage(phoneNumber, filePath, 'Reference image');
+      await this.whatsappService.sendMediaMessage(phoneNumber, filePath, 'Reference image');
 
       log(`✅ Image sent successfully to ${phoneNumber}`);
 
