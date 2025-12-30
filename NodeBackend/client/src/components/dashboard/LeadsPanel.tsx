@@ -10,7 +10,7 @@ import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/com
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table";
 import { Badge } from "@/components/ui/badge";
 import { Dialog, DialogContent, DialogDescription, DialogHeader, DialogTitle, DialogTrigger } from "@/components/ui/dialog";
-import { UserPlus, MessageSquare, Calendar, Trash2 } from "lucide-react";
+import { UserPlus, MessageSquare, Calendar, Trash2, Pause, Play } from "lucide-react";
 import { useToast } from "@/hooks/use-toast";
 
 const flagLeadSchema = z.object({
@@ -101,6 +101,40 @@ export function LeadsPanel() {
       toast({
         title: "Success",
         description: "Lead removed successfully",
+      });
+      queryClient.invalidateQueries({ queryKey: ["/api/leads"] });
+    },
+    onError: (error: Error) => {
+      toast({
+        title: "Error",
+        description: error.message,
+        variant: "destructive",
+      });
+    },
+  });
+
+  // Mutation to toggle chatbot status
+  const toggleChatbotMutation = useMutation({
+    mutationFn: async ({ phoneNumber, active }: { phoneNumber: string; active: boolean }) => {
+      const response = await fetch(`/api/leads/${encodeURIComponent(phoneNumber)}/chatbot-status`, {
+        method: "PATCH",
+        headers: {
+          "Content-Type": "application/json",
+        },
+        body: JSON.stringify({ active }),
+      });
+
+      if (!response.ok) {
+        const error = await response.json();
+        throw new Error(error.error || "Failed to toggle chatbot status");
+      }
+
+      return response.json();
+    },
+    onSuccess: (_, variables) => {
+      toast({
+        title: "Success",
+        description: variables.active ? "Chatbot enabled" : "Chatbot paused - you can chat manually",
       });
       queryClient.invalidateQueries({ queryKey: ["/api/leads"] });
     },
@@ -244,9 +278,15 @@ export function LeadsPanel() {
                         </Badge>
                       </TableCell>
                       <TableCell>
-                        <Badge variant="default">
-                          Active Lead
-                        </Badge>
+                        {lead.chatbotActive === 'false' ? (
+                          <Badge variant="outline" className="border-yellow-500 text-yellow-600">
+                            Paused
+                          </Badge>
+                        ) : (
+                          <Badge variant="default">
+                            Active
+                          </Badge>
+                        )}
                       </TableCell>
                       <TableCell className="text-sm text-muted-foreground">
                         <div className="flex items-center gap-1">
@@ -256,6 +296,25 @@ export function LeadsPanel() {
                       </TableCell>
                       <TableCell>
                         <div className="flex items-center gap-2">
+                          <Button
+                            variant="ghost"
+                            size="sm"
+                            onClick={() => {
+                              const isActive = lead.chatbotActive !== 'false';
+                              toggleChatbotMutation.mutate({
+                                phoneNumber: lead.phoneNumber,
+                                active: !isActive,
+                              });
+                            }}
+                            disabled={toggleChatbotMutation.isPending}
+                            title={lead.chatbotActive === 'false' ? 'Resume chatbot' : 'Pause chatbot for manual chat'}
+                          >
+                            {lead.chatbotActive === 'false' ? (
+                              <Play className="h-4 w-4 text-green-600" />
+                            ) : (
+                              <Pause className="h-4 w-4 text-yellow-600" />
+                            )}
+                          </Button>
                           <Button
                             variant="ghost"
                             size="sm"

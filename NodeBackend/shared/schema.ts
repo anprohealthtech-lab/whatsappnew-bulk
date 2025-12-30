@@ -92,6 +92,7 @@ export const contacts = pgTable("contacts", {
   name: text("name"),
   isLead: text("is_lead").default("false").notNull(), // "true" or "false"
   leadTriggerKeyword: text("lead_trigger_keyword"),
+  chatbotActive: text("chatbot_active").default("true").notNull(), // "true" or "false" - can pause chatbot per lead
   conversationState: jsonb("conversation_state"),
   lastMessageAt: timestamp("last_message_at"),
   createdAt: timestamp("created_at").defaultNow(),

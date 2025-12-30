@@ -189,6 +189,15 @@ export async function registerRoutes(app: Express): Promise<Server> {
         console.log(`🔍 Lead check for ${data.phoneNumber}: ${isLead ? 'YES (will process through chatbot)' : 'NO (checking auto-responses)'}`);
 
         if (isLead) {
+          // Check if chatbot is active for this lead
+          const contact = await withRetry(() => storage.getContact(data.phoneNumber));
+          
+          if (contact?.chatbotActive === 'false') {
+            console.log(`⏸️ Chatbot paused for ${data.phoneNumber} - skipping auto-response`);
+            broadcast('incoming-message', data);
+            return;
+          }
+
           // Process through chatbot for leads
           console.log(`🤖 Processing lead message from ${data.phoneNumber}`);
           await chatbotService.processLeadMessage(data.phoneNumber, data.content);
@@ -1158,6 +1167,34 @@ export async function registerRoutes(app: Express): Promise<Server> {
     } catch (error) {
       const errorMessage = error instanceof Error ? error.message : 'Unknown error';
       log(`Delete lead error: ${errorMessage}`);
+      res.status(400).json({ success: false, error: errorMessage });
+    }
+  });
+
+  // Toggle chatbot active status for a lead
+  app.patch('/api/leads/:phoneNumber/chatbot-status', async (req, res) => {
+    try {
+      const { phoneNumber } = req.params;
+      const { active } = req.body;
+
+      if (typeof active !== 'boolean') {
+        return res.status(400).json({
+          success: false,
+          error: 'active field must be a boolean',
+        });
+      }
+
+      await withRetry(() => storage.updateContact(phoneNumber, {
+        chatbotActive: active ? 'true' : 'false',
+      }));
+
+      res.json({
+        success: true,
+        message: `Chatbot ${active ? 'enabled' : 'paused'} for this lead`,
+      });
+    } catch (error) {
+      const errorMessage = error instanceof Error ? error.message : 'Unknown error';
+      log(`Toggle chatbot status error: ${errorMessage}`);
       res.status(400).json({ success: false, error: errorMessage });
     }
   });
