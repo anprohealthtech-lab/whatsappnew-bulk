@@ -45,7 +45,7 @@ export async function initializeChatbotConfig() {
       ],
       ragBaseUrl: "https://tnfqq3vcirfyalnqzg3c4wwy.agents.do-ai.run",
       ragAccessKey: process.env.RAG_ACCESS_KEY || "71VkYUHciWpo0I8DsK4n8nUfA-Vjr70j",
-      contextMessageCount: 5,
+      contextMessageCount: 3, // Last 3 messages (one exchange) to prevent tone amplification
       isActive: true,
     };
 

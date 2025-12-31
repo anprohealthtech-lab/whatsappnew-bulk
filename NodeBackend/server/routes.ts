@@ -150,9 +150,32 @@ export async function registerRoutes(app: Express): Promise<Server> {
       broadcast('button-clicked', data);
     });
 
+    // Message debouncing: prevent spam when user sends multiple messages quickly
+    const messageDebounceMap = new Map<string, NodeJS.Timeout>();
+    const DEBOUNCE_DELAY = 3000; // 3 seconds
+
     // Handle incoming messages
     whatsAppService.on('incoming-message', async (data) => {
       console.log('📥 Incoming message received:', data);
+
+      // Clear existing timeout for this phone number if any
+      const existingTimeout = messageDebounceMap.get(data.phoneNumber);
+      if (existingTimeout) {
+        clearTimeout(existingTimeout);
+        console.log(`⏱️ Debouncing message from ${data.phoneNumber}`);
+      }
+
+      // Set new timeout - only process if no new message arrives within DEBOUNCE_DELAY
+      const timeoutId = setTimeout(async () => {
+        messageDebounceMap.delete(data.phoneNumber);
+        await processIncomingMessage(data);
+      }, DEBOUNCE_DELAY);
+
+      messageDebounceMap.set(data.phoneNumber, timeoutId);
+    });
+
+    // Extract message processing logic
+    async function processIncomingMessage(data: any) {
 
       try {
         // Save incoming message to database with retry
@@ -174,14 +197,23 @@ export async function registerRoutes(app: Express): Promise<Server> {
         // Initialize chatbot service
         const chatbotService = new ChatbotService(storage, whatsAppService);
 
-        // Check if message contains lead trigger keyword
-        const triggerKeyword = await chatbotService.detectLeadTrigger(data.content);
-        if (triggerKeyword) {
-          console.log(`🎯 Lead trigger detected: "${triggerKeyword}" from ${data.phoneNumber}`);
-          await withRetry(() => chatbotService.flagAsLead(
-            data.phoneNumber,
-            triggerKeyword
-          ));
+        // Check if this phone number is already a lead
+        const isAlreadyLead = await withRetry(() => chatbotService.isLead(data.phoneNumber));
+
+        // Check if message contains lead trigger keyword (only flag if not already a lead)
+        if (!isAlreadyLead) {
+          const triggerKeyword = await chatbotService.detectLeadTrigger(data.content);
+          if (triggerKeyword) {
+            console.log(`🎯 Lead trigger detected: "${triggerKeyword}" from ${data.phoneNumber}`);
+            await withRetry(() => chatbotService.flagAsLead(
+              data.phoneNumber,
+              triggerKeyword
+            ));
+            // After flagging and sending greeting, skip processing this message through RAG
+            // The greeting is sufficient for first contact
+            broadcast('incoming-message', data);
+            return;
+          }
         }
 
         // Check if this phone number is a lead
@@ -229,7 +261,7 @@ export async function registerRoutes(app: Express): Promise<Server> {
         // Still broadcast the message even if processing failed
         broadcast('incoming-message', data);
       }
-    });
+    }
   };
 
   setupWhatsAppEventListeners();
