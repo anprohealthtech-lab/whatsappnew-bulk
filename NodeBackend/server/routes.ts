@@ -223,6 +223,7 @@ export async function registerRoutes(app: Express): Promise<Server> {
         if (isLead) {
           // Check if chatbot is active for this lead
           const contact = await withRetry(() => storage.getContact(data.phoneNumber));
+          console.log(`🔍 Chatbot status check for ${data.phoneNumber}: ${contact?.chatbotActive === 'false' ? 'PAUSED ⏸️' : 'ACTIVE ✅'} (value: ${contact?.chatbotActive})`);
           
           if (contact?.chatbotActive === 'false') {
             console.log(`⏸️ Chatbot paused for ${data.phoneNumber} - skipping auto-response`);
