@@ -298,12 +298,14 @@ export class DatabaseStorage implements IStorage {
 
   async getContact(phoneNumber: string): Promise<Contact | undefined> {
     const normalizedPhone = this.normalizePhoneNumber(phoneNumber);
+    console.log(`[DatabaseStorage] getContact: input=${phoneNumber}, normalized=${normalizedPhone}`);
     
     const result = await db.select()
       .from(contacts)
       .where(eq(contacts.phoneNumber, normalizedPhone))
       .limit(1);
     
+    console.log(`[DatabaseStorage] getContact result: ${result[0] ? `found (chatbotActive=${result[0].chatbotActive})` : 'not found'}`);
     return result[0];
   }
 
