@@ -24,6 +24,7 @@ import { ReportForm } from "@/components/dashboard/ReportForm";
 import { MessageHistory } from "@/components/dashboard/MessageHistory";
 import { AutoResponsePanel } from "@/components/dashboard/AutoResponsePanel";
 import { LeadsPanel } from "@/components/dashboard/LeadsPanel";
+import { HRAdminsPanel } from "@/components/dashboard/HRAdminsPanel";
 
 // Form schemas
 const messageSchema = z.object({
@@ -448,6 +449,9 @@ export default function Dashboard() {
 
           {/* Leads Section */}
           {activeSection === "leads" && <LeadsPanel />}
+
+          {/* HR Admins Section */}
+          {activeSection === "hr-admins" && <HRAdminsPanel />}
         </main>
       </div>
 

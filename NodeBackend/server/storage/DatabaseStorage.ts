@@ -1,7 +1,7 @@
 import { eq, desc, and, gte, lte, sql, or } from 'drizzle-orm';
 import { db } from '../db';
-import { users, messages, systemLogs, blockedNumbers, autoResponses, contacts, chatbotConfigs } from '@shared/schema';
-import type { User, InsertUser, Message, InsertMessage, SystemLog, InsertSystemLog, BlockedNumber, AutoResponse, Contact, ChatbotConfig } from '@shared/schema';
+import { users, messages, systemLogs, blockedNumbers, autoResponses, contacts, chatbotConfigs, hrAdmins, hrChatbotConfigs } from '@shared/schema';
+import type { User, InsertUser, Message, InsertMessage, SystemLog, InsertSystemLog, BlockedNumber, AutoResponse, Contact, ChatbotConfig, HRAdmin, HRChatbotConfig } from '@shared/schema';
 import type { IStorage } from '../storage';
 
 export class DatabaseStorage implements IStorage {
@@ -380,6 +380,172 @@ export class DatabaseStorage implements IStorage {
           ragBaseUrl: config.ragBaseUrl || '',
           ragAccessKey: config.ragAccessKey || '',
           contextMessageCount: config.contextMessageCount || 3,
+          isActive: typeof config.isActive === 'boolean' ? (config.isActive ? 'true' : 'false') : 'true',
+        })
+        .returning();
+      
+      return result[0];
+    }
+  }
+
+  // ============================================================================
+  // HR Admin methods
+  // ============================================================================
+
+  async getHRAdmin(phoneNumber: string): Promise<HRAdmin | undefined> {
+    const normalizedPhone = this.normalizePhoneNumber(phoneNumber);
+    console.log(`[DatabaseStorage] getHRAdmin: input=${phoneNumber}, normalized=${normalizedPhone}`);
+    
+    const result = await db.select()
+      .from(hrAdmins)
+      .where(eq(hrAdmins.phoneNumber, normalizedPhone))
+      .limit(1);
+    
+    console.log(`[DatabaseStorage] getHRAdmin result: ${result[0] ? `found (org=${result[0].organizationId})` : 'not found'}`);
+    return result[0];
+  }
+
+  async getHRAdmins(filters?: { limit?: number; offset?: number }): Promise<HRAdmin[]> {
+    let query = db.select()
+      .from(hrAdmins)
+      .orderBy(desc(hrAdmins.updatedAt));
+
+    if (filters?.limit) {
+      query = query.limit(filters.limit) as any;
+    }
+    
+    if (filters?.offset) {
+      query = query.offset(filters.offset) as any;
+    }
+
+    return await query;
+  }
+
+  async createHRAdmin(data: { 
+    phoneNumber: string; 
+    name?: string; 
+    organizationId: string; 
+    userId: string; 
+    organizationName?: string 
+  }): Promise<HRAdmin> {
+    const normalizedPhone = this.normalizePhoneNumber(data.phoneNumber);
+    
+    // Check if HR admin exists
+    const existing = await db.select()
+      .from(hrAdmins)
+      .where(eq(hrAdmins.phoneNumber, normalizedPhone))
+      .limit(1);
+
+    if (existing.length > 0) {
+      // Update existing
+      const result = await db.update(hrAdmins)
+        .set({
+          name: data.name || existing[0].name,
+          organizationId: data.organizationId,
+          userId: data.userId,
+          organizationName: data.organizationName || existing[0].organizationName,
+          chatbotActive: 'true',
+          updatedAt: new Date(),
+        })
+        .where(eq(hrAdmins.phoneNumber, normalizedPhone))
+        .returning();
+      
+      return result[0];
+    } else {
+      // Create new
+      const result = await db.insert(hrAdmins)
+        .values({
+          phoneNumber: normalizedPhone,
+          name: data.name || null,
+          organizationId: data.organizationId,
+          userId: data.userId,
+          organizationName: data.organizationName || null,
+          chatbotActive: 'true',
+        })
+        .returning();
+      
+      return result[0];
+    }
+  }
+
+  async updateHRAdmin(phoneNumber: string, updates: Partial<HRAdmin>): Promise<HRAdmin | undefined> {
+    const normalizedPhone = this.normalizePhoneNumber(phoneNumber);
+    
+    const updateData: any = {
+      ...updates,
+      updatedAt: new Date(),
+    };
+
+    // Handle boolean to string conversion for chatbotActive
+    if (typeof updates.chatbotActive === 'boolean') {
+      updateData.chatbotActive = updates.chatbotActive ? 'true' : 'false';
+    }
+
+    const result = await db.update(hrAdmins)
+      .set(updateData)
+      .where(eq(hrAdmins.phoneNumber, normalizedPhone))
+      .returning();
+    
+    return result[0];
+  }
+
+  async deleteHRAdmin(phoneNumber: string): Promise<void> {
+    const normalizedPhone = this.normalizePhoneNumber(phoneNumber);
+    await db.delete(hrAdmins).where(eq(hrAdmins.phoneNumber, normalizedPhone));
+  }
+
+  async isHRAdmin(phoneNumber: string): Promise<boolean> {
+    const normalizedPhone = this.normalizePhoneNumber(phoneNumber);
+    
+    const result = await db.select()
+      .from(hrAdmins)
+      .where(eq(hrAdmins.phoneNumber, normalizedPhone))
+      .limit(1);
+    
+    return result.length > 0;
+  }
+
+  // ============================================================================
+  // HR Chatbot Config methods
+  // ============================================================================
+
+  async getHRChatbotConfig(): Promise<HRChatbotConfig | undefined> {
+    const result = await db.select()
+      .from(hrChatbotConfigs)
+      .orderBy(desc(hrChatbotConfigs.updatedAt))
+      .limit(1);
+    
+    return result[0];
+  }
+
+  async updateHRChatbotConfig(config: Partial<HRChatbotConfig> & { agentName: string }): Promise<HRChatbotConfig> {
+    // Check if config exists
+    const existing = await this.getHRChatbotConfig();
+
+    if (existing) {
+      // Update existing config
+      const updateData: any = {
+        ...config,
+        isActive: typeof config.isActive === 'boolean' ? (config.isActive ? 'true' : 'false') : existing.isActive,
+        updatedAt: new Date(),
+      };
+
+      const result = await db.update(hrChatbotConfigs)
+        .set(updateData)
+        .where(eq(hrChatbotConfigs.id, existing.id))
+        .returning();
+      
+      return result[0];
+    } else {
+      // Create new config
+      const result = await db.insert(hrChatbotConfigs)
+        .values({
+          agentName: config.agentName,
+          ragBaseUrl: config.ragBaseUrl || '',
+          ragAccessKey: config.ragAccessKey || '',
+          supabaseUrl: config.supabaseUrl || '',
+          supabaseServiceKey: config.supabaseServiceKey || '',
+          contextMessageCount: config.contextMessageCount || 5,
           isActive: typeof config.isActive === 'boolean' ? (config.isActive ? 'true' : 'false') : 'true',
         })
         .returning();

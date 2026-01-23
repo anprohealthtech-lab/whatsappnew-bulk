@@ -93,8 +93,39 @@ export const contacts = pgTable("contacts", {
   isLead: text("is_lead").default("false").notNull(), // "true" or "false"
   leadTriggerKeyword: text("lead_trigger_keyword"),
   chatbotActive: text("chatbot_active").default("true").notNull(), // "true" or "false" - can pause chatbot per lead
+  userType: text("user_type"), // null, "lead", "hr_admin" - determines which chatbot handles
   conversationState: jsonb("conversation_state"),
   lastMessageAt: timestamp("last_message_at"),
+  createdAt: timestamp("created_at").defaultNow(),
+  updatedAt: timestamp("updated_at").defaultNow(),
+});
+
+// HR Admin users - links WhatsApp number to Task Management app users
+export const hrAdmins = pgTable("hr_admins", {
+  id: varchar("id").primaryKey().default(sql`gen_random_uuid()`),
+  phoneNumber: text("phone_number").notNull().unique(),
+  name: text("name"),
+  // Task Management app integration
+  organizationId: text("organization_id").notNull(), // Supabase organization ID
+  userId: text("user_id").notNull(), // Supabase user ID  
+  organizationName: text("organization_name"), // Cached org name
+  // Chatbot settings
+  chatbotActive: text("chatbot_active").default("true").notNull(), // "true" or "false"
+  createdAt: timestamp("created_at").defaultNow(),
+  updatedAt: timestamp("updated_at").defaultNow(),
+});
+
+// HR Chatbot configuration - separate from lead chatbot
+export const hrChatbotConfigs = pgTable("hr_chatbot_configs", {
+  id: varchar("id").primaryKey().default(sql`gen_random_uuid()`),
+  agentName: text("agent_name").notNull(),
+  ragBaseUrl: text("rag_base_url").notNull(), // DO AI Agent endpoint
+  ragAccessKey: text("rag_access_key").notNull(),
+  // Supabase integration for function calling
+  supabaseUrl: text("supabase_url").notNull(),
+  supabaseServiceKey: text("supabase_service_key").notNull(), // Service role key for edge functions
+  contextMessageCount: integer("context_message_count").default(5),
+  isActive: text("is_active").default("true").notNull(), // "true" or "false"
   createdAt: timestamp("created_at").defaultNow(),
   updatedAt: timestamp("updated_at").defaultNow(),
 });
@@ -141,6 +172,8 @@ export type BlockedNumber = typeof blockedNumbers.$inferSelect;
 export type AutoResponse = typeof autoResponses.$inferSelect;
 export type Contact = typeof contacts.$inferSelect;
 export type ChatbotConfig = typeof chatbotConfigs.$inferSelect;
+export type HRAdmin = typeof hrAdmins.$inferSelect;
+export type HRChatbotConfig = typeof hrChatbotConfigs.$inferSelect;
 
 // Additional schemas for API requests
 export const sendMessageSchema = z.object({
@@ -190,9 +223,31 @@ export const flagLeadSchema = z.object({
   name: z.string().optional(),
 });
 
+// HR Admin registration schema
+export const registerHRAdminSchema = z.object({
+  phoneNumber: z.string().min(1, "Phone number is required"),
+  name: z.string().optional(),
+  organizationId: z.string().min(1, "Organization ID is required"),
+  userId: z.string().min(1, "User ID is required"),
+  organizationName: z.string().optional(),
+});
+
+// HR Chatbot config schema
+export const hrChatbotConfigSchema = z.object({
+  agentName: z.string().min(1, "Agent name is required"),
+  ragBaseUrl: z.string().url("Valid RAG base URL is required"),
+  ragAccessKey: z.string().min(1, "RAG access key is required"),
+  supabaseUrl: z.string().url("Valid Supabase URL is required"),
+  supabaseServiceKey: z.string().min(1, "Supabase service key is required"),
+  contextMessageCount: z.number().int().min(1).max(10).optional(),
+  isActive: z.boolean().optional(),
+});
+
 export type SendMessageRequest = z.infer<typeof sendMessageSchema>;
 export type SendReportRequest = z.infer<typeof sendReportSchema>;
 export type CreateCampaignRequest = z.infer<typeof createCampaignSchema>;
 export type BulkSendRequest = z.infer<typeof bulkSendSchema>;
 export type ChatbotConfigRequest = z.infer<typeof chatbotConfigSchema>;
 export type FlagLeadRequest = z.infer<typeof flagLeadSchema>;
+export type RegisterHRAdminRequest = z.infer<typeof registerHRAdminSchema>;
+export type HRChatbotConfigRequest = z.infer<typeof hrChatbotConfigSchema>;

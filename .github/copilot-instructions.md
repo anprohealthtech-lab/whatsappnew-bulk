@@ -11,6 +11,17 @@ Keep guidance short and focused — the goal is to make an AI coding assistant i
   - `uploads/` and `sessions/` — persistent runtime directories for file uploads and WhatsApp session data. Don't move these or change persistence semantics without considering deployment storage.
 - `shared/schema.ts` & `migrations/` — Drizzle ORM schema and migrations; DB is managed with `drizzle-kit`.
 
+### Cross-Project Integration: HR Chatbot Flow
+This backend integrates with two external systems for HR/Task Management via DigitalOcean AI Agent:
+```
+WhatsApp User → HRChatbotService → DO AI Agent (GPT-4o) → DO Serverless Functions → Supabase Edge Functions
+```
+- **HRChatbotService** (`server/services/HRChatbotService.ts`): Routes messages from registered HR admins to DO AI Agent
+- **HR Admin routing**: `routes.ts` checks `hr_admins` table to determine if incoming WhatsApp message should be routed to HR chatbot vs LIMS chatbot
+- **Config table**: `hr_chatbot_configs` stores DO AI Agent URL, Supabase credentials for function execution
+- **API endpoints**: `/api/hr-admins/*` for HR admin management, `/api/hr-chatbot/*` for config
+- See [HR_CHATBOT_INTEGRATION.md](NodeBackend/HR_CHATBOT_INTEGRATION.md) for full architecture diagram
+
 ### Quick developer workflows (commands)
 - Dev (single command from repo root):
   - `npm run dev` — runs `cd NodeBackend && npm run dev` (this launches the server via `tsx server/index.ts` and uses Vite for the client in dev mode).

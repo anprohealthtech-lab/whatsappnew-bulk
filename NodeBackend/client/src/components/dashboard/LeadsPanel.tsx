@@ -36,7 +36,7 @@ export function LeadsPanel() {
   });
 
   // Query leads
-  const { data: leadsData, isLoading } = useQuery({
+  const { data: leadsData, isLoading } = useQuery<{ leads: any[] }>({
     queryKey: ["/api/leads"],
     refetchInterval: 30000, // Refresh every 30 seconds
   });

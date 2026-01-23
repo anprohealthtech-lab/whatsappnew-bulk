@@ -143,7 +143,7 @@ export class ChatbotService {
    * Format conversation history into OpenAI-compatible message format
    * Maps: incoming (from lead) -> role: "user", outgoing (from bot) -> role: "assistant"
    */
-  formatConversationForRAG(messages: Message[]): RagMessage[] {
+  formatConversationForRAG(messages: Array<{ content: string; type: string }>): RagMessage[] {
     return messages.map(msg => {
       // Determine role based on message type
       // incoming = from lead = user

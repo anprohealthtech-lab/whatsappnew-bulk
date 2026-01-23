@@ -11,8 +11,9 @@ import { persistentFileService } from "./services/PersistentFileService";
 import { campaignService } from "./services/CampaignService";
 import { autoResponseService } from "./services/AutoResponseService";
 import { ChatbotService } from "./services/ChatbotService";
+import { HRChatbotService } from "./services/HRChatbotService";
 import { initializeChatbotConfig } from "./initChatbot";
-import { sendMessageSchema, sendReportSchema, createCampaignSchema, bulkSendSchema, chatbotConfigSchema, flagLeadSchema } from "@shared/schema";
+import { sendMessageSchema, sendReportSchema, createCampaignSchema, bulkSendSchema, chatbotConfigSchema, flagLeadSchema, registerHRAdminSchema, hrChatbotConfigSchema } from "@shared/schema";
 import { log } from "./utils";
 import { getDbHealth } from "./db";
 import { withRetry } from "./dbRetry";
@@ -194,7 +195,38 @@ export async function registerRoutes(app: Express): Promise<Server> {
           return;
         }
 
-        // Initialize chatbot service
+        // ========================================
+        // PRIORITY 1: Check if HR Admin
+        // ========================================
+        const hrChatbotService = new HRChatbotService(storage, whatsAppService);
+        const isHRAdmin = await withRetry(() => hrChatbotService.isHRAdmin(data.phoneNumber));
+        
+        if (isHRAdmin) {
+          console.log(`👔 HR Admin detected: ${data.phoneNumber}`);
+          
+          // Check if HR chatbot is active for this admin
+          const hrAdmin = await withRetry(() => storage.getHRAdmin(data.phoneNumber));
+          console.log(`🔍 HR Chatbot status for ${data.phoneNumber}: ${hrAdmin?.chatbotActive === 'false' ? 'PAUSED ⏸️' : 'ACTIVE ✅'}`);
+          
+          if (hrAdmin?.chatbotActive === 'false') {
+            console.log(`⏸️ HR Chatbot paused for ${data.phoneNumber} - skipping`);
+            broadcast('incoming-message', data);
+            return;
+          }
+
+          // Process through HR chatbot
+          console.log(`🤖 Processing HR message from ${data.phoneNumber} (org: ${hrAdmin?.organizationName || hrAdmin?.organizationId})`);
+          await hrChatbotService.processHRMessage(data.phoneNumber, data.content);
+          broadcast('hr-chatbot-response-sent', { phoneNumber: data.phoneNumber });
+          broadcast('incoming-message', data);
+          return;
+        }
+
+        // ========================================
+        // PRIORITY 2: Check if Lead (LIMS chatbot)
+        // ========================================
+        
+        // Initialize lead chatbot service
         const chatbotService = new ChatbotService(storage, whatsAppService);
 
         // Check if this phone number is already a lead
@@ -236,7 +268,9 @@ export async function registerRoutes(app: Express): Promise<Server> {
           await chatbotService.processLeadMessage(data.phoneNumber, data.content);
           broadcast('chatbot-response-sent', { phoneNumber: data.phoneNumber });
         } else {
-          // Check and trigger regular auto-responses for non-leads
+          // ========================================
+          // PRIORITY 3: Check auto-responses for non-leads
+          // ========================================
           const responded = await withRetry(() =>
             autoResponseService.handleIncomingMessage(
               data.phoneNumber,
@@ -1233,6 +1267,236 @@ export async function registerRoutes(app: Express): Promise<Server> {
   });
 
   // ==================== END CHATBOT & LEADS API ====================
+
+  // ==================== HR ADMIN & HR CHATBOT API ====================
+
+  // Get HR chatbot config
+  app.get('/api/hr-chatbot/config', async (req, res) => {
+    try {
+      const config = await withRetry(() => storage.getHRChatbotConfig());
+
+      if (!config) {
+        return res.json({
+          success: true,
+          config: null,
+          message: 'HR chatbot not configured yet',
+        });
+      }
+
+      // Mask sensitive keys
+      const maskedConfig = {
+        ...config,
+        ragAccessKey: config.ragAccessKey ? `${config.ragAccessKey.substring(0, 4)}...${config.ragAccessKey.substring(config.ragAccessKey.length - 4)}` : '',
+        supabaseServiceKey: config.supabaseServiceKey ? '****' : '',
+      };
+
+      res.json({
+        success: true,
+        config: maskedConfig,
+      });
+    } catch (error) {
+      const errorMessage = error instanceof Error ? error.message : 'Unknown error';
+      log(`Get HR chatbot config error: ${errorMessage}`);
+      res.status(500).json({ success: false, error: errorMessage });
+    }
+  });
+
+  // Update HR chatbot config
+  app.put('/api/hr-chatbot/config', async (req, res) => {
+    try {
+      const validation = hrChatbotConfigSchema.safeParse(req.body);
+      
+      if (!validation.success) {
+        return res.status(400).json({
+          success: false,
+          error: validation.error.errors[0].message,
+        });
+      }
+
+      const config = await withRetry(() => storage.updateHRChatbotConfig({
+        agentName: validation.data.agentName,
+        ragBaseUrl: validation.data.ragBaseUrl,
+        ragAccessKey: validation.data.ragAccessKey,
+        supabaseUrl: validation.data.supabaseUrl,
+        supabaseServiceKey: validation.data.supabaseServiceKey,
+        contextMessageCount: validation.data.contextMessageCount,
+        isActive: validation.data.isActive,
+      }));
+
+      // Mask sensitive keys in response
+      const maskedConfig = {
+        ...config,
+        ragAccessKey: config.ragAccessKey ? `${config.ragAccessKey.substring(0, 4)}...****` : '',
+        supabaseServiceKey: '****',
+      };
+
+      res.json({
+        success: true,
+        config: maskedConfig,
+      });
+    } catch (error) {
+      const errorMessage = error instanceof Error ? error.message : 'Unknown error';
+      log(`Update HR chatbot config error: ${errorMessage}`);
+      res.status(400).json({ success: false, error: errorMessage });
+    }
+  });
+
+  // Test HR chatbot connection
+  app.post('/api/hr-chatbot/test', async (req, res) => {
+    try {
+      const config = await withRetry(() => storage.getHRChatbotConfig());
+      
+      if (!config) {
+        return res.status(400).json({
+          success: false,
+          error: 'HR Chatbot not configured. Please save configuration first.',
+        });
+      }
+
+      const hrChatbotService = new HRChatbotService(storage, whatsAppService);
+      const result = await hrChatbotService.testConnection(config);
+
+      res.json(result);
+    } catch (error) {
+      const errorMessage = error instanceof Error ? error.message : 'Unknown error';
+      log(`Test HR chatbot connection error: ${errorMessage}`);
+      res.status(500).json({
+        success: false,
+        message: `Test failed: ${errorMessage}`,
+      });
+    }
+  });
+
+  // Get all HR admins
+  app.get('/api/hr-admins', async (req, res) => {
+    try {
+      const limit = parseInt(req.query.limit as string) || 50;
+      const offset = parseInt(req.query.offset as string) || 0;
+
+      const hrAdmins = await withRetry(() => storage.getHRAdmins({ limit, offset }));
+
+      res.json({
+        success: true,
+        hrAdmins,
+        count: hrAdmins.length,
+      });
+    } catch (error) {
+      const errorMessage = error instanceof Error ? error.message : 'Unknown error';
+      log(`Get HR admins error: ${errorMessage}`);
+      res.status(500).json({ success: false, error: errorMessage });
+    }
+  });
+
+  // Register new HR admin (link WhatsApp number to Task Management user)
+  app.post('/api/hr-admins', async (req, res) => {
+    try {
+      const validation = registerHRAdminSchema.safeParse(req.body);
+      
+      if (!validation.success) {
+        return res.status(400).json({
+          success: false,
+          error: validation.error.errors[0].message,
+        });
+      }
+
+      const { phoneNumber, name, organizationId, userId, organizationName } = validation.data;
+
+      // Create HR admin
+      const hrAdmin = await withRetry(() => storage.createHRAdmin({
+        phoneNumber,
+        name,
+        organizationId,
+        userId,
+        organizationName,
+      }));
+
+      // Optionally send welcome message
+      try {
+        const hrChatbotService = new HRChatbotService(storage, whatsAppService);
+        await hrChatbotService.sendWelcomeMessage(hrAdmin);
+      } catch (welcomeError) {
+        console.log(`⚠️ Failed to send welcome message to HR admin: ${welcomeError}`);
+      }
+
+      res.json({
+        success: true,
+        hrAdmin,
+      });
+    } catch (error) {
+      const errorMessage = error instanceof Error ? error.message : 'Unknown error';
+      log(`Register HR admin error: ${errorMessage}`);
+      res.status(400).json({ success: false, error: errorMessage });
+    }
+  });
+
+  // Get HR admin details with conversation
+  app.get('/api/hr-admins/:phoneNumber/conversation', async (req, res) => {
+    try {
+      const { phoneNumber } = req.params;
+      const limit = parseInt(req.query.limit as string) || 20;
+
+      const hrAdmin = await withRetry(() => storage.getHRAdmin(phoneNumber));
+      const conversation = await withRetry(() => storage.getConversationHistory(phoneNumber, limit));
+
+      res.json({
+        success: true,
+        hrAdmin,
+        conversation: conversation.reverse(), // Return chronologically (oldest first)
+      });
+    } catch (error) {
+      const errorMessage = error instanceof Error ? error.message : 'Unknown error';
+      log(`Get HR admin conversation error: ${errorMessage}`);
+      res.status(500).json({ success: false, error: errorMessage });
+    }
+  });
+
+  // Delete HR admin
+  app.delete('/api/hr-admins/:phoneNumber', async (req, res) => {
+    try {
+      const { phoneNumber } = req.params;
+
+      await withRetry(() => storage.deleteHRAdmin(phoneNumber));
+
+      res.json({
+        success: true,
+        message: 'HR admin removed successfully',
+      });
+    } catch (error) {
+      const errorMessage = error instanceof Error ? error.message : 'Unknown error';
+      log(`Delete HR admin error: ${errorMessage}`);
+      res.status(400).json({ success: false, error: errorMessage });
+    }
+  });
+
+  // Toggle HR chatbot active status for an admin
+  app.patch('/api/hr-admins/:phoneNumber/chatbot-status', async (req, res) => {
+    try {
+      const { phoneNumber } = req.params;
+      const { active } = req.body;
+
+      if (typeof active !== 'boolean') {
+        return res.status(400).json({
+          success: false,
+          error: 'active field must be a boolean',
+        });
+      }
+
+      await withRetry(() => storage.updateHRAdmin(phoneNumber, {
+        chatbotActive: active ? 'true' : 'false',
+      }));
+
+      res.json({
+        success: true,
+        message: `HR Chatbot ${active ? 'enabled' : 'paused'} for this admin`,
+      });
+    } catch (error) {
+      const errorMessage = error instanceof Error ? error.message : 'Unknown error';
+      log(`Toggle HR chatbot status error: ${errorMessage}`);
+      res.status(400).json({ success: false, error: errorMessage });
+    }
+  });
+
+  // ==================== END HR ADMIN API ====================
 
   // Cleanup old files periodically
   setInterval(async () => {

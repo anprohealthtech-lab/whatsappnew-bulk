@@ -1,4 +1,4 @@
-import { type User, type InsertUser, type Message, type InsertMessage, type SystemLog, type InsertSystemLog, type BlockedNumber, type AutoResponse, type Contact, type ChatbotConfig } from "@shared/schema";
+import { type User, type InsertUser, type Message, type InsertMessage, type SystemLog, type InsertSystemLog, type BlockedNumber, type AutoResponse, type Contact, type ChatbotConfig, type HRAdmin, type HRChatbotConfig } from "@shared/schema";
 import { randomUUID } from "crypto";
 
 export interface IStorage {
@@ -41,9 +41,21 @@ export interface IStorage {
   updateContact(phoneNumber: string, updates: Partial<Contact>): Promise<Contact | undefined>;
   getConversationHistory(phoneNumber: string, limit?: number): Promise<Message[]>;
 
-  // Chatbot config methods
+  // Chatbot config methods (for Lead chatbot)
   getChatbotConfig(): Promise<ChatbotConfig | undefined>;
   updateChatbotConfig(config: Partial<ChatbotConfig> & { agentName: string }): Promise<ChatbotConfig>;
+
+  // HR Admin methods
+  getHRAdmin(phoneNumber: string): Promise<HRAdmin | undefined>;
+  getHRAdmins(filters?: { limit?: number; offset?: number }): Promise<HRAdmin[]>;
+  createHRAdmin(data: { phoneNumber: string; name?: string; organizationId: string; userId: string; organizationName?: string }): Promise<HRAdmin>;
+  updateHRAdmin(phoneNumber: string, updates: Partial<HRAdmin>): Promise<HRAdmin | undefined>;
+  deleteHRAdmin(phoneNumber: string): Promise<void>;
+  isHRAdmin(phoneNumber: string): Promise<boolean>;
+
+  // HR Chatbot config methods
+  getHRChatbotConfig(): Promise<HRChatbotConfig | undefined>;
+  updateHRChatbotConfig(config: Partial<HRChatbotConfig> & { agentName: string }): Promise<HRChatbotConfig>;
 }
 
 export class MemStorage implements IStorage {
@@ -357,6 +369,83 @@ export class MemStorage implements IStorage {
       };
     }
     return this.chatbotConfig;
+  }
+
+  // HR Admin methods (MemStorage stub implementations)
+  private hrAdmins: Map<string, HRAdmin> = new Map();
+  private hrChatbotConfig: HRChatbotConfig | undefined;
+
+  async getHRAdmin(phoneNumber: string): Promise<HRAdmin | undefined> {
+    return this.hrAdmins.get(phoneNumber);
+  }
+
+  async getHRAdmins(filters?: { limit?: number; offset?: number }): Promise<HRAdmin[]> {
+    const admins = Array.from(this.hrAdmins.values());
+    const offset = filters?.offset || 0;
+    const limit = filters?.limit || admins.length;
+    return admins.slice(offset, offset + limit);
+  }
+
+  async createHRAdmin(data: { phoneNumber: string; name?: string; organizationId: string; userId: string; organizationName?: string }): Promise<HRAdmin> {
+    const admin: HRAdmin = {
+      id: randomUUID(),
+      phoneNumber: data.phoneNumber,
+      name: data.name || null,
+      organizationId: data.organizationId,
+      userId: data.userId,
+      organizationName: data.organizationName || null,
+      chatbotActive: 'true',
+      createdAt: new Date(),
+      updatedAt: new Date(),
+    };
+    this.hrAdmins.set(data.phoneNumber, admin);
+    return admin;
+  }
+
+  async updateHRAdmin(phoneNumber: string, updates: Partial<HRAdmin>): Promise<HRAdmin | undefined> {
+    const existing = this.hrAdmins.get(phoneNumber);
+    if (!existing) return undefined;
+    const updated = { ...existing, ...updates, updatedAt: new Date() };
+    this.hrAdmins.set(phoneNumber, updated);
+    return updated;
+  }
+
+  async deleteHRAdmin(phoneNumber: string): Promise<void> {
+    this.hrAdmins.delete(phoneNumber);
+  }
+
+  async isHRAdmin(phoneNumber: string): Promise<boolean> {
+    return this.hrAdmins.has(phoneNumber);
+  }
+
+  async getHRChatbotConfig(): Promise<HRChatbotConfig | undefined> {
+    return this.hrChatbotConfig;
+  }
+
+  async updateHRChatbotConfig(config: Partial<HRChatbotConfig> & { agentName: string }): Promise<HRChatbotConfig> {
+    if (this.hrChatbotConfig) {
+      this.hrChatbotConfig = {
+        ...this.hrChatbotConfig,
+        ...config,
+        isActive: config.isActive !== undefined ? String(config.isActive) : this.hrChatbotConfig.isActive,
+        updatedAt: new Date(),
+      };
+    } else {
+      const id = randomUUID();
+      this.hrChatbotConfig = {
+        id,
+        agentName: config.agentName,
+        ragBaseUrl: config.ragBaseUrl || '',
+        ragAccessKey: config.ragAccessKey || '',
+        supabaseUrl: config.supabaseUrl || '',
+        supabaseServiceKey: config.supabaseServiceKey || '',
+        contextMessageCount: config.contextMessageCount || 5,
+        isActive: config.isActive !== undefined ? String(config.isActive) : 'true',
+        createdAt: new Date(),
+        updatedAt: new Date(),
+      };
+    }
+    return this.hrChatbotConfig;
   }
 }
 
