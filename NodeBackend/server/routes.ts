@@ -1737,8 +1737,8 @@ export async function registerRoutes(app: Express): Promise<Server> {
         ? `*${title}*\n\n${message}`
         : message;
 
-      // Send via WhatsApp
-      await whatsAppService.sendMessage(normalizedPhone, formattedMessage);
+      // Send via WhatsApp (use sendTextMessage - the correct method name)
+      await whatsAppService.sendTextMessage(normalizedPhone, formattedMessage);
 
       log(`✅ Notification sent successfully (id: ${notificationId || 'N/A'})`);
 
@@ -1803,7 +1803,7 @@ export async function registerRoutes(app: Express): Promise<Server> {
             ? `*${title}*\n\n${message}`
             : message;
 
-          await whatsAppService.sendMessage(normalizedPhone, formattedMessage);
+          await whatsAppService.sendTextMessage(normalizedPhone, formattedMessage);
           results.sent++;
 
           // Small delay between messages to avoid rate limiting

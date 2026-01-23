@@ -500,9 +500,16 @@ export class HRChatbotService {
   ): Promise<any> {
     const log = (msg: string) => console.log(`[HRChatbotService] ${msg}`);
     
+    // Remap organizationId to orgId (DO reserved word workaround)
+    const mappedParams = { ...params };
+    if (mappedParams.organizationId) {
+      mappedParams.orgId = mappedParams.organizationId;
+      delete mappedParams.organizationId;
+    }
+    
     // Build URL with query params (DO Functions use GET with query params)
     const url = new URL(`${DO_FUNCTIONS_BASE}/${functionName}`);
-    Object.entries(params).forEach(([key, value]) => {
+    Object.entries(mappedParams).forEach(([key, value]) => {
       if (value !== undefined && value !== null) {
         url.searchParams.set(key, String(value));
       }
