@@ -925,7 +925,8 @@ IMPORTANT: Always use userId="${hrAdmin.userId}" and organizationId="${hrAdmin.o
   async processHRMessage(
     phoneNumber: string, 
     messageText: string,
-    audioData?: { base64: string; mimetype: string } // Optional audio for voice notes
+    audioData?: { base64: string; mimetype: string }, // Optional audio for voice notes
+    replyTo?: string // Optional: full JID to reply to (e.g., with @lid suffix)
   ): Promise<void> {
     const log = (msg: string) => console.log(`[HRChatbotService] ${msg}`);
     
@@ -967,10 +968,12 @@ IMPORTANT: Always use userId="${hrAdmin.userId}" and organizationId="${hrAdmin.o
       // Add assistant response to cache
       this.addToConversationCache(phoneNumber, "assistant", botResponse);
 
-      log(`📤 Sending response to ${phoneNumber}`);
+      // Use replyTo if provided (preserves @lid format), otherwise fallback to phoneNumber
+      const sendTo = replyTo || phoneNumber;
+      log(`📤 Sending response to ${sendTo}`);
 
       // Send reply via WhatsApp
-      await this.whatsappService.sendTextMessage(phoneNumber, botResponse);
+      await this.whatsappService.sendTextMessage(sendTo, botResponse);
 
       // Store outgoing message
       await this.storage.createMessage({

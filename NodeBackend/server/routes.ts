@@ -225,7 +225,9 @@ export async function registerRoutes(app: Express): Promise<Server> {
                 base64: data.audioData,
                 mimetype: data.mediaInfo?.mimetype || 'audio/ogg'
               };
-              await hrChatbotService.processHRMessage(data.phoneNumber, '[Voice Note]', audioPayload);
+              // Use data.from to preserve @lid format for proper message delivery
+              const replyTo = data.from || data.phoneNumber;
+              await hrChatbotService.processHRMessage(data.phoneNumber, '[Voice Note]', audioPayload, replyTo);
               broadcast('hr-chatbot-response-sent', { phoneNumber: data.phoneNumber, type: 'voice_processed' });
               broadcast('incoming-message', data);
               return;
@@ -256,7 +258,9 @@ export async function registerRoutes(app: Express): Promise<Server> {
 
           // Process text message through HR chatbot
           console.log(`🤖 Processing HR message from ${data.phoneNumber} (org: ${hrAdmin?.organizationName || hrAdmin?.organizationId})`);
-          await hrChatbotService.processHRMessage(data.phoneNumber, data.content);
+          // Use data.from to preserve @lid format for proper message delivery
+          const replyTo = data.from || data.phoneNumber;
+          await hrChatbotService.processHRMessage(data.phoneNumber, data.content, undefined, replyTo);
           broadcast('hr-chatbot-response-sent', { phoneNumber: data.phoneNumber });
           broadcast('incoming-message', data);
           return;
