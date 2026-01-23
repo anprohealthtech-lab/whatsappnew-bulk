@@ -386,6 +386,37 @@ const TOOLS: Anthropic.Tool[] = [
       },
       required: ["userId", "organizationId", "startDate", "reason"]
     }
+  },
+  {
+    name: "approve_leave",
+    description: "Approve or reject a pending leave request. Use when admin says 'approve', 'reject', 'disapprove', 'accept', 'deny', or similar. The system will find the most recent pending leave request based on conversation context. If employee name mentioned, will search for that specific employee's request.",
+    input_schema: {
+      type: "object" as const,
+      properties: {
+        userId: {
+          type: "string",
+          description: "The admin user ID taking action (from context)"
+        },
+        organizationId: {
+          type: "string",
+          description: "The organization ID (from context)"
+        },
+        action: {
+          type: "string",
+          enum: ["approve", "reject"],
+          description: "Action to take: approve or reject"
+        },
+        reason: {
+          type: "string",
+          description: "Optional reason for rejection. Not needed for approval."
+        },
+        employeeName: {
+          type: "string",
+          description: "Optional: employee name if admin specifies. If not provided, approves most recent pending leave request."
+        }
+      },
+      required: ["userId", "organizationId", "action"]
+    }
   }
 ];
 
@@ -699,6 +730,34 @@ export class HRChatbotService {
             });
           }
           return JSON.stringify({ success: false, error: result.error || "Failed to submit leave request" });
+        }
+
+        case "approve_leave": {
+          const result = await this.callDOFunction("approve-leave", {
+            userId,
+            organizationId,
+            action: toolInput.action,
+            reason: toolInput.reason,
+            employeeName: toolInput.employeeName
+          });
+          if (result.success) {
+            const leaveData = result.data;
+            return JSON.stringify({
+              success: true,
+              action: toolInput.action,
+              leaveRequest: {
+                employeeName: leaveData?.employeeName,
+                leaveType: leaveData?.leaveType,
+                startDate: leaveData?.startDate,
+                endDate: leaveData?.endDate,
+                reason: leaveData?.reason,
+                status: toolInput.action === "approve" ? "approved" : "rejected"
+              },
+              message: result.message,
+              employeeNotified: leaveData?.employeeNotified
+            });
+          }
+          return JSON.stringify({ success: false, error: result.error || "Failed to process leave request" });
         }
 
         default:
