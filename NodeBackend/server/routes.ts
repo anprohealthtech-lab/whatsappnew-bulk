@@ -202,7 +202,7 @@ export async function registerRoutes(app: Express): Promise<Server> {
         const isHRAdmin = await withRetry(() => hrChatbotService.isHRAdmin(data.phoneNumber));
         
         if (isHRAdmin) {
-          console.log(`👔 HR Admin detected: ${data.phoneNumber}`);
+          console.log(`👔 HR Admin detected: ${data.phoneNumber} (messageType: ${data.messageType || 'text'})`);
           
           // Check if HR chatbot is active for this admin
           const hrAdmin = await withRetry(() => storage.getHRAdmin(data.phoneNumber));
@@ -214,7 +214,47 @@ export async function registerRoutes(app: Express): Promise<Server> {
             return;
           }
 
-          // Process through HR chatbot
+          // Handle different message types
+          const messageType = data.messageType || 'text';
+          
+          if (messageType === 'voice_note' || messageType === 'audio') {
+            // Voice notes - send to Claude for transcription and processing
+            if (data.audioData) {
+              console.log(`🎤 Processing voice note from HR Admin ${data.phoneNumber} through Claude`);
+              const audioPayload = {
+                base64: data.audioData,
+                mimetype: data.mediaInfo?.mimetype || 'audio/ogg'
+              };
+              await hrChatbotService.processHRMessage(data.phoneNumber, '[Voice Note]', audioPayload);
+              broadcast('hr-chatbot-response-sent', { phoneNumber: data.phoneNumber, type: 'voice_processed' });
+              broadcast('incoming-message', data);
+              return;
+            } else {
+              // No audio data available (download failed)
+              console.log(`🎤 Voice note from HR Admin ${data.phoneNumber} - no audio data, sending acknowledgment`);
+              await whatsAppService.sendMessage(
+                data.from || `${data.phoneNumber}@s.whatsapp.net`,
+                "🎤 I received your voice note but couldn't process it. Please try again or type your message."
+              );
+              broadcast('hr-chatbot-response-sent', { phoneNumber: data.phoneNumber, type: 'voice_failed' });
+              broadcast('incoming-message', data);
+              return;
+            }
+          }
+          
+          if (messageType === 'image' || messageType === 'video' || messageType === 'document') {
+            // For media, acknowledge but can't process
+            console.log(`📎 Media (${messageType}) from HR Admin ${data.phoneNumber} - sending acknowledgment`);
+            await whatsAppService.sendMessage(
+              data.from || `${data.phoneNumber}@s.whatsapp.net`,
+              `📎 I received your ${messageType}! However, I can only process text messages at the moment.\n\nPlease type your request and I'll be happy to help.`
+            );
+            broadcast('hr-chatbot-response-sent', { phoneNumber: data.phoneNumber, type: 'media_acknowledgment' });
+            broadcast('incoming-message', data);
+            return;
+          }
+
+          // Process text message through HR chatbot
           console.log(`🤖 Processing HR message from ${data.phoneNumber} (org: ${hrAdmin?.organizationName || hrAdmin?.organizationId})`);
           await hrChatbotService.processHRMessage(data.phoneNumber, data.content);
           broadcast('hr-chatbot-response-sent', { phoneNumber: data.phoneNumber });
@@ -1497,6 +1537,296 @@ export async function registerRoutes(app: Express): Promise<Server> {
   });
 
   // ==================== END HR ADMIN API ====================
+
+  // ==================== NOTIFICATION API ====================
+
+  // Verify API key for notification endpoints
+  const NOTIFICATION_API_KEY = process.env.NOTIFICATION_API_KEY || 'whatsapp-notification-secret-key';
+  
+  const verifyNotificationApiKey = (req: any, res: any): boolean => {
+    const apiKey = req.headers['x-api-key'] || req.headers['authorization']?.replace('Bearer ', '');
+    if (apiKey !== NOTIFICATION_API_KEY) {
+      res.status(401).json({ success: false, error: 'Invalid API key' });
+      return false;
+    }
+    return true;
+  };
+
+  // Check if an organization is enabled for WhatsApp notifications
+  app.get('/api/org-whatsapp-enabled/:organizationId', async (req, res) => {
+    try {
+      if (!verifyNotificationApiKey(req, res)) return;
+
+      const { organizationId } = req.params;
+      const orgAdmins = await storage.getHRAdminsByOrganization(organizationId);
+      
+      res.json({
+        success: true,
+        enabled: orgAdmins && orgAdmins.length > 0,
+        adminCount: orgAdmins?.length || 0,
+        organizationId,
+      });
+    } catch (error) {
+      const errorMessage = error instanceof Error ? error.message : 'Unknown error';
+      res.status(500).json({ success: false, error: errorMessage });
+    }
+  });
+
+  // Get all organizations enabled for WhatsApp
+  app.get('/api/whatsapp-enabled-orgs', async (req, res) => {
+    try {
+      if (!verifyNotificationApiKey(req, res)) return;
+
+      const allAdmins = await storage.getAllHRAdmins();
+      
+      // Group by organization
+      const orgMap = new Map<string, { organizationId: string; adminCount: number }>();
+      for (const admin of allAdmins) {
+        const orgId = admin.organizationId;
+        if (!orgMap.has(orgId)) {
+          orgMap.set(orgId, { organizationId: orgId, adminCount: 0 });
+        }
+        orgMap.get(orgId)!.adminCount++;
+      }
+
+      res.json({
+        success: true,
+        organizations: Array.from(orgMap.values()),
+        totalOrgs: orgMap.size,
+      });
+    } catch (error) {
+      const errorMessage = error instanceof Error ? error.message : 'Unknown error';
+      res.status(500).json({ success: false, error: errorMessage });
+    }
+  });
+
+  // Get HR admin's WhatsApp ID for a user (lookup by userId or phone)
+  // This helps Task Management find the correct WhatsApp ID to send notifications
+  app.get('/api/whatsapp-id-lookup', async (req, res) => {
+    try {
+      if (!verifyNotificationApiKey(req, res)) return;
+
+      const { userId, organizationId, phoneNumber } = req.query;
+
+      if (!organizationId) {
+        return res.status(400).json({
+          success: false,
+          error: 'organizationId is required',
+        });
+      }
+
+      // Get all HR admins for this org
+      const orgAdmins = await storage.getHRAdminsByOrganization(organizationId as string);
+      
+      if (!orgAdmins || orgAdmins.length === 0) {
+        return res.status(404).json({
+          success: false,
+          error: 'No HR admins found for this organization',
+        });
+      }
+
+      // If userId provided, try to find matching admin
+      if (userId) {
+        const matchingAdmin = orgAdmins.find(admin => admin.userId === userId);
+        if (matchingAdmin) {
+          return res.json({
+            success: true,
+            whatsappId: matchingAdmin.phoneNumber,
+            isLid: matchingAdmin.phoneNumber.includes('@lid') || matchingAdmin.phoneNumber.length > 15,
+            adminName: matchingAdmin.name,
+          });
+        }
+      }
+
+      // If phoneNumber provided, check if any admin matches
+      if (phoneNumber) {
+        const normalizedInput = (phoneNumber as string).replace(/[^0-9]/g, '');
+        const matchingAdmin = orgAdmins.find(admin => {
+          const adminPhone = admin.phoneNumber.replace(/[^0-9@]/g, '').split('@')[0];
+          return adminPhone === normalizedInput || adminPhone.endsWith(normalizedInput);
+        });
+        
+        if (matchingAdmin) {
+          return res.json({
+            success: true,
+            whatsappId: matchingAdmin.phoneNumber,
+            isLid: matchingAdmin.phoneNumber.includes('@lid') || matchingAdmin.phoneNumber.length > 15,
+            adminName: matchingAdmin.name,
+          });
+        }
+      }
+
+      // Return first admin as default (org-level notification)
+      const defaultAdmin = orgAdmins[0];
+      res.json({
+        success: true,
+        whatsappId: defaultAdmin.phoneNumber,
+        isLid: defaultAdmin.phoneNumber.includes('@lid') || defaultAdmin.phoneNumber.length > 15,
+        adminName: defaultAdmin.name,
+        note: 'Default org admin (no specific user match)',
+        allAdmins: orgAdmins.map(a => ({ 
+          userId: a.userId, 
+          name: a.name, 
+          phoneNumber: a.phoneNumber 
+        })),
+      });
+    } catch (error) {
+      const errorMessage = error instanceof Error ? error.message : 'Unknown error';
+      res.status(500).json({ success: false, error: errorMessage });
+    }
+  });
+
+  // Send notification via WhatsApp (called by Supabase edge function)
+  app.post('/api/send-notification', async (req, res) => {
+    try {
+      // Verify API key
+      if (!verifyNotificationApiKey(req, res)) return;
+
+      const { phoneNumber, message, notificationId, title, type, organizationId } = req.body;
+
+      if (!phoneNumber || !message) {
+        return res.status(400).json({
+          success: false,
+          error: 'phoneNumber and message are required',
+        });
+      }
+
+      // REQUIRED: Check if organization has any HR admin registered
+      // Only orgs with HR admins can receive WhatsApp notifications
+      if (!organizationId) {
+        return res.status(400).json({
+          success: false,
+          error: 'organizationId is required',
+        });
+      }
+
+      const orgAdmins = await storage.getHRAdminsByOrganization(organizationId);
+      if (!orgAdmins || orgAdmins.length === 0) {
+        log(`🚫 Org ${organizationId} not enabled for WhatsApp - no HR admins registered`);
+        return res.status(403).json({
+          success: false,
+          error: 'Organization not enabled for WhatsApp notifications. Register an HR admin first.',
+          organizationId,
+        });
+      }
+
+      log(`✅ Org ${organizationId} verified - ${orgAdmins.length} HR admin(s) registered`);
+
+      // Smart phone number normalization - handles both regular and LID formats
+      let normalizedPhone = phoneNumber;
+      
+      // Check if it's already a full JID (contains @)
+      if (phoneNumber.includes('@')) {
+        normalizedPhone = phoneNumber; // Already formatted
+      } else if (phoneNumber.length > 15) {
+        // Long numbers are likely LID format
+        normalizedPhone = `${phoneNumber.replace(/[^0-9]/g, '')}@lid`;
+      } else {
+        // Regular phone number
+        normalizedPhone = `${phoneNumber.replace(/[^0-9]/g, '')}@s.whatsapp.net`;
+      }
+
+      log(`📤 Sending notification to ${normalizedPhone}: ${message.substring(0, 50)}...`);
+
+      // Format message with title if provided
+      const formattedMessage = title 
+        ? `*${title}*\n\n${message}`
+        : message;
+
+      // Send via WhatsApp
+      await whatsAppService.sendMessage(normalizedPhone, formattedMessage);
+
+      log(`✅ Notification sent successfully (id: ${notificationId || 'N/A'})`);
+
+      res.json({
+        success: true,
+        message: 'Notification sent',
+        notificationId,
+      });
+    } catch (error) {
+      const errorMessage = error instanceof Error ? error.message : 'Unknown error';
+      log(`❌ Send notification error: ${errorMessage}`);
+      res.status(500).json({ success: false, error: errorMessage });
+    }
+  });
+
+  // Batch send notifications (for processing queue)
+  app.post('/api/send-notifications-batch', async (req, res) => {
+    try {
+      // Verify API key
+      if (!verifyNotificationApiKey(req, res)) return;
+
+      const { notifications } = req.body;
+
+      if (!Array.isArray(notifications) || notifications.length === 0) {
+        return res.status(400).json({
+          success: false,
+          error: 'notifications array is required',
+        });
+      }
+
+      log(`📤 Processing batch of ${notifications.length} notifications`);
+
+      const results = {
+        sent: 0,
+        failed: 0,
+        errors: [] as { notificationId: string; error: string }[],
+      };
+
+      for (const notification of notifications) {
+        try {
+          const { phoneNumber, message, notificationId, title } = notification;
+          
+          if (!phoneNumber || !message) {
+            results.failed++;
+            results.errors.push({ notificationId, error: 'Missing phoneNumber or message' });
+            continue;
+          }
+
+          // Smart phone number normalization - handles both regular and LID formats
+          let normalizedPhone = phoneNumber;
+          if (phoneNumber.includes('@')) {
+            normalizedPhone = phoneNumber; // Already formatted
+          } else if (phoneNumber.length > 15) {
+            // Long numbers are likely LID format
+            normalizedPhone = `${phoneNumber.replace(/[^0-9]/g, '')}@lid`;
+          } else {
+            // Regular phone number
+            normalizedPhone = `${phoneNumber.replace(/[^0-9]/g, '')}@s.whatsapp.net`;
+          }
+
+          const formattedMessage = title 
+            ? `*${title}*\n\n${message}`
+            : message;
+
+          await whatsAppService.sendMessage(normalizedPhone, formattedMessage);
+          results.sent++;
+
+          // Small delay between messages to avoid rate limiting
+          await new Promise(resolve => setTimeout(resolve, 500));
+        } catch (error) {
+          results.failed++;
+          results.errors.push({ 
+            notificationId: notification.notificationId, 
+            error: error instanceof Error ? error.message : 'Unknown error' 
+          });
+        }
+      }
+
+      log(`✅ Batch complete: ${results.sent} sent, ${results.failed} failed`);
+
+      res.json({
+        success: true,
+        results,
+      });
+    } catch (error) {
+      const errorMessage = error instanceof Error ? error.message : 'Unknown error';
+      log(`❌ Batch notification error: ${errorMessage}`);
+      res.status(500).json({ success: false, error: errorMessage });
+    }
+  });
+
+  // ==================== END NOTIFICATION API ====================
 
   // Cleanup old files periodically
   setInterval(async () => {

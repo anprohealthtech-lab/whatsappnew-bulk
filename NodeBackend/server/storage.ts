@@ -48,6 +48,8 @@ export interface IStorage {
   // HR Admin methods
   getHRAdmin(phoneNumber: string): Promise<HRAdmin | undefined>;
   getHRAdmins(filters?: { limit?: number; offset?: number }): Promise<HRAdmin[]>;
+  getAllHRAdmins(): Promise<HRAdmin[]>;
+  getHRAdminsByOrganization(organizationId: string): Promise<HRAdmin[]>;
   createHRAdmin(data: { phoneNumber: string; name?: string; organizationId: string; userId: string; organizationName?: string }): Promise<HRAdmin>;
   updateHRAdmin(phoneNumber: string, updates: Partial<HRAdmin>): Promise<HRAdmin | undefined>;
   deleteHRAdmin(phoneNumber: string): Promise<void>;
@@ -375,8 +377,30 @@ export class MemStorage implements IStorage {
   private hrAdmins: Map<string, HRAdmin> = new Map();
   private hrChatbotConfig: HRChatbotConfig | undefined;
 
+  // Helper to normalize phone for lookup (handles LID + regular)
+  private normalizeHRPhone(phone: string): string {
+    if (phone.includes('@')) {
+      return phone.split('@')[0].replace(/\D/g, '');
+    }
+    return phone.replace(/\D/g, '');
+  }
+
   async getHRAdmin(phoneNumber: string): Promise<HRAdmin | undefined> {
-    return this.hrAdmins.get(phoneNumber);
+    // Try exact match first
+    if (this.hrAdmins.has(phoneNumber)) {
+      return this.hrAdmins.get(phoneNumber);
+    }
+    
+    // Try fuzzy match
+    const cleaned = this.normalizeHRPhone(phoneNumber);
+    for (const [key, admin] of this.hrAdmins) {
+      const storedCleaned = this.normalizeHRPhone(key);
+      if (storedCleaned === cleaned || 
+          storedCleaned.slice(-10) === cleaned.slice(-10)) {
+        return admin;
+      }
+    }
+    return undefined;
   }
 
   async getHRAdmins(filters?: { limit?: number; offset?: number }): Promise<HRAdmin[]> {
@@ -386,10 +410,26 @@ export class MemStorage implements IStorage {
     return admins.slice(offset, offset + limit);
   }
 
+  async getAllHRAdmins(): Promise<HRAdmin[]> {
+    return Array.from(this.hrAdmins.values());
+  }
+
+  async getHRAdminsByOrganization(organizationId: string): Promise<HRAdmin[]> {
+    return Array.from(this.hrAdmins.values()).filter(admin => admin.organizationId === organizationId);
+  }
+
   async createHRAdmin(data: { phoneNumber: string; name?: string; organizationId: string; userId: string; organizationName?: string }): Promise<HRAdmin> {
+    // Store phone preserving LID format
+    let phoneToStore = data.phoneNumber.replace(/[\s\-\(\)]/g, '');
+    if (!phoneToStore.includes('@')) {
+      if (phoneToStore.length >= 15) {
+        phoneToStore = `${phoneToStore}@lid`;
+      }
+    }
+    
     const admin: HRAdmin = {
       id: randomUUID(),
-      phoneNumber: data.phoneNumber,
+      phoneNumber: phoneToStore,
       name: data.name || null,
       organizationId: data.organizationId,
       userId: data.userId,
@@ -398,24 +438,28 @@ export class MemStorage implements IStorage {
       createdAt: new Date(),
       updatedAt: new Date(),
     };
-    this.hrAdmins.set(data.phoneNumber, admin);
+    this.hrAdmins.set(phoneToStore, admin);
     return admin;
   }
 
   async updateHRAdmin(phoneNumber: string, updates: Partial<HRAdmin>): Promise<HRAdmin | undefined> {
-    const existing = this.hrAdmins.get(phoneNumber);
+    const existing = await this.getHRAdmin(phoneNumber);
     if (!existing) return undefined;
     const updated = { ...existing, ...updates, updatedAt: new Date() };
-    this.hrAdmins.set(phoneNumber, updated);
+    this.hrAdmins.set(existing.phoneNumber, updated);
     return updated;
   }
 
   async deleteHRAdmin(phoneNumber: string): Promise<void> {
-    this.hrAdmins.delete(phoneNumber);
+    const existing = await this.getHRAdmin(phoneNumber);
+    if (existing) {
+      this.hrAdmins.delete(existing.phoneNumber);
+    }
   }
 
   async isHRAdmin(phoneNumber: string): Promise<boolean> {
-    return this.hrAdmins.has(phoneNumber);
+    const admin = await this.getHRAdmin(phoneNumber);
+    return !!admin;
   }
 
   async getHRChatbotConfig(): Promise<HRChatbotConfig | undefined> {

@@ -44,9 +44,12 @@ Your job is to remember things so the user doesn't have to.
 ## YOUR CAPABILITIES
 You have access to tools for:
 1. Creating tasks and reminders (one-time or recurring)
-2. Deleting tasks
-3. Checking team attendance
-4. Finding team members
+2. Completing tasks - mark them done
+3. Viewing pending tasks - see what's on the list
+4. Updating tasks - change status, priority, due date
+5. Deleting tasks
+6. Checking team attendance
+7. Finding team members
 
 ## RESPONSE STYLE
 Be conversational and warm. You're a friend, not a robot.
@@ -64,6 +67,13 @@ Convert natural language dates to YYYY-MM-DD format:
 - "in 3 days" → add 3 days
 - "Friday" → this coming Friday
 - "the 15th" → 15th of current month (or next if passed)
+
+## TASK STATUS HANDLING
+When user says:
+- "done", "completed", "finished" → use complete_task
+- "what's pending", "my tasks", "what do I need to do" → use get_my_tasks
+- "mark as in progress", "started working on" → use update_task with status: in_progress
+- "blocked", "stuck on" → use update_task with status: blocked
 
 ## IMPORTANT RULES
 1. ALWAYS use the provided userId and organizationId in function calls
@@ -225,6 +235,99 @@ const TOOLS: Anthropic.Tool[] = [
         }
       },
       required: ["organizationId"]
+    }
+  },
+  {
+    name: "complete_task",
+    description: "Mark a task as completed. User can complete tasks assigned to them or created by them.",
+    input_schema: {
+      type: "object" as const,
+      properties: {
+        userId: {
+          type: "string",
+          description: "The user completing the task"
+        },
+        organizationId: {
+          type: "string",
+          description: "The organization ID"
+        },
+        taskId: {
+          type: "string",
+          description: "Specific task ID to complete"
+        },
+        searchTerm: {
+          type: "string",
+          description: "Search for task by title (partial match)"
+        }
+      },
+      required: ["userId", "organizationId"]
+    }
+  },
+  {
+    name: "get_my_tasks",
+    description: "Get user's tasks. Returns pending tasks by default. Use when user asks about their tasks, what's pending, or what they need to do.",
+    input_schema: {
+      type: "object" as const,
+      properties: {
+        userId: {
+          type: "string",
+          description: "The user whose tasks to fetch"
+        },
+        organizationId: {
+          type: "string",
+          description: "The organization ID"
+        },
+        status: {
+          type: "string",
+          enum: ["pending", "in_progress", "completed", "all"],
+          description: "Filter by status. Default: pending"
+        },
+        limit: {
+          type: "number",
+          description: "Max tasks to return. Default: 10"
+        }
+      },
+      required: ["userId", "organizationId"]
+    }
+  },
+  {
+    name: "update_task",
+    description: "Update a task's status, priority, or due date. Use when user wants to change task properties.",
+    input_schema: {
+      type: "object" as const,
+      properties: {
+        userId: {
+          type: "string",
+          description: "The user updating the task"
+        },
+        organizationId: {
+          type: "string",
+          description: "The organization ID"
+        },
+        taskId: {
+          type: "string",
+          description: "Specific task ID to update"
+        },
+        searchTerm: {
+          type: "string",
+          description: "Search for task by title (partial match)"
+        },
+        status: {
+          type: "string",
+          enum: ["pending", "in_progress", "completed", "blocked"],
+          description: "New status for the task"
+        },
+        priority: {
+          type: "string",
+          enum: ["high", "medium", "low"],
+          description: "New priority for the task"
+        },
+        dueDate: {
+          type: "string",
+          description: "New due date in YYYY-MM-DD format"
+        }
+      },
+      required: ["userId", "organizationId"]
     }
   }
 ];
@@ -447,6 +550,69 @@ export class HRChatbotService {
           return JSON.stringify({ success: false, error: result.error || "Failed to get users" });
         }
 
+        case "complete_task": {
+          const result = await this.callDOFunction("complete-task", {
+            userId,
+            organizationId,
+            taskId: toolInput.taskId,
+            searchTerm: toolInput.searchTerm
+          });
+          if (result.success) {
+            return JSON.stringify({
+              success: true,
+              message: result.message,
+              task: result.task
+            });
+          }
+          return JSON.stringify({ success: false, error: result.error || "Failed to complete task" });
+        }
+
+        case "get_my_tasks": {
+          const result = await this.callDOFunction("get-my-tasks", {
+            userId,
+            organizationId,
+            status: toolInput.status || "pending",
+            assignedToMe: true,
+            createdByMe: true,
+            limit: toolInput.limit || 10
+          });
+          if (result.success) {
+            return JSON.stringify({
+              success: true,
+              count: result.count,
+              tasks: result.tasks?.map((t: any) => ({
+                id: t.id,
+                title: t.title,
+                status: t.status,
+                priority: t.priority,
+                dueDate: t.dueDate,
+                assignee: t.assignee
+              }))
+            });
+          }
+          return JSON.stringify({ success: false, error: result.error || "Failed to get tasks" });
+        }
+
+        case "update_task": {
+          const result = await this.callDOFunction("update-task", {
+            userId,
+            organizationId,
+            taskId: toolInput.taskId,
+            searchTerm: toolInput.searchTerm,
+            status: toolInput.status,
+            priority: toolInput.priority,
+            dueDate: toolInput.dueDate
+          });
+          if (result.success) {
+            return JSON.stringify({
+              success: true,
+              message: result.message,
+              task: result.task
+            });
+          }
+          return JSON.stringify({ success: false, error: result.error || "Failed to update task" });
+        }
+
         default:
           return JSON.stringify({ success: false, error: `Unknown tool: ${toolName}` });
       }
@@ -457,12 +623,13 @@ export class HRChatbotService {
   }
 
   /**
-   * Process message with Anthropic Claude
+   * Process message with Anthropic Claude (supports text and audio)
    */
   private async processWithClaude(
     userMessage: string,
     hrAdmin: HRAdmin,
-    conversationHistory: ConversationMessage[]
+    conversationHistory: ConversationMessage[],
+    audioData?: { base64: string; mimetype: string } // Optional voice note
   ): Promise<string> {
     const log = (msg: string) => console.log(`[HRChatbotService] ${msg}`);
 
@@ -485,17 +652,52 @@ IMPORTANT: Always use userId="${hrAdmin.userId}" and organizationId="${hrAdmin.o
     const fullSystemPrompt = SYSTEM_PROMPT + contextInfo;
 
     // Build messages array
+    const historyMessages: Anthropic.MessageParam[] = conversationHistory.map(msg => ({
+      role: msg.role as "user" | "assistant",
+      content: msg.content
+    }));
+
+    // Build user message content - can include audio
+    let userContent: Anthropic.ContentBlockParam[];
+    
+    if (audioData) {
+      // Voice note - send audio to Claude for transcription + understanding
+      log(`🎤 Including voice note in Claude request (${audioData.mimetype})`);
+      
+      // Map WhatsApp mimetype to Anthropic media type
+      let mediaType: "audio/wav" | "audio/mp3" | "audio/aiff" | "audio/aac" | "audio/ogg" | "audio/flac" = "audio/ogg";
+      if (audioData.mimetype.includes('ogg')) mediaType = "audio/ogg";
+      else if (audioData.mimetype.includes('mp3') || audioData.mimetype.includes('mpeg')) mediaType = "audio/mp3";
+      else if (audioData.mimetype.includes('wav')) mediaType = "audio/wav";
+      else if (audioData.mimetype.includes('aac') || audioData.mimetype.includes('m4a')) mediaType = "audio/aac";
+      else if (audioData.mimetype.includes('flac')) mediaType = "audio/flac";
+      
+      userContent = [
+        {
+          type: "text",
+          text: "I sent you a voice message. Please listen to it and respond to what I said:"
+        },
+        {
+          type: "input_audio",
+          input_audio: {
+            data: audioData.base64,
+            media_type: mediaType
+          }
+        }
+      ] as Anthropic.ContentBlockParam[];
+    } else {
+      // Regular text message
+      userContent = [{ type: "text", text: userMessage }];
+    }
+
     const messages: Anthropic.MessageParam[] = [
-      ...conversationHistory.map(msg => ({
-        role: msg.role as "user" | "assistant",
-        content: msg.content
-      })),
-      { role: "user", content: userMessage }
+      ...historyMessages,
+      { role: "user", content: userContent }
     ];
 
-    log(`📡 Calling Anthropic Claude`);
+    log(`📡 Calling Anthropic Claude${audioData ? ' (with audio)' : ''}`);
     log(`   User: ${hrAdmin.name} (${hrAdmin.phoneNumber})`);
-    log(`   Message: ${userMessage.substring(0, 50)}...`);
+    log(`   Message: ${audioData ? '[Voice Note]' : userMessage.substring(0, 50) + '...'}`);
     log(`   History: ${conversationHistory.length} messages`);
 
     try {
@@ -571,13 +773,17 @@ IMPORTANT: Always use userId="${hrAdmin.userId}" and organizationId="${hrAdmin.o
   }
 
   /**
-   * Process an HR admin message
+   * Process an HR admin message (text or voice note)
    */
-  async processHRMessage(phoneNumber: string, messageText: string): Promise<void> {
+  async processHRMessage(
+    phoneNumber: string, 
+    messageText: string,
+    audioData?: { base64: string; mimetype: string } // Optional audio for voice notes
+  ): Promise<void> {
     const log = (msg: string) => console.log(`[HRChatbotService] ${msg}`);
     
     try {
-      log(`📥 Processing HR message from ${phoneNumber}`);
+      log(`📥 Processing HR message from ${phoneNumber}${audioData ? ' (with voice note)' : ''}`);
 
       // Get HR admin details
       const hrAdmin = await this.storage.getHRAdmin(phoneNumber);
@@ -598,11 +804,18 @@ IMPORTANT: Always use userId="${hrAdmin.userId}" and organizationId="${hrAdmin.o
 
       log(`   Retrieved ${history.length} messages from cache`);
 
-      // Add user message to cache
-      this.addToConversationCache(phoneNumber, "user", messageText);
+      // Add user message to cache (for voice notes, we'll add transcribed text later)
+      const displayText = audioData ? "[Voice Note - processing...]" : messageText;
+      this.addToConversationCache(phoneNumber, "user", displayText);
 
-      // Process with Claude
-      const botResponse = await this.processWithClaude(messageText, hrAdmin, history);
+      // Process with Claude (with optional audio)
+      const botResponse = await this.processWithClaude(messageText, hrAdmin, history, audioData);
+
+      // Update cache with actual transcribed content if it was a voice note
+      if (audioData) {
+        // Replace the placeholder with actual response context
+        this.addToConversationCache(phoneNumber, "user", "[Voice Note]");
+      }
 
       // Add assistant response to cache
       this.addToConversationCache(phoneNumber, "assistant", botResponse);
@@ -621,6 +834,7 @@ IMPORTANT: Always use userId="${hrAdmin.userId}" and organizationId="${hrAdmin.o
         metadata: {
           hr_chatbot_reply: true,
           organization_id: hrAdmin.organizationId,
+          was_voice_note: !!audioData,
         },
       });
 

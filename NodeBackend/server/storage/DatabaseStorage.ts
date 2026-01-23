@@ -392,17 +392,76 @@ export class DatabaseStorage implements IStorage {
   // HR Admin methods
   // ============================================================================
 
+  // Normalize phone for HR admin - preserves LID format
+  private normalizeHRPhone(phone: string): string {
+    // If already has @, extract the number part
+    if (phone.includes('@')) {
+      return phone.split('@')[0].replace(/\D/g, '');
+    }
+    return phone.replace(/\D/g, '');
+  }
+
+  // Generate possible phone formats for lookup (handles LID + regular)
+  private getPhoneVariants(phone: string): string[] {
+    const cleaned = this.normalizeHRPhone(phone);
+    const variants: string[] = [cleaned];
+    
+    // If it's a LID (typically 15+ digits), also check with @lid suffix stored
+    if (cleaned.length >= 15) {
+      variants.push(`${cleaned}@lid`);
+    }
+    
+    // If it's a regular number (10-12 digits), generate variants
+    if (cleaned.length <= 12) {
+      // With country code
+      if (cleaned.length === 10) {
+        variants.push(`91${cleaned}`);
+        variants.push(`91${cleaned}@s.whatsapp.net`);
+      }
+      // Without country code
+      if (cleaned.startsWith('91') && cleaned.length === 12) {
+        variants.push(cleaned.substring(2));
+      }
+      variants.push(`${cleaned}@s.whatsapp.net`);
+    }
+    
+    return [...new Set(variants)]; // Dedupe
+  }
+
   async getHRAdmin(phoneNumber: string): Promise<HRAdmin | undefined> {
-    const normalizedPhone = this.normalizePhoneNumber(phoneNumber);
-    console.log(`[DatabaseStorage] getHRAdmin: input=${phoneNumber}, normalized=${normalizedPhone}`);
+    const variants = this.getPhoneVariants(phoneNumber);
+    console.log(`[DatabaseStorage] getHRAdmin: input=${phoneNumber}, variants=${JSON.stringify(variants)}`);
     
-    const result = await db.select()
-      .from(hrAdmins)
-      .where(eq(hrAdmins.phoneNumber, normalizedPhone))
-      .limit(1);
+    // Try each variant
+    for (const variant of variants) {
+      const result = await db.select()
+        .from(hrAdmins)
+        .where(eq(hrAdmins.phoneNumber, variant))
+        .limit(1);
+      
+      if (result[0]) {
+        console.log(`[DatabaseStorage] getHRAdmin result: found with variant=${variant} (org=${result[0].organizationId})`);
+        return result[0];
+      }
+    }
     
-    console.log(`[DatabaseStorage] getHRAdmin result: ${result[0] ? `found (org=${result[0].organizationId})` : 'not found'}`);
-    return result[0];
+    // Also try fuzzy match - check if any stored phone ends with or contains our number
+    const cleaned = this.normalizeHRPhone(phoneNumber);
+    if (cleaned.length >= 10) {
+      const allAdmins = await db.select().from(hrAdmins);
+      for (const admin of allAdmins) {
+        const storedCleaned = this.normalizeHRPhone(admin.phoneNumber);
+        // Check if last 10 digits match (handles country code variations)
+        if (storedCleaned.slice(-10) === cleaned.slice(-10) || 
+            cleaned.slice(-10) === storedCleaned.slice(-10)) {
+          console.log(`[DatabaseStorage] getHRAdmin result: fuzzy match found (stored=${admin.phoneNumber}, input=${phoneNumber})`);
+          return admin;
+        }
+      }
+    }
+    
+    console.log(`[DatabaseStorage] getHRAdmin result: not found`);
+    return undefined;
   }
 
   async getHRAdmins(filters?: { limit?: number; offset?: number }): Promise<HRAdmin[]> {
@@ -421,6 +480,17 @@ export class DatabaseStorage implements IStorage {
     return await query;
   }
 
+  async getAllHRAdmins(): Promise<HRAdmin[]> {
+    return await db.select().from(hrAdmins);
+  }
+
+  async getHRAdminsByOrganization(organizationId: string): Promise<HRAdmin[]> {
+    return await db.select()
+      .from(hrAdmins)
+      .where(eq(hrAdmins.organizationId, organizationId));
+
+  }
+
   async createHRAdmin(data: { 
     phoneNumber: string; 
     name?: string; 
@@ -428,26 +498,38 @@ export class DatabaseStorage implements IStorage {
     userId: string; 
     organizationName?: string 
   }): Promise<HRAdmin> {
-    const normalizedPhone = this.normalizePhoneNumber(data.phoneNumber);
+    // Store phone as-is to preserve LID format
+    // Only clean it (remove spaces/dashes) but keep the format indicator
+    let phoneToStore = data.phoneNumber.replace(/[\s\-\(\)]/g, '');
     
-    // Check if HR admin exists
-    const existing = await db.select()
-      .from(hrAdmins)
-      .where(eq(hrAdmins.phoneNumber, normalizedPhone))
-      .limit(1);
+    // If it doesn't have @, add appropriate suffix based on length
+    if (!phoneToStore.includes('@')) {
+      if (phoneToStore.length >= 15) {
+        phoneToStore = `${phoneToStore}@lid`;
+      } else {
+        // Normalize regular phone
+        const cleaned = phoneToStore.replace(/\D/g, '');
+        phoneToStore = cleaned.length === 10 ? `91${cleaned}` : cleaned;
+      }
+    }
+    
+    console.log(`[DatabaseStorage] createHRAdmin: input=${data.phoneNumber}, storing=${phoneToStore}`);
+    
+    // Check if HR admin exists (using fuzzy lookup)
+    const existing = await this.getHRAdmin(data.phoneNumber);
 
-    if (existing.length > 0) {
+    if (existing) {
       // Update existing
       const result = await db.update(hrAdmins)
         .set({
-          name: data.name || existing[0].name,
+          name: data.name || existing.name,
           organizationId: data.organizationId,
           userId: data.userId,
-          organizationName: data.organizationName || existing[0].organizationName,
+          organizationName: data.organizationName || existing.organizationName,
           chatbotActive: 'true',
           updatedAt: new Date(),
         })
-        .where(eq(hrAdmins.phoneNumber, normalizedPhone))
+        .where(eq(hrAdmins.id, existing.id))
         .returning();
       
       return result[0];
@@ -455,7 +537,7 @@ export class DatabaseStorage implements IStorage {
       // Create new
       const result = await db.insert(hrAdmins)
         .values({
-          phoneNumber: normalizedPhone,
+          phoneNumber: phoneToStore,
           name: data.name || null,
           organizationId: data.organizationId,
           userId: data.userId,
@@ -469,7 +551,12 @@ export class DatabaseStorage implements IStorage {
   }
 
   async updateHRAdmin(phoneNumber: string, updates: Partial<HRAdmin>): Promise<HRAdmin | undefined> {
-    const normalizedPhone = this.normalizePhoneNumber(phoneNumber);
+    // Use fuzzy lookup to find the admin
+    const existing = await this.getHRAdmin(phoneNumber);
+    if (!existing) {
+      console.log(`[DatabaseStorage] updateHRAdmin: not found for ${phoneNumber}`);
+      return undefined;
+    }
     
     const updateData: any = {
       ...updates,
@@ -483,26 +570,24 @@ export class DatabaseStorage implements IStorage {
 
     const result = await db.update(hrAdmins)
       .set(updateData)
-      .where(eq(hrAdmins.phoneNumber, normalizedPhone))
+      .where(eq(hrAdmins.id, existing.id))
       .returning();
     
     return result[0];
   }
 
   async deleteHRAdmin(phoneNumber: string): Promise<void> {
-    const normalizedPhone = this.normalizePhoneNumber(phoneNumber);
-    await db.delete(hrAdmins).where(eq(hrAdmins.phoneNumber, normalizedPhone));
+    // Use fuzzy lookup to find the admin
+    const existing = await this.getHRAdmin(phoneNumber);
+    if (existing) {
+      await db.delete(hrAdmins).where(eq(hrAdmins.id, existing.id));
+    }
   }
 
   async isHRAdmin(phoneNumber: string): Promise<boolean> {
-    const normalizedPhone = this.normalizePhoneNumber(phoneNumber);
-    
-    const result = await db.select()
-      .from(hrAdmins)
-      .where(eq(hrAdmins.phoneNumber, normalizedPhone))
-      .limit(1);
-    
-    return result.length > 0;
+    // Use the enhanced getHRAdmin which handles LID + regular formats
+    const admin = await this.getHRAdmin(phoneNumber);
+    return !!admin;
   }
 
   // ============================================================================

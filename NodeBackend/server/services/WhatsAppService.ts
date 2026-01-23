@@ -2,7 +2,8 @@ import makeWASocket, {
   useMultiFileAuthState,
   fetchLatestBaileysVersion,
   DisconnectReason,
-  WASocket
+  WASocket,
+  downloadMediaMessage
 } from '@whiskeysockets/baileys';
 import { Boom } from '@hapi/boom';
 import { EventEmitter } from 'events';
@@ -109,13 +110,14 @@ export class WhatsAppService extends EventEmitter {
         }
       });
 
-      // Listen for incoming messages (quick reply buttons, text, etc.)
+      // Listen for incoming messages (quick reply buttons, text, audio, etc.)
       this.socket.ev.on('messages.upsert', async ({ messages }) => {
         const msg = messages[0];
         if (!msg.message) return;
 
         const from = msg.key.remoteJid;
-        const phoneNumber = from?.replace('@s.whatsapp.net', '');
+        // Handle both regular phone (@s.whatsapp.net) and LID (@lid) formats
+        const phoneNumber = from?.replace(/@s\.whatsapp\.net$|@lid$/, '') || from;
         const isFromMe = msg.key.fromMe;
 
         // Only process incoming messages (not sent by us)
@@ -138,6 +140,85 @@ export class WhatsAppService extends EventEmitter {
           return;
         }
 
+        // Handle voice notes / audio messages (ptt = push to talk)
+        if (msg.message.audioMessage) {
+          const audioMsg = msg.message.audioMessage;
+          const isVoiceNote = audioMsg.ptt === true; // ptt = push-to-talk (voice note)
+          
+          console.log(`🎤 ${isVoiceNote ? 'Voice note' : 'Audio'} from ${from} (phoneNumber: ${phoneNumber})`);
+          
+          // Download the audio file
+          let audioBuffer: Buffer | null = null;
+          let audioBase64: string | null = null;
+          try {
+            console.log(`📥 Downloading audio from ${from}...`);
+            audioBuffer = await downloadMediaMessage(msg, 'buffer', {}) as Buffer;
+            audioBase64 = audioBuffer.toString('base64');
+            console.log(`✅ Audio downloaded: ${audioBuffer.length} bytes, mimetype: ${audioMsg.mimetype}`);
+          } catch (downloadError) {
+            console.error(`❌ Failed to download audio:`, downloadError);
+          }
+          
+          // Emit incoming message event with audio data
+          this.emit('incoming-message', {
+            phoneNumber,
+            content: isVoiceNote ? '[Voice Note]' : '[Audio Message]',
+            from,
+            timestamp: Date.now(),
+            messageType: isVoiceNote ? 'voice_note' : 'audio',
+            mediaInfo: {
+              mimetype: audioMsg.mimetype || 'audio/ogg',
+              seconds: audioMsg.seconds,
+              fileLength: audioMsg.fileLength,
+            },
+            audioData: audioBase64,  // Base64 encoded audio for Anthropic
+            audioBuffer: audioBuffer, // Raw buffer if needed
+          });
+          return;
+        }
+
+        // Handle image messages
+        if (msg.message.imageMessage) {
+          console.log(`📷 Image from ${from} (phoneNumber: ${phoneNumber})`);
+          
+          this.emit('incoming-message', {
+            phoneNumber,
+            content: msg.message.imageMessage.caption || '[Image]',
+            from,
+            timestamp: Date.now(),
+            messageType: 'image',
+          });
+          return;
+        }
+
+        // Handle document messages
+        if (msg.message.documentMessage) {
+          console.log(`📄 Document from ${from} (phoneNumber: ${phoneNumber})`);
+          
+          this.emit('incoming-message', {
+            phoneNumber,
+            content: `[Document: ${msg.message.documentMessage.fileName || 'file'}]`,
+            from,
+            timestamp: Date.now(),
+            messageType: 'document',
+          });
+          return;
+        }
+
+        // Handle video messages
+        if (msg.message.videoMessage) {
+          console.log(`🎬 Video from ${from} (phoneNumber: ${phoneNumber})`);
+          
+          this.emit('incoming-message', {
+            phoneNumber,
+            content: msg.message.videoMessage.caption || '[Video]',
+            from,
+            timestamp: Date.now(),
+            messageType: 'video',
+          });
+          return;
+        }
+
         // Handle text-based messages
         const messageText = msg.message.conversation || 
                            msg.message.extendedTextMessage?.text || 
@@ -152,6 +233,7 @@ export class WhatsAppService extends EventEmitter {
             content: messageText,
             from,
             timestamp: Date.now(),
+            messageType: 'text',
           });
 
           // Handle STOP command
