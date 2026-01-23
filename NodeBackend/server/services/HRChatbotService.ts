@@ -50,6 +50,7 @@ You have access to tools for:
 5. Deleting tasks
 6. Checking team attendance
 7. Finding team members
+8. **Requesting leave** - submit full day, half day, or early departure requests
 
 ## RESPONSE STYLE
 Be conversational and warm. You're a friend, not a robot.
@@ -74,6 +75,23 @@ When user says:
 - "what's pending", "my tasks", "what do I need to do" → use get_my_tasks
 - "mark as in progress", "started working on" → use update_task with status: in_progress
 - "blocked", "stuck on" → use update_task with status: blocked
+
+## LEAVE REQUEST HANDLING
+When user says:
+- "I need leave", "take a day off", "I won't come" → use request_leave with full_day
+- "half day tomorrow", "leaving early" → use request_leave with half_day or early_departure
+- "sick leave", "not feeling well", "emergency leave" → use request_leave with isEmergency: true
+- "leave from Monday to Friday" → use request_leave with startDate and endDate
+- "apply for leave" → ask for date and reason, then use request_leave
+
+Leave response format:
+✅ Leave request submitted!
+📋 {leaveType} Leave
+📅 {date(s)}
+📝 Reason: {reason}
+👤 Sent to: {adminName} for approval
+
+They'll review and get back to you soon! 🤞
 
 ## IMPORTANT RULES
 1. ALWAYS use the provided userId and organizationId in function calls
@@ -328,6 +346,45 @@ const TOOLS: Anthropic.Tool[] = [
         }
       },
       required: ["userId", "organizationId"]
+    }
+  },
+  {
+    name: "request_leave",
+    description: "Submit a leave request. Creates a leave request that will be sent to the admin for approval. Use when user wants to take leave, day off, half day, or early departure.",
+    input_schema: {
+      type: "object" as const,
+      properties: {
+        userId: {
+          type: "string",
+          description: "The user requesting leave (from context)"
+        },
+        organizationId: {
+          type: "string",
+          description: "The organization ID (from context)"
+        },
+        leaveType: {
+          type: "string",
+          enum: ["full_day", "half_day", "early_departure"],
+          description: "Type of leave: full_day (default), half_day, or early_departure"
+        },
+        startDate: {
+          type: "string",
+          description: "Leave start date in YYYY-MM-DD format (required)"
+        },
+        endDate: {
+          type: "string",
+          description: "Leave end date in YYYY-MM-DD format (optional, for multi-day leave)"
+        },
+        reason: {
+          type: "string",
+          description: "Reason for the leave request (required)"
+        },
+        isEmergency: {
+          type: "boolean",
+          description: "Whether this is an emergency leave (default: false)"
+        }
+      },
+      required: ["userId", "organizationId", "startDate", "reason"]
     }
   }
 ];
@@ -611,6 +668,37 @@ export class HRChatbotService {
             });
           }
           return JSON.stringify({ success: false, error: result.error || "Failed to update task" });
+        }
+
+        case "request_leave": {
+          const result = await this.callDOFunction("request-leave", {
+            userId,
+            organizationId,
+            leaveType: toolInput.leaveType || "full_day",
+            startDate: toolInput.startDate,
+            endDate: toolInput.endDate,
+            reason: toolInput.reason,
+            isEmergency: toolInput.isEmergency || false
+          });
+          if (result.success) {
+            const leaveData = result.data?.leaveRequest;
+            return JSON.stringify({
+              success: true,
+              leaveRequest: {
+                id: leaveData?.id,
+                leaveType: leaveData?.leaveType,
+                startDate: leaveData?.startDate,
+                endDate: leaveData?.endDate,
+                reason: leaveData?.reason,
+                isPostFacto: leaveData?.isPostFacto,
+                isEmergency: leaveData?.isEmergency,
+                status: leaveData?.status || "pending",
+                assignedToAdmin: leaveData?.assignedToAdmin
+              },
+              message: result.message
+            });
+          }
+          return JSON.stringify({ success: false, error: result.error || "Failed to submit leave request" });
         }
 
         default:
