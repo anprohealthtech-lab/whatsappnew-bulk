@@ -39,13 +39,13 @@ export class WhatsAppService extends EventEmitter {
   async initialize(): Promise<void> {
     try {
       console.log('🚀 Starting Baileys WhatsApp - no Chrome needed!');
-      
+
       // Clean up any existing socket first
       if (this.socket) {
         this.socket.end(undefined);
         this.socket = null;
       }
-      
+
       const { state, saveCreds } = await useMultiFileAuthState(this.authPath);
       const { version } = await fetchLatestBaileysVersion();
 
@@ -86,15 +86,14 @@ export class WhatsAppService extends EventEmitter {
           console.log('❌ Baileys connection closed');
           const statusCode = (lastDisconnect?.error as Boom)?.output?.statusCode;
           console.log(`🔍 Disconnect reason: ${statusCode} (${DisconnectReason[statusCode] || 'unknown'})`);
-          
+
           this.status.isConnected = false;
           this.status.isAuthenticated = false;
-          
+
           // Only reconnect for network issues, not for logout or manual disconnect
-          const shouldReconnect = statusCode !== DisconnectReason.loggedOut 
-            && statusCode !== DisconnectReason.connectionClosed
+          const shouldReconnect = statusCode !== DisconnectReason.loggedOut
             && statusCode !== undefined; // Don't reconnect on undefined (manual disconnect)
-          
+
           if (shouldReconnect) {
             console.log('🔄 Reconnecting in 30 seconds...');
             setTimeout(() => this.initialize(), 30000); // 30 seconds delay
@@ -144,9 +143,9 @@ export class WhatsAppService extends EventEmitter {
         if (msg.message.audioMessage) {
           const audioMsg = msg.message.audioMessage;
           const isVoiceNote = audioMsg.ptt === true; // ptt = push-to-talk (voice note)
-          
+
           console.log(`🎤 ${isVoiceNote ? 'Voice note' : 'Audio'} from ${from} (phoneNumber: ${phoneNumber})`);
-          
+
           // Download the audio file
           let audioBuffer: Buffer | null = null;
           let audioBase64: string | null = null;
@@ -158,7 +157,7 @@ export class WhatsAppService extends EventEmitter {
           } catch (downloadError) {
             console.error(`❌ Failed to download audio:`, downloadError);
           }
-          
+
           // Emit incoming message event with audio data
           this.emit('incoming-message', {
             phoneNumber,
@@ -180,7 +179,7 @@ export class WhatsAppService extends EventEmitter {
         // Handle image messages
         if (msg.message.imageMessage) {
           console.log(`📷 Image from ${from} (phoneNumber: ${phoneNumber})`);
-          
+
           this.emit('incoming-message', {
             phoneNumber,
             content: msg.message.imageMessage.caption || '[Image]',
@@ -194,7 +193,7 @@ export class WhatsAppService extends EventEmitter {
         // Handle document messages
         if (msg.message.documentMessage) {
           console.log(`📄 Document from ${from} (phoneNumber: ${phoneNumber})`);
-          
+
           this.emit('incoming-message', {
             phoneNumber,
             content: `[Document: ${msg.message.documentMessage.fileName || 'file'}]`,
@@ -208,7 +207,7 @@ export class WhatsAppService extends EventEmitter {
         // Handle video messages
         if (msg.message.videoMessage) {
           console.log(`🎬 Video from ${from} (phoneNumber: ${phoneNumber})`);
-          
+
           this.emit('incoming-message', {
             phoneNumber,
             content: msg.message.videoMessage.caption || '[Video]',
@@ -220,10 +219,10 @@ export class WhatsAppService extends EventEmitter {
         }
 
         // Handle text-based messages
-        const messageText = msg.message.conversation || 
-                           msg.message.extendedTextMessage?.text || 
-                           '';
-        
+        const messageText = msg.message.conversation ||
+          msg.message.extendedTextMessage?.text ||
+          '';
+
         if (messageText) {
           console.log(`📨 Incoming message from ${phoneNumber}: ${messageText}`);
 
@@ -239,7 +238,7 @@ export class WhatsAppService extends EventEmitter {
           // Handle STOP command
           if (messageText.trim().toUpperCase() === 'STOP') {
             console.log('📱 STOP message received from:', phoneNumber);
-            
+
             // Emit event for STOP request
             this.emit('button-clicked', {
               buttonId: 'STOP_MESSAGES',
@@ -265,14 +264,14 @@ export class WhatsAppService extends EventEmitter {
     // Preserve original JID format if already provided (@lid or @s.whatsapp.net)
     const jid = phoneNumber.includes('@') ? phoneNumber : `${this.formatPhoneNumber(phoneNumber)}@s.whatsapp.net`;
     const result = await this.socket.sendMessage(jid, { text: message });
-    
+
     this.status.lastSeen = new Date();
     this.emit('message-sent', {
       messageId: result?.key?.id,
       to: jid,
       timestamp: Date.now(),
     });
-    
+
     return {
       id: result?.key?.id,
       to: jid,
@@ -282,8 +281,8 @@ export class WhatsAppService extends EventEmitter {
   }
 
   async sendMessageWithButtons(
-    phoneNumber: string, 
-    message: string, 
+    phoneNumber: string,
+    message: string,
     buttons: Array<{ text: string; url?: string; phoneNumber?: string }>,
     includeStopButton = false
   ): Promise<any> {
@@ -297,7 +296,7 @@ export class WhatsAppService extends EventEmitter {
     // Baileys v6.x doesn't fully support new interactive message format yet
     // Using text fallback with clear formatting for better compatibility
     let fullMessage = message + '\n\n';
-    
+
     // Add buttons as clickable links
     for (const btn of buttons) {
       if (btn.url) {
@@ -329,9 +328,9 @@ export class WhatsAppService extends EventEmitter {
     const jid = phoneNumber.includes('@') ? phoneNumber : `${this.formatPhoneNumber(phoneNumber)}@s.whatsapp.net`;
     const fileBuffer = fs.readFileSync(filePath);
     const fileExtension = path.extname(filePath).toLowerCase();
-    
+
     let messageContent: any = {};
-    
+
     if (['.jpg', '.jpeg', '.png', '.webp'].includes(fileExtension)) {
       messageContent = { image: fileBuffer, caption: caption };
     } else if (['.pdf', '.doc', '.docx', '.txt'].includes(fileExtension)) {
@@ -339,16 +338,16 @@ export class WhatsAppService extends EventEmitter {
     } else {
       messageContent = { document: fileBuffer, fileName: path.basename(filePath), caption: caption };
     }
-    
+
     const result = await this.socket.sendMessage(jid, messageContent);
-    
+
     this.status.lastSeen = new Date();
     this.emit('message-sent', {
       messageId: result?.key?.id,
       to: jid,
       timestamp: Date.now(),
     });
-    
+
     return {
       id: result?.key?.id,
       to: jid,
@@ -360,7 +359,7 @@ export class WhatsAppService extends EventEmitter {
 
   async generateQRCode(): Promise<void> {
     console.log('🔄 QR generation requested');
-    
+
     // Always disconnect and clean up before generating new QR
     // This ensures old connections don't interfere
     if (this.socket) {
@@ -371,18 +370,18 @@ export class WhatsAppService extends EventEmitter {
         console.log('⚠️ Error during logout (ignoring):', error instanceof Error ? error.message : 'Unknown');
       }
     }
-    
+
     // Clean up existing connection and clear auth state
     await this.cleanup();
     await this.clearAuthState();
-    
+
     console.log('🔄 Starting fresh connection for QR generation...');
     await this.initialize();
   }
 
   async disconnect(): Promise<void> {
     console.log('🔌 Disconnecting WhatsApp...');
-    
+
     if (this.socket) {
       try {
         // Logout properly to clear auth state
@@ -391,9 +390,9 @@ export class WhatsAppService extends EventEmitter {
         console.log('⚠️ Error during logout:', error instanceof Error ? error.message : 'Unknown error');
       }
     }
-    
+
     await this.cleanup();
-    
+
     // Clear auth files to force fresh QR generation
     try {
       const fsPromises = fs.promises;
@@ -405,7 +404,7 @@ export class WhatsAppService extends EventEmitter {
     } catch (error) {
       console.log('⚠️ Error clearing auth files:', error instanceof Error ? error.message : 'Unknown error');
     }
-    
+
     this.emit('whatsapp-auth-failure', { error: 'Disconnected' });
   }
 
@@ -420,12 +419,12 @@ export class WhatsAppService extends EventEmitter {
   private formatPhoneNumber(phoneNumber: string): string {
     // Remove all non-digit characters
     let cleaned = phoneNumber.replace(/\D/g, '');
-    
+
     // If number doesn't start with country code and is 10 digits, assume India (+91)
     if (!cleaned.startsWith('91') && cleaned.length === 10) {
       cleaned = '91' + cleaned;
     }
-    
+
     return cleaned;
   }
 
@@ -435,14 +434,14 @@ export class WhatsAppService extends EventEmitter {
       this.socket.end(undefined);
       this.socket = null;
     }
-    
+
     this.status = {
       isConnected: false,
       isAuthenticated: false,
       lastSeen: null,
       sessionInfo: null,
     };
-    
+
     this.currentQR = null;
   }
 

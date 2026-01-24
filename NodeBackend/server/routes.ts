@@ -200,14 +200,14 @@ export async function registerRoutes(app: Express): Promise<Server> {
         // ========================================
         const hrChatbotService = new HRChatbotService(storage, whatsAppService);
         const isHRAdmin = await withRetry(() => hrChatbotService.isHRAdmin(data.phoneNumber));
-        
+
         if (isHRAdmin) {
           console.log(`👔 HR Admin detected: ${data.phoneNumber} (messageType: ${data.messageType || 'text'})`);
-          
+
           // Check if HR chatbot is active for this admin
           const hrAdmin = await withRetry(() => storage.getHRAdmin(data.phoneNumber));
           console.log(`🔍 HR Chatbot status for ${data.phoneNumber}: ${hrAdmin?.chatbotActive === 'false' ? 'PAUSED ⏸️' : 'ACTIVE ✅'}`);
-          
+
           if (hrAdmin?.chatbotActive === 'false') {
             console.log(`⏸️ HR Chatbot paused for ${data.phoneNumber} - skipping`);
             broadcast('incoming-message', data);
@@ -216,7 +216,7 @@ export async function registerRoutes(app: Express): Promise<Server> {
 
           // Handle different message types
           const messageType = data.messageType || 'text';
-          
+
           if (messageType === 'voice_note' || messageType === 'audio') {
             // Voice notes - send to Claude for transcription and processing
             if (data.audioData) {
@@ -243,7 +243,7 @@ export async function registerRoutes(app: Express): Promise<Server> {
               return;
             }
           }
-          
+
           if (messageType === 'image' || messageType === 'video' || messageType === 'document') {
             // For media, acknowledge but can't process
             console.log(`📎 Media (${messageType}) from HR Admin ${data.phoneNumber} - sending acknowledgment`);
@@ -269,7 +269,7 @@ export async function registerRoutes(app: Express): Promise<Server> {
         // ========================================
         // PRIORITY 2: Check if Lead (LIMS chatbot)
         // ========================================
-        
+
         // Initialize lead chatbot service
         const chatbotService = new ChatbotService(storage, whatsAppService);
 
@@ -300,7 +300,7 @@ export async function registerRoutes(app: Express): Promise<Server> {
           // Check if chatbot is active for this lead
           const contact = await withRetry(() => storage.getContact(data.phoneNumber));
           console.log(`🔍 Chatbot status check for ${data.phoneNumber}: ${contact?.chatbotActive === 'false' ? 'PAUSED ⏸️' : 'ACTIVE ✅'} (value: ${contact?.chatbotActive})`);
-          
+
           if (contact?.chatbotActive === 'false') {
             console.log(`⏸️ Chatbot paused for ${data.phoneNumber} - skipping auto-response`);
             broadcast('incoming-message', data);
@@ -1093,7 +1093,7 @@ export async function registerRoutes(app: Express): Promise<Server> {
   app.get('/api/chatbot/config', async (req, res) => {
     try {
       const config = await withRetry(() => storage.getChatbotConfig());
-      
+
       if (!config) {
         return res.json({
           success: true,
@@ -1122,7 +1122,7 @@ export async function registerRoutes(app: Express): Promise<Server> {
   app.put('/api/chatbot/config', async (req, res) => {
     try {
       const validation = chatbotConfigSchema.safeParse(req.body);
-      
+
       if (!validation.success) {
         return res.status(400).json({
           success: false,
@@ -1162,7 +1162,7 @@ export async function registerRoutes(app: Express): Promise<Server> {
   app.post('/api/chatbot/test', async (req, res) => {
     try {
       const config = await withRetry(() => storage.getChatbotConfig());
-      
+
       if (!config) {
         return res.status(400).json({
           success: false,
@@ -1229,7 +1229,7 @@ export async function registerRoutes(app: Express): Promise<Server> {
   app.post('/api/leads/flag', async (req, res) => {
     try {
       const validation = flagLeadSchema.safeParse(req.body);
-      
+
       if (!validation.success) {
         return res.status(400).json({
           success: false,
@@ -1349,7 +1349,7 @@ export async function registerRoutes(app: Express): Promise<Server> {
   app.put('/api/hr-chatbot/config', async (req, res) => {
     try {
       const validation = hrChatbotConfigSchema.safeParse(req.body);
-      
+
       if (!validation.success) {
         return res.status(400).json({
           success: false,
@@ -1389,7 +1389,7 @@ export async function registerRoutes(app: Express): Promise<Server> {
   app.post('/api/hr-chatbot/test', async (req, res) => {
     try {
       const config = await withRetry(() => storage.getHRChatbotConfig());
-      
+
       if (!config) {
         return res.status(400).json({
           success: false,
@@ -1435,7 +1435,7 @@ export async function registerRoutes(app: Express): Promise<Server> {
   app.post('/api/hr-admins', async (req, res) => {
     try {
       const validation = registerHRAdminSchema.safeParse(req.body);
-      
+
       if (!validation.success) {
         return res.status(400).json({
           success: false,
@@ -1546,7 +1546,7 @@ export async function registerRoutes(app: Express): Promise<Server> {
 
   // Verify API key for notification endpoints
   const NOTIFICATION_API_KEY = process.env.NOTIFICATION_API_KEY || 'whatsapp-notification-secret-key';
-  
+
   const verifyNotificationApiKey = (req: any, res: any): boolean => {
     const apiKey = req.headers['x-api-key'] || req.headers['authorization']?.replace('Bearer ', '');
     if (apiKey !== NOTIFICATION_API_KEY) {
@@ -1563,7 +1563,7 @@ export async function registerRoutes(app: Express): Promise<Server> {
 
       const { organizationId } = req.params;
       const orgAdmins = await storage.getHRAdminsByOrganization(organizationId);
-      
+
       res.json({
         success: true,
         enabled: orgAdmins && orgAdmins.length > 0,
@@ -1582,7 +1582,7 @@ export async function registerRoutes(app: Express): Promise<Server> {
       if (!verifyNotificationApiKey(req, res)) return;
 
       const allAdmins = await storage.getAllHRAdmins();
-      
+
       // Group by organization
       const orgMap = new Map<string, { organizationId: string; adminCount: number }>();
       for (const admin of allAdmins) {
@@ -1621,7 +1621,7 @@ export async function registerRoutes(app: Express): Promise<Server> {
 
       // Get all HR admins for this org
       const orgAdmins = await storage.getHRAdminsByOrganization(organizationId as string);
-      
+
       if (!orgAdmins || orgAdmins.length === 0) {
         return res.status(404).json({
           success: false,
@@ -1649,7 +1649,7 @@ export async function registerRoutes(app: Express): Promise<Server> {
           const adminPhone = admin.phoneNumber.replace(/[^0-9@]/g, '').split('@')[0];
           return adminPhone === normalizedInput || adminPhone.endsWith(normalizedInput);
         });
-        
+
         if (matchingAdmin) {
           return res.json({
             success: true,
@@ -1668,10 +1668,10 @@ export async function registerRoutes(app: Express): Promise<Server> {
         isLid: defaultAdmin.phoneNumber.includes('@lid') || defaultAdmin.phoneNumber.length > 15,
         adminName: defaultAdmin.name,
         note: 'Default org admin (no specific user match)',
-        allAdmins: orgAdmins.map(a => ({ 
-          userId: a.userId, 
-          name: a.name, 
-          phoneNumber: a.phoneNumber 
+        allAdmins: orgAdmins.map(a => ({
+          userId: a.userId,
+          name: a.name,
+          phoneNumber: a.phoneNumber
         })),
       });
     } catch (error) {
@@ -1718,7 +1718,7 @@ export async function registerRoutes(app: Express): Promise<Server> {
 
       // Smart phone number normalization - handles both regular and LID formats
       let normalizedPhone = phoneNumber;
-      
+
       // Check if it's already a full JID (contains @)
       if (phoneNumber.includes('@')) {
         normalizedPhone = phoneNumber; // Already formatted
@@ -1727,13 +1727,17 @@ export async function registerRoutes(app: Express): Promise<Server> {
         normalizedPhone = `${phoneNumber.replace(/[^0-9]/g, '')}@lid`;
       } else {
         // Regular phone number
-        normalizedPhone = `${phoneNumber.replace(/[^0-9]/g, '')}@s.whatsapp.net`;
+        let cleaned = phoneNumber.replace(/[^0-9]/g, '');
+        if (cleaned.length === 10 && !cleaned.startsWith('91')) {
+          cleaned = '91' + cleaned;
+        }
+        normalizedPhone = `${cleaned}@s.whatsapp.net`;
       }
 
       log(`📤 Sending notification to ${normalizedPhone}: ${message.substring(0, 50)}...`);
 
       // Format message with title if provided
-      const formattedMessage = title 
+      const formattedMessage = title
         ? `*${title}*\n\n${message}`
         : message;
 
@@ -1780,7 +1784,7 @@ export async function registerRoutes(app: Express): Promise<Server> {
       for (const notification of notifications) {
         try {
           const { phoneNumber, message, notificationId, title } = notification;
-          
+
           if (!phoneNumber || !message) {
             results.failed++;
             results.errors.push({ notificationId, error: 'Missing phoneNumber or message' });
@@ -1796,10 +1800,14 @@ export async function registerRoutes(app: Express): Promise<Server> {
             normalizedPhone = `${phoneNumber.replace(/[^0-9]/g, '')}@lid`;
           } else {
             // Regular phone number
-            normalizedPhone = `${phoneNumber.replace(/[^0-9]/g, '')}@s.whatsapp.net`;
+            let cleaned = phoneNumber.replace(/[^0-9]/g, '');
+            if (cleaned.length === 10 && !cleaned.startsWith('91')) {
+              cleaned = '91' + cleaned;
+            }
+            normalizedPhone = `${cleaned}@s.whatsapp.net`;
           }
 
-          const formattedMessage = title 
+          const formattedMessage = title
             ? `*${title}*\n\n${message}`
             : message;
 
@@ -1810,9 +1818,9 @@ export async function registerRoutes(app: Express): Promise<Server> {
           await new Promise(resolve => setTimeout(resolve, 500));
         } catch (error) {
           results.failed++;
-          results.errors.push({ 
-            notificationId: notification.notificationId, 
-            error: error instanceof Error ? error.message : 'Unknown error' 
+          results.errors.push({
+            notificationId: notification.notificationId,
+            error: error instanceof Error ? error.message : 'Unknown error'
           });
         }
       }
