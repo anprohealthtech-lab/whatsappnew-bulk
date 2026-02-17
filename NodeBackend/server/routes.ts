@@ -17,6 +17,7 @@ import { sendMessageSchema, sendReportSchema, createCampaignSchema, bulkSendSche
 import { log } from "./utils";
 import { getDbHealth } from "./db";
 import { withRetry } from "./dbRetry";
+import { z } from "zod";
 import * as XLSX from 'xlsx';
 
 // Configure CORS
@@ -36,6 +37,136 @@ const upload = multer({
     fileSize: parseInt(process.env.MAX_FILE_SIZE || '10485760'), // 10MB default
   },
 });
+
+type ParsedWebhookLead = {
+  source?: string;
+  name?: string;
+  phoneRaw: string;
+  email?: string;
+  labStatus?: string;
+  launchTimeline?: string;
+};
+
+type PhoneNormalizationResult = {
+  normalizedPhone: string;
+  originalPhone: string;
+  duplicatePrefixTrimmed: boolean;
+  defaultCountryAdded: boolean;
+  notes: string[];
+};
+
+function firstNonEmpty(...values: Array<unknown>): string | undefined {
+  for (const value of values) {
+    if (value === null || value === undefined) continue;
+    const text = String(value).trim();
+    if (text.length > 0) return text;
+  }
+  return undefined;
+}
+
+function extractLineValue(text: string, label: string): string | undefined {
+  const escaped = label.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+  const match = text.match(new RegExp(`^\\s*${escaped}\\s*:\\s*(.+)\\s*$`, "im"));
+  return match?.[1]?.trim();
+}
+
+function parseLeadFromFreeText(text: string): Partial<ParsedWebhookLead> {
+  return {
+    source: extractLineValue(text, "Source"),
+    name: extractLineValue(text, "Name"),
+    phoneRaw: extractLineValue(text, "Phone") || "",
+    email: extractLineValue(text, "Email"),
+    labStatus: firstNonEmpty(
+      extractLineValue(text, "Status"),
+      extractLineValue(text, "Lab Status")
+    ),
+    launchTimeline: extractLineValue(text, "Launch Timeline"),
+  };
+}
+
+function normalizeWebhookLeadPhone(input: string): PhoneNormalizationResult {
+  const originalPhone = String(input || "").trim();
+  const notes: string[] = [];
+  let duplicatePrefixTrimmed = false;
+  let defaultCountryAdded = false;
+
+  // Preserve explicit international intent if user typed '+'.
+  const hasExplicitInternationalPrefix = originalPhone.includes("+");
+
+  let digits = originalPhone.replace(/\D/g, "");
+  if (!digits) {
+    throw new Error("Phone number is empty");
+  }
+
+  if (digits.startsWith("00") && digits.length > 2) {
+    digits = digits.slice(2);
+    notes.push("removed_00_prefix");
+  }
+
+  const trailingTen = digits.slice(-10);
+  const looksLikeIndianMobile = /^[6-9]\d{9}$/.test(trailingTen);
+  const hasRepeatedStartChunk =
+    digits.length > 10 &&
+    ((digits.length >= 4 && digits.slice(0, 2) === digits.slice(2, 4)) || /^(\d)\1{1,3}/.test(digits));
+
+  // Heuristic "AI-like" cleanup for obvious accidental duplicate typing.
+  if (!hasExplicitInternationalPrefix && hasRepeatedStartChunk && looksLikeIndianMobile) {
+    digits = trailingTen;
+    duplicatePrefixTrimmed = true;
+    notes.push("trimmed_obvious_duplicate_prefix");
+  }
+
+  if (digits.length === 10) {
+    digits = `91${digits}`;
+    defaultCountryAdded = true;
+    notes.push("added_default_country_91");
+  } else if (digits.length < 10) {
+    throw new Error("Phone number appears too short after normalization");
+  } else {
+    notes.push("kept_existing_country_or_long_format");
+  }
+
+  return {
+    normalizedPhone: digits,
+    originalPhone,
+    duplicatePrefixTrimmed,
+    defaultCountryAdded,
+    notes,
+  };
+}
+
+function parseWebhookLeadBody(body: any): ParsedWebhookLead {
+  const textPayload = firstNonEmpty(
+    body?.message,
+    body?.text,
+    body?.payload,
+    body?.leadText,
+    body?.body
+  );
+
+  const parsedFromText = textPayload ? parseLeadFromFreeText(textPayload) : {};
+
+  const phoneRaw = firstNonEmpty(
+    body?.phoneNumber,
+    body?.phone,
+    body?.mobile,
+    body?.contact,
+    parsedFromText.phoneRaw
+  );
+
+  if (!phoneRaw) {
+    throw new Error("phone / phoneNumber is required in webhook payload");
+  }
+
+  return {
+    source: firstNonEmpty(body?.source, body?.leadSource, parsedFromText.source),
+    name: firstNonEmpty(body?.name, body?.fullName, parsedFromText.name),
+    phoneRaw,
+    email: firstNonEmpty(body?.email, parsedFromText.email),
+    labStatus: firstNonEmpty(body?.labStatus, body?.status, parsedFromText.labStatus),
+    launchTimeline: firstNonEmpty(body?.launchTimeline, body?.timeline, parsedFromText.launchTimeline),
+  };
+}
 
 export async function registerRoutes(app: Express): Promise<Server> {
   // Apply CORS middleware
@@ -1227,6 +1358,121 @@ export async function registerRoutes(app: Express): Promise<Server> {
       res.status(500).json({
         success: false,
         message: `Test failed: ${errorMessage}`,
+      });
+    }
+  });
+
+  // Inbound webhook: create/update lead from external source (forms, automations, CRMs)
+  app.post('/api/webhooks/leads', async (req, res) => {
+    try {
+      const expectedSecret = process.env.LEAD_WEBHOOK_SECRET;
+      if (expectedSecret) {
+        const providedSecret = firstNonEmpty(
+          req.headers['x-webhook-secret'],
+          req.headers['x-lead-webhook-secret'],
+          req.query.secret
+        );
+        if (!providedSecret || providedSecret !== expectedSecret) {
+          return res.status(401).json({
+            success: false,
+            error: 'Invalid webhook secret',
+          });
+        }
+      }
+
+      const bodySchema = z.record(z.any());
+      const bodyValidation = bodySchema.safeParse(req.body);
+      if (!bodyValidation.success) {
+        return res.status(400).json({
+          success: false,
+          error: 'Invalid webhook payload',
+        });
+      }
+
+      const parsedLead = parseWebhookLeadBody(bodyValidation.data);
+      const phoneInfo = normalizeWebhookLeadPhone(parsedLead.phoneRaw);
+      const normalizedPhone = phoneInfo.normalizedPhone;
+
+      const existingContact = await withRetry(() => storage.getContact(normalizedPhone));
+      const sourceLabel = parsedLead.source || 'Webhook Lead';
+      const triggerKeyword = `Webhook: ${sourceLabel}`;
+
+      // Avoid duplicate lead entries / duplicate greeting for existing leads.
+      if (existingContact?.isLead === 'true') {
+        if (parsedLead.name || parsedLead.email || parsedLead.labStatus || parsedLead.launchTimeline) {
+          await withRetry(() => storage.createMessage({
+            phoneNumber: existingContact.phoneNumber,
+            content: [
+              `Lead Update (${sourceLabel})`,
+              parsedLead.name ? `Name: ${parsedLead.name}` : '',
+              parsedLead.email ? `Email: ${parsedLead.email}` : '',
+              parsedLead.labStatus ? `Status: ${parsedLead.labStatus}` : '',
+              parsedLead.launchTimeline ? `Launch Timeline: ${parsedLead.launchTimeline}` : '',
+            ].filter(Boolean).join('\n'),
+            type: 'incoming',
+            status: 'received',
+            metadata: {
+              webhook_lead: true,
+              duplicate_lead_update: true,
+              source: parsedLead.source || null,
+              phone_normalization: phoneInfo,
+            },
+          }));
+        }
+
+        return res.json({
+          success: true,
+          action: 'duplicate_lead_ignored',
+          message: 'Lead already exists. No new lead created.',
+          contact: existingContact,
+          normalizedPhone,
+          phoneNormalization: phoneInfo,
+        });
+      }
+
+      const chatbotService = new ChatbotService(storage, whatsAppService);
+      const contact = await withRetry(() => chatbotService.flagAsLead(
+        normalizedPhone,
+        triggerKeyword,
+        parsedLead.name
+      ));
+
+      await withRetry(() => storage.createMessage({
+        phoneNumber: normalizedPhone,
+        content: [
+          `New Lead Generated`,
+          `Source: ${sourceLabel}`,
+          parsedLead.name ? `Name: ${parsedLead.name}` : '',
+          `Phone: ${normalizedPhone}`,
+          parsedLead.email ? `Email: ${parsedLead.email}` : 'Email: Not specified',
+          parsedLead.labStatus ? `Status: ${parsedLead.labStatus}` : '',
+          parsedLead.launchTimeline ? `Launch Timeline: ${parsedLead.launchTimeline}` : '',
+        ].filter(Boolean).join('\n'),
+        type: 'incoming',
+        status: 'received',
+        metadata: {
+          webhook_lead: true,
+          source: parsedLead.source || null,
+          email: parsedLead.email || null,
+          lab_status: parsedLead.labStatus || null,
+          launch_timeline: parsedLead.launchTimeline || null,
+          phone_normalization: phoneInfo,
+        },
+      }));
+
+      res.json({
+        success: true,
+        action: 'new_lead_created',
+        contact,
+        normalizedPhone,
+        phoneNormalization: phoneInfo,
+      });
+    } catch (error) {
+      const errorMessage = error instanceof Error ? error.message : 'Unknown error';
+      log(`Lead webhook error: ${errorMessage}`);
+      res.status(400).json({
+        success: false,
+        error: errorMessage,
       });
     }
   });
