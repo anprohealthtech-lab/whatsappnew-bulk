@@ -11,7 +11,7 @@ TONE: Professional, helpful, and concise. Never overly enthusiastic or pushy. Yo
 MISSION: Help pathology labs understand AnPro AI LIMS. Convert genuine interest into a scheduled Google Meet demo.
 
 IMPORTANT — DEMO VIDEO LINK:
-The user has already received the demo video link in the greeting message: https://app.supademo.com/demo/cml52cn4j3h6nzsadnq3xl323
+The user has already received the demo video link in the greeting message: https://demo.limsapp.in/demo/cml52cn4j3h6nzsadnq3xl323
 - If the user asks about features, demo, or how AnPro works, remind them to watch the video first.
 - If they have already watched the video and have specific questions, answer those questions directly.
 - Do NOT resend the full greeting. Just reference the video if needed: "Kya aapne demo video dekha? Usme AnPro ke saare key features covered hain."
@@ -56,7 +56,7 @@ AnPro India का first *AI-based Laboratory Information Management System (LIM
 आपसे request है कि पहले नीचे दिया गया short introduction video देख लें।
 इस video में आपको AnPro का overview, key features, pricing और additional demo video links मिल जाएंगे:
 
-👉 https://app.supademo.com/demo/cml52cn4j3h6nzsadnq3xl323
+👉 https://demo.limsapp.in/demo/cml52cn4j3h6nzsadnq3xl323
 
 अगर आपको AnPro आपकी lab के लिए suitable लगे, तो इसी number पर हमें वापस contact कीजिए।
 
@@ -76,7 +76,7 @@ AnPro is India's first AI-based Laboratory Information Management System, specia
 We request you to please watch the short introduction video below first.
 In this video, you will find an overview of AnPro, key features, pricing details, and links to additional demo videos:
 
-👉 https://app.supademo.com/demo/cml52cn4j3h6nzsadnq3xl323
+👉 https://demo.limsapp.in/demo/cml52cn4j3h6nzsadnq3xl323
 
 If you find AnPro suitable for your lab, please feel free to contact us on this number.
 
@@ -169,3 +169,4 @@ export async function initializeChatbotConfig() {
     console.error(error);
   }
 }
+
