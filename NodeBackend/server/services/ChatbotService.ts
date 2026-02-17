@@ -102,23 +102,44 @@ POLITE EXIT (use exactly once if user declines):
 "Samajh gaye. Aapka time dene ke liye shukriya. Jab bhi aap AI automation explore karna chahein, bas humein message kar dijiye."`;
 
 const DEFAULT_GREETING = `Hello 👋
-Welcome to AnPro Solutions!
+Welcome to *AnPro Solutions!*
 
-AnPro LIMS mein interest dikhane ke liye thank you.
+*AnPro LIMS* में interest दिखाने के लिए thank you।
 
-AnPro India ka first AI-based Laboratory Information Management System hai, jo specially modern diagnostic labs ke liye design kiya gaya hai. Yeh lab operations ko automate karta hai, manual work kam karta hai, aur complete WhatsApp integration provide karta hai—bina kisi extra cost ke.
+AnPro India का first *AI-based Laboratory Information Management System (LIMS)* है, जो specially modern diagnostic labs के लिए design किया गया है।
+यह lab operations को automate करता है, manual work कम करता है, और complete *WhatsApp integration* provide करता है — बिना किसी extra cost के।
 
-Aapse request hai ki pehle neeche diya gaya short introduction video dekh lein.
-Is video mein aapko AnPro ka overview, key features, pricing aur aur bhi demo video links mil jayenge:
+आपसे request है कि पहले नीचे दिया गया short introduction video देख लें।
+इस video में आपको AnPro का overview, key features, pricing और additional demo video links मिल जाएंगे:
 
 👉 https://app.supademo.com/demo/cml52cn4j3h6nzsadnq3xl323
 
-Agar aapko AnPro aapki lab ke liye suitable lage, to isi number par humein wapas contact kijiye.
+अगर आपको AnPro आपकी lab के लिए suitable लगे, तो इसी number पर हमें वापस contact कीजिए।
 
-Aapse baat karne ka intezaar rahega 😊
+आपसे बात करने का इंतज़ार रहेगा 😊
 
 Regards,
-Team AnPro Solutions`;
+*Team AnPro Solutions*
+===NEXT_MESSAGE===
+Hello 👋
+
+Welcome to *AnPro Solutions!*
+
+Thank you for showing interest in *AnPro LIMS*.
+
+AnPro is India's first AI-based Laboratory Information Management System, specially designed for modern diagnostic laboratories. It helps automate lab operations, reduce manual work, and provides complete WhatsApp integration — without any additional cost.
+
+We request you to please watch the short introduction video below first.
+In this video, you will find an overview of AnPro, key features, pricing details, and links to additional demo videos:
+
+👉 https://app.supademo.com/demo/cml52cn4j3h6nzsadnq3xl323
+
+If you find AnPro suitable for your lab, please feel free to contact us on this number.
+
+We look forward to speaking with you 😊
+
+Regards,
+*Team AnPro Solutions*`;
 
 // In-memory cooldown tracker (per phone number)
 const lastReplyTimestamps = new Map<string, number>();
@@ -177,30 +198,44 @@ export class ChatbotService {
 
     log(`✅ ${phoneNumber} flagged as lead`);
 
-    // Send initial greeting message
+    // Send initial greeting message(s)
+    // Supports multiple messages separated by ===NEXT_MESSAGE===
     try {
       const config = await this.storage.getChatbotConfig();
-      const greetingMessage = (config as any)?.greetingMessage || DEFAULT_GREETING;
+      const greetingRaw = (config as any)?.greetingMessage || DEFAULT_GREETING;
+      const greetingParts = greetingRaw.split('===NEXT_MESSAGE===').map((p: string) => p.trim()).filter((p: string) => p.length > 0);
 
-      log(`Sending greeting message to new lead ${phoneNumber}`);
-      await this.whatsappService.sendTextMessage(phoneNumber, greetingMessage);
+      log(`Sending ${greetingParts.length} greeting message(s) to new lead ${phoneNumber}`);
 
-      // Store the greeting message in DB
-      await this.storage.createMessage({
-        phoneNumber,
-        content: greetingMessage,
-        type: "text",
-        status: "sent",
-        metadata: {
-          chatbot_greeting: true,
-          trigger_keyword: keyword,
-        },
-      });
+      for (let i = 0; i < greetingParts.length; i++) {
+        const part = greetingParts[i];
+
+        // Small delay between messages (1.5s) so they arrive in order
+        if (i > 0) {
+          await new Promise(resolve => setTimeout(resolve, 1500));
+        }
+
+        await this.whatsappService.sendTextMessage(phoneNumber, part);
+
+        // Store each greeting message in DB
+        await this.storage.createMessage({
+          phoneNumber,
+          content: part,
+          type: "text",
+          status: "sent",
+          metadata: {
+            chatbot_greeting: true,
+            trigger_keyword: keyword,
+            greeting_part: i + 1,
+            greeting_total: greetingParts.length,
+          },
+        });
+      }
 
       // Record reply timestamp for cooldown
       lastReplyTimestamps.set(phoneNumber, Date.now());
 
-      log(`✅ Greeting message sent to ${phoneNumber}`);
+      log(`✅ ${greetingParts.length} greeting message(s) sent to ${phoneNumber}`);
     } catch (error: any) {
       log(`⚠️ Failed to send greeting message: ${error.message}`);
     }
