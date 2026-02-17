@@ -115,8 +115,9 @@ export class WhatsAppService extends EventEmitter {
         if (!msg.message) return;
 
         const from = msg.key.remoteJid;
-        // Handle both regular phone (@s.whatsapp.net) and LID (@lid) formats
-        const phoneNumber = from?.replace(/@s\.whatsapp\.net$|@lid$/, '') || from;
+        const senderPn = (msg.key as any)?.senderPn as string | undefined;
+        // Prefer senderPn for LID chats so lead lookup matches real phone numbers (e.g. 91xxxxxxxxxx).
+        const phoneNumber = this.resolveIncomingPhoneNumber(from, senderPn);
         const isFromMe = msg.key.fromMe;
 
         // Only process incoming messages (not sent by us)
@@ -134,6 +135,7 @@ export class WhatsAppService extends EventEmitter {
             buttonId,
             from,
             phoneNumber,
+            senderPn,
             timestamp: Date.now(),
           });
           return;
@@ -163,6 +165,7 @@ export class WhatsAppService extends EventEmitter {
             phoneNumber,
             content: isVoiceNote ? '[Voice Note]' : '[Audio Message]',
             from,
+            senderPn,
             timestamp: Date.now(),
             messageType: isVoiceNote ? 'voice_note' : 'audio',
             mediaInfo: {
@@ -184,6 +187,7 @@ export class WhatsAppService extends EventEmitter {
             phoneNumber,
             content: msg.message.imageMessage.caption || '[Image]',
             from,
+            senderPn,
             timestamp: Date.now(),
             messageType: 'image',
           });
@@ -198,6 +202,7 @@ export class WhatsAppService extends EventEmitter {
             phoneNumber,
             content: `[Document: ${msg.message.documentMessage.fileName || 'file'}]`,
             from,
+            senderPn,
             timestamp: Date.now(),
             messageType: 'document',
           });
@@ -212,6 +217,7 @@ export class WhatsAppService extends EventEmitter {
             phoneNumber,
             content: msg.message.videoMessage.caption || '[Video]',
             from,
+            senderPn,
             timestamp: Date.now(),
             messageType: 'video',
           });
@@ -231,6 +237,7 @@ export class WhatsAppService extends EventEmitter {
             phoneNumber,
             content: messageText,
             from,
+            senderPn,
             timestamp: Date.now(),
             messageType: 'text',
           });
@@ -244,6 +251,7 @@ export class WhatsAppService extends EventEmitter {
               buttonId: 'STOP_MESSAGES',
               from,
               phoneNumber,
+              senderPn,
               timestamp: Date.now(),
             });
           }
@@ -414,6 +422,25 @@ export class WhatsAppService extends EventEmitter {
 
   getStatus(): WhatsAppStatus {
     return { ...this.status };
+  }
+
+  private resolveIncomingPhoneNumber(from?: string | null, senderPn?: string | null): string {
+    const fromValue = from || '';
+    const senderValue = senderPn || '';
+
+    // senderPn carries the actual phone number in many @lid conversations.
+    const senderDigits = senderValue.replace(/\D/g, '');
+    if (senderDigits.length >= 10) {
+      return senderDigits;
+    }
+
+    // Fallback to remoteJid parsing.
+    const fromDigits = fromValue.replace(/@s\.whatsapp\.net$|@lid$/i, '').replace(/\D/g, '');
+    if (fromDigits.length > 0) {
+      return fromDigits;
+    }
+
+    return fromValue;
   }
 
   private formatPhoneNumber(phoneNumber: string): string {
