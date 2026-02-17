@@ -324,7 +324,9 @@ export async function registerRoutes(app: Express): Promise<Server> {
             console.log(`🎯 Lead trigger detected: "${triggerKeyword}" from ${data.phoneNumber}`);
             await withRetry(() => chatbotService.flagAsLead(
               data.phoneNumber,
-              triggerKeyword
+              triggerKeyword,
+              undefined,
+              data.from
             ));
             // After flagging and sending greeting, skip processing this message through RAG
             // The greeting is sufficient for first contact
@@ -350,7 +352,7 @@ export async function registerRoutes(app: Express): Promise<Server> {
 
           // Process through chatbot for leads
           console.log(`🤖 Processing lead message from ${data.phoneNumber}`);
-          await chatbotService.processLeadMessage(data.phoneNumber, data.content);
+          await chatbotService.processLeadMessage(data.phoneNumber, data.content, data.from);
           broadcast('chatbot-response-sent', { phoneNumber: data.phoneNumber });
         } else {
           // ========================================
@@ -1892,3 +1894,4 @@ export async function registerRoutes(app: Express): Promise<Server> {
 
   return httpServer;
 }
+

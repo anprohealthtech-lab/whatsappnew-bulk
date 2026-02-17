@@ -184,7 +184,7 @@ export class ChatbotService {
   /**
    * Flag a phone number as a lead and send initial greeting
    */
-  async flagAsLead(phoneNumber: string, keyword: string, name?: string): Promise<Contact> {
+  async flagAsLead(phoneNumber: string, keyword: string, name?: string, replyToJid?: string): Promise<Contact> {
     const log = (msg: string) => console.log(`[ChatbotService] ${msg}`);
 
     log(`Flagging ${phoneNumber} as lead (trigger: "${keyword}")`);
@@ -215,7 +215,7 @@ export class ChatbotService {
           await new Promise(resolve => setTimeout(resolve, 1500));
         }
 
-        await this.whatsappService.sendTextMessage(phoneNumber, part);
+        await this.whatsappService.sendTextMessage(replyToJid || phoneNumber, part);
 
         // Store each greeting message in DB
         await this.storage.createMessage({
@@ -444,7 +444,7 @@ export class ChatbotService {
   /**
    * Process a lead message: check cooldown, get context, call RAG with system prompt, send reply
    */
-  async processLeadMessage(phoneNumber: string, messageText: string): Promise<void> {
+  async processLeadMessage(phoneNumber: string, messageText: string, replyToJid?: string): Promise<void> {
     const log = (msg: string) => console.log(`[ChatbotService] ${msg}`);
 
     try {
@@ -531,7 +531,7 @@ export class ChatbotService {
       log(`Sending auto-reply to ${phoneNumber}`);
 
       // Send text reply via WhatsApp
-      await this.whatsappService.sendTextMessage(phoneNumber, textMessage);
+      await this.whatsappService.sendTextMessage(replyToJid || phoneNumber, textMessage);
 
       // Record reply timestamp for cooldown
       lastReplyTimestamps.set(phoneNumber, Date.now());
@@ -558,7 +558,7 @@ export class ChatbotService {
       // If image URL found, download and send it
       if (imageUrl) {
         log(`📷 Image URL detected: ${imageUrl}`);
-        await this.downloadAndSendImage(phoneNumber, imageUrl);
+        await this.downloadAndSendImage(phoneNumber, imageUrl, replyToJid);
       }
 
       log(`✅ Auto-reply sent successfully`);
@@ -603,7 +603,7 @@ export class ChatbotService {
   /**
    * Download image from URL and send via WhatsApp
    */
-  private async downloadAndSendImage(phoneNumber: string, imageUrl: string): Promise<void> {
+  private async downloadAndSendImage(phoneNumber: string, imageUrl: string, replyToJid?: string): Promise<void> {
     const log = (msg: string) => console.log(`[ChatbotService] ${msg}`);
 
     try {
@@ -628,7 +628,7 @@ export class ChatbotService {
       log(`✅ Image downloaded: ${filename}`);
 
       // Send via WhatsApp
-      await this.whatsappService.sendMediaMessage(phoneNumber, filePath, 'Reference image');
+      await this.whatsappService.sendMediaMessage(replyToJid || phoneNumber, filePath, 'Reference image');
 
       log(`✅ Image sent successfully to ${phoneNumber}`);
 
