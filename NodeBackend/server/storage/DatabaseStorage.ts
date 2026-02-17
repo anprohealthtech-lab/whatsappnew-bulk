@@ -266,17 +266,43 @@ export class DatabaseStorage implements IStorage {
   }
 
   async isLead(phoneNumber: string): Promise<boolean> {
-    const normalizedPhone = this.normalizePhoneNumber(phoneNumber);
-    
-    const result = await db.select()
-      .from(contacts)
-      .where(and(
-        eq(contacts.phoneNumber, normalizedPhone),
-        eq(contacts.isLead, 'true')
-      ))
-      .limit(1);
-    
-    return result.length > 0;
+    const variants = this.getPhoneVariants(phoneNumber);
+    console.log(`[DatabaseStorage] isLead: input=${phoneNumber}, variants=${JSON.stringify(variants)}`);
+
+    // Try each variant
+    for (const variant of variants) {
+      const result = await db.select()
+        .from(contacts)
+        .where(and(
+          eq(contacts.phoneNumber, variant),
+          eq(contacts.isLead, 'true')
+        ))
+        .limit(1);
+
+      if (result[0]) {
+        console.log(`[DatabaseStorage] isLead: found with variant=${variant}`);
+        return true;
+      }
+    }
+
+    // Fuzzy match - last 10 digits comparison
+    const cleaned = this.normalizeHRPhone(phoneNumber);
+    if (cleaned.length >= 10) {
+      const allLeads = await db.select()
+        .from(contacts)
+        .where(eq(contacts.isLead, 'true'));
+
+      for (const lead of allLeads) {
+        const storedCleaned = this.normalizeHRPhone(lead.phoneNumber);
+        if (storedCleaned.slice(-10) === cleaned.slice(-10)) {
+          console.log(`[DatabaseStorage] isLead: fuzzy match found (stored=${lead.phoneNumber}, input=${phoneNumber})`);
+          return true;
+        }
+      }
+    }
+
+    console.log(`[DatabaseStorage] isLead: not found`);
+    return false;
   }
 
   async getLeads(filters?: { limit?: number; offset?: number }): Promise<Contact[]> {
@@ -297,21 +323,47 @@ export class DatabaseStorage implements IStorage {
   }
 
   async getContact(phoneNumber: string): Promise<Contact | undefined> {
-    const normalizedPhone = this.normalizePhoneNumber(phoneNumber);
-    console.log(`[DatabaseStorage] getContact: input=${phoneNumber}, normalized=${normalizedPhone}`);
-    
-    const result = await db.select()
-      .from(contacts)
-      .where(eq(contacts.phoneNumber, normalizedPhone))
-      .limit(1);
-    
-    console.log(`[DatabaseStorage] getContact result: ${result[0] ? `found (chatbotActive=${result[0].chatbotActive})` : 'not found'}`);
-    return result[0];
+    const variants = this.getPhoneVariants(phoneNumber);
+    console.log(`[DatabaseStorage] getContact: input=${phoneNumber}, variants=${JSON.stringify(variants)}`);
+
+    // Try each variant
+    for (const variant of variants) {
+      const result = await db.select()
+        .from(contacts)
+        .where(eq(contacts.phoneNumber, variant))
+        .limit(1);
+
+      if (result[0]) {
+        console.log(`[DatabaseStorage] getContact: found with variant=${variant} (chatbotActive=${result[0].chatbotActive})`);
+        return result[0];
+      }
+    }
+
+    // Fuzzy match - last 10 digits comparison
+    const cleaned = this.normalizeHRPhone(phoneNumber);
+    if (cleaned.length >= 10) {
+      const allContacts = await db.select().from(contacts);
+      for (const contact of allContacts) {
+        const storedCleaned = this.normalizeHRPhone(contact.phoneNumber);
+        if (storedCleaned.slice(-10) === cleaned.slice(-10)) {
+          console.log(`[DatabaseStorage] getContact: fuzzy match found (stored=${contact.phoneNumber}, input=${phoneNumber})`);
+          return contact;
+        }
+      }
+    }
+
+    console.log(`[DatabaseStorage] getContact: not found`);
+    return undefined;
   }
 
   async updateContact(phoneNumber: string, updates: Partial<Contact>): Promise<Contact | undefined> {
-    const normalizedPhone = this.normalizePhoneNumber(phoneNumber);
-    
+    // Resolve the actual stored phone number using variant/fuzzy matching
+    const existingContact = await this.getContact(phoneNumber);
+    if (!existingContact) {
+      console.log(`[DatabaseStorage] updateContact: contact not found for ${phoneNumber}`);
+      return undefined;
+    }
+
     const updateData: any = {
       ...updates,
       updatedAt: new Date(),
@@ -319,9 +371,9 @@ export class DatabaseStorage implements IStorage {
 
     const result = await db.update(contacts)
       .set(updateData)
-      .where(eq(contacts.phoneNumber, normalizedPhone))
+      .where(eq(contacts.phoneNumber, existingContact.phoneNumber))
       .returning();
-    
+
     return result[0];
   }
 
