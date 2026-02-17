@@ -7,7 +7,7 @@ import { Textarea } from '@/components/ui/textarea';
 import { Badge } from '@/components/ui/badge';
 import { Alert, AlertDescription } from '@/components/ui/alert';
 import { Checkbox } from '@/components/ui/checkbox';
-import { Loader2, Upload, Send, RefreshCw, Plus, Trash2, Link, MessageSquare, AlertCircle, FileText, Users, Download } from 'lucide-react';
+import { Loader2, Upload, Send, RefreshCw, Plus, Trash2, Link, MessageSquare, AlertCircle, FileText, Users, Download, Info, CheckCircle } from 'lucide-react';
 
 interface Campaign {
   id: string;
@@ -382,7 +382,7 @@ export function CampaignMessageVariationPanel({
             </Alert>
           )}
           {success && (
-            <Alert className="bg-green-50 text-green-800 border-green-200">
+            <Alert className="bg-green-50 text-green-800 border-green-200 dark:bg-green-900/20 dark:text-green-400 dark:border-green-900/30">
               <CheckCircle className="h-4 w-4" />
               <AlertDescription>{success}</AlertDescription>
             </Alert>
@@ -502,7 +502,7 @@ export function CampaignMessageVariationPanel({
                   <Plus className="w-4 h-4 mr-2" />
                   Add Button
                 </Button>
-                <Alert className="bg-blue-50 text-blue-800 border-blue-200">
+                <Alert className="bg-blue-50 text-blue-800 border-blue-200 dark:bg-blue-900/20 dark:text-blue-400 dark:border-blue-900/30">
                   <Info className="h-4 w-4" />
                   <AlertDescription className="text-xs">
                     <strong>Tip:</strong> Add a "Visit Website" button or "This is helpful" to encourage positive interaction and reduce spam reports.
@@ -827,22 +827,22 @@ export function CampaignMessageVariationPanel({
             </Alert>
           )}
           {success && (
-            <Alert className="bg-green-50 text-green-800 border-green-200">
+            <Alert className="bg-green-50 text-green-800 border-green-200 dark:bg-green-900/20 dark:text-green-400 dark:border-green-900/30">
               <CheckCircle className="h-4 w-4" />
               <AlertDescription>{success}</AlertDescription>
             </Alert>
           )}
 
           <div className="grid grid-cols-2 gap-4">
-            <div className={`p-4 rounded-xl border ${selectedVariation ? 'bg-green-50 border-green-200' : 'bg-red-50 border-red-200'} transition-colors`}>
+            <div className={`p-4 rounded-xl border ${selectedVariation ? 'bg-green-50 border-green-200 dark:bg-green-900/20 dark:border-green-900/30' : 'bg-red-50 border-red-200 dark:bg-red-900/20 dark:border-red-900/30'} transition-colors`}>
               <p className="text-xs font-medium uppercase tracking-wider mb-1">Variation</p>
-              <p className={`font-semibold ${selectedVariation ? 'text-green-700' : 'text-red-700'}`}>
+              <p className={`font-semibold ${selectedVariation ? 'text-green-700 dark:text-green-400' : 'text-red-700 dark:text-red-400'}`}>
                 {selectedVariation ? 'Ready' : 'Missing'}
               </p>
             </div>
-            <div className={`p-4 rounded-xl border ${contacts.length > 0 ? 'bg-green-50 border-green-200' : 'bg-red-50 border-red-200'} transition-colors`}>
+            <div className={`p-4 rounded-xl border ${contacts.length > 0 ? 'bg-green-50 border-green-200 dark:bg-green-900/20 dark:border-green-900/30' : 'bg-red-50 border-red-200 dark:bg-red-900/20 dark:border-red-900/30'} transition-colors`}>
               <p className="text-xs font-medium uppercase tracking-wider mb-1">Contacts</p>
-              <p className={`font-semibold ${contacts.length > 0 ? 'text-green-700' : 'text-red-700'}`}>
+              <p className={`font-semibold ${contacts.length > 0 ? 'text-green-700 dark:text-green-400' : 'text-red-700 dark:text-red-400'}`}>
                 {contacts.length > 0 ? `${contacts.length} Loaded` : 'Empty'}
               </p>
             </div>
@@ -893,44 +893,3 @@ export function CampaignMessageVariationPanel({
   );
 }
 
-// Helper components for icons that were missing in imports
-function Info(props: any) {
-  return (
-    <svg
-      {...props}
-      xmlns="http://www.w3.org/2000/svg"
-      width="24"
-      height="24"
-      viewBox="0 0 24 24"
-      fill="none"
-      stroke="currentColor"
-      strokeWidth="2"
-      strokeLinecap="round"
-      strokeLinejoin="round"
-    >
-      <circle cx="12" cy="12" r="10" />
-      <path d="M12 16v-4" />
-      <path d="M12 8h.01" />
-    </svg>
-  )
-}
-
-function CheckCircle(props: any) {
-  return (
-    <svg
-      {...props}
-      xmlns="http://www.w3.org/2000/svg"
-      width="24"
-      height="24"
-      viewBox="0 0 24 24"
-      fill="none"
-      stroke="currentColor"
-      strokeWidth="2"
-      strokeLinecap="round"
-      strokeLinejoin="round"
-    >
-      <path d="M22 11.08V12a10 10 0 1 1-5.93-9.14" />
-      <polyline points="22 4 12 14.01 9 11.01" />
-    </svg>
-  )
-}

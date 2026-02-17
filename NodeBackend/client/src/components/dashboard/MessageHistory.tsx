@@ -12,6 +12,7 @@ import { Input } from "@/components/ui/input";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
+import { Skeleton } from "@/components/ui/skeleton";
 import {
     Search,
     RefreshCw,
@@ -109,14 +110,18 @@ export function MessageHistory({ messages, isLoading, filters, onFilterChange, o
                         </thead>
                         <tbody className="divide-y divide-gray-200 dark:divide-zinc-800 bg-white dark:bg-zinc-950">
                             {isLoading ? (
-                                <tr>
-                                    <td colSpan={6} className="py-8 text-center text-muted-foreground">
-                                        <div className="flex items-center justify-center">
-                                            <RefreshCw className="w-5 h-5 animate-spin mr-2" />
-                                            Loading messages...
-                                        </div>
-                                    </td>
-                                </tr>
+                                <>
+                                    {[...Array(5)].map((_, i) => (
+                                        <tr key={i}>
+                                            <td className="py-4 px-6"><Skeleton className="h-4 w-32" /></td>
+                                            <td className="py-4 px-6"><Skeleton className="h-4 w-28" /></td>
+                                            <td className="py-4 px-6"><Skeleton className="h-4 w-16" /></td>
+                                            <td className="py-4 px-6"><Skeleton className="h-4 w-40" /></td>
+                                            <td className="py-4 px-6"><Skeleton className="h-6 w-20 rounded-full" /></td>
+                                            <td className="py-4 px-6"><Skeleton className="h-8 w-16" /></td>
+                                        </tr>
+                                    ))}
+                                </>
                             ) : messages.length === 0 ? (
                                 <tr>
                                     <td colSpan={6} className="py-12 text-center text-muted-foreground">

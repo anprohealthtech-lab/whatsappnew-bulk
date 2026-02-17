@@ -151,25 +151,64 @@ export async function registerRoutes(app: Express): Promise<Server> {
       broadcast('button-clicked', data);
     });
 
-    // Message debouncing: prevent spam when user sends multiple messages quickly
+    // Message debouncing: concatenate rapid messages instead of discarding
     const messageDebounceMap = new Map<string, NodeJS.Timeout>();
-    const DEBOUNCE_DELAY = 3000; // 3 seconds
+    const messageBatchMap = new Map<string, { messages: string[]; latestData: any }>();
+    const DEBOUNCE_DELAY = 5000; // 5 seconds - wait for user to finish typing
 
     // Handle incoming messages
     whatsAppService.on('incoming-message', async (data) => {
       console.log('📥 Incoming message received:', data);
 
+      // Store each incoming message immediately in DB (don't lose any)
+      try {
+        await withRetry(() => storage.createMessage({
+          phoneNumber: data.phoneNumber,
+          content: data.content,
+          type: 'incoming',
+          status: 'received',
+        }));
+      } catch (err) {
+        console.error('❌ Failed to store incoming message:', err);
+      }
+
+      // Accumulate messages for this phone number
+      const existing = messageBatchMap.get(data.phoneNumber);
+      if (existing) {
+        existing.messages.push(data.content);
+        existing.latestData = data;
+      } else {
+        messageBatchMap.set(data.phoneNumber, {
+          messages: [data.content],
+          latestData: data,
+        });
+      }
+
       // Clear existing timeout for this phone number if any
       const existingTimeout = messageDebounceMap.get(data.phoneNumber);
       if (existingTimeout) {
         clearTimeout(existingTimeout);
-        console.log(`⏱️ Debouncing message from ${data.phoneNumber}`);
+        console.log(`⏱️ Debouncing message from ${data.phoneNumber} (${messageBatchMap.get(data.phoneNumber)?.messages.length} msgs batched)`);
       }
 
-      // Set new timeout - only process if no new message arrives within DEBOUNCE_DELAY
+      // Set new timeout - process all batched messages after debounce window
       const timeoutId = setTimeout(async () => {
         messageDebounceMap.delete(data.phoneNumber);
-        await processIncomingMessage(data);
+        const batch = messageBatchMap.get(data.phoneNumber);
+        messageBatchMap.delete(data.phoneNumber);
+
+        if (batch) {
+          // Combine all batched messages into one for bot processing
+          const combinedContent = batch.messages.join('\n');
+          const processData = {
+            ...batch.latestData,
+            content: combinedContent,
+            _alreadyStored: true, // Flag: messages already saved to DB individually
+            _batchCount: batch.messages.length,
+          };
+          console.log(`📦 Processing batch of ${batch.messages.length} message(s) from ${data.phoneNumber}`);
+          await processIncomingMessage(processData);
+        }
       }, DEBOUNCE_DELAY);
 
       messageDebounceMap.set(data.phoneNumber, timeoutId);
@@ -179,13 +218,15 @@ export async function registerRoutes(app: Express): Promise<Server> {
     async function processIncomingMessage(data: any) {
 
       try {
-        // Save incoming message to database with retry
-        await withRetry(() => storage.createMessage({
-          phoneNumber: data.phoneNumber,
-          content: data.content,
-          type: 'incoming',
-          status: 'received',
-        }));
+        // Save incoming message to database (skip if already stored by debounce handler)
+        if (!data._alreadyStored) {
+          await withRetry(() => storage.createMessage({
+            phoneNumber: data.phoneNumber,
+            content: data.content,
+            type: 'incoming',
+            status: 'received',
+          }));
+        }
 
         // Check if number is blocked
         const isBlocked = await withRetry(() => storage.isNumberBlocked(data.phoneNumber));
@@ -1130,16 +1171,20 @@ export async function registerRoutes(app: Express): Promise<Server> {
         });
       }
 
-      const { agentName, triggerKeywords, ragBaseUrl, ragAccessKey, contextMessageCount, isActive } = validation.data;
+      const { agentName, triggerKeywords, ragBaseUrl, ragAccessKey, systemPrompt, greetingMessage, contextMessageCount, replyCooldownSeconds, typingDelayMs, isActive } = validation.data;
 
       const config = await withRetry(() => storage.updateChatbotConfig({
         agentName,
         triggerKeywords,
         ragBaseUrl,
         ragAccessKey,
+        systemPrompt,
+        greetingMessage,
         contextMessageCount,
+        replyCooldownSeconds,
+        typingDelayMs,
         isActive,
-      }));
+      } as any));
 
       // Mask the access key in response
       const maskedConfig = {

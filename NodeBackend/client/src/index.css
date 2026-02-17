@@ -15,7 +15,7 @@
   --popover-foreground: hsl(222.2 84% 4.9%);
 
   /* Modern WhatsApp Teal */
-  --primary: hsl(150 100% 35%); 
+  --primary: hsl(150 100% 35%);
   --primary-foreground: hsl(0 0% 100%);
 
   --secondary: hsl(210 40% 96.1%);
@@ -97,8 +97,23 @@
   * {
     @apply border-border;
   }
+
+  html {
+    scroll-behavior: smooth;
+  }
+
   body {
-    @apply font-sans antialiased bg-background text-foreground;
+    @apply font-sans antialiased bg-background text-foreground transition-colors duration-200;
+  }
+
+  ::selection {
+    background: hsl(150 100% 35% / 0.15);
+    color: hsl(150 100% 20%);
+  }
+
+  .dark ::selection {
+    background: hsl(150 60% 45% / 0.25);
+    color: hsl(150 60% 90%);
   }
 }
 
@@ -107,8 +122,62 @@
   .glass {
     @apply bg-white/70 dark:bg-black/70 backdrop-blur-lg border border-white/20 dark:border-white/10 shadow-xl;
   }
-  
+
   .glass-card {
     @apply bg-white/80 dark:bg-zinc-900/80 backdrop-blur-md border border-gray-200/50 dark:border-zinc-800/50 shadow-sm hover:shadow-md transition-all duration-300;
+  }
+
+  /* Scrollbar styling */
+  .scrollbar-hide {
+    -ms-overflow-style: none;
+    scrollbar-width: none;
+  }
+  .scrollbar-hide::-webkit-scrollbar {
+    display: none;
+  }
+
+  .scrollbar-thin {
+    scrollbar-width: thin;
+    scrollbar-color: hsl(214.3 31.8% 91.4%) transparent;
+  }
+  .scrollbar-thin::-webkit-scrollbar {
+    width: 6px;
+    height: 6px;
+  }
+  .scrollbar-thin::-webkit-scrollbar-track {
+    background: transparent;
+  }
+  .scrollbar-thin::-webkit-scrollbar-thumb {
+    background-color: hsl(214.3 31.8% 85%);
+    border-radius: 9999px;
+  }
+  .scrollbar-thin::-webkit-scrollbar-thumb:hover {
+    background-color: hsl(214.3 31.8% 75%);
+  }
+
+  .dark .scrollbar-thin {
+    scrollbar-color: hsl(217.2 32.6% 25%) transparent;
+  }
+  .dark .scrollbar-thin::-webkit-scrollbar-thumb {
+    background-color: hsl(217.2 32.6% 25%);
+  }
+  .dark .scrollbar-thin::-webkit-scrollbar-thumb:hover {
+    background-color: hsl(217.2 32.6% 35%);
+  }
+
+  /* Section entrance animation */
+  .animate-fade-in-up {
+    animation: fadeInUp 0.3s ease-out;
+  }
+
+  @keyframes fadeInUp {
+    from {
+      opacity: 0;
+      transform: translateY(8px);
+    }
+    to {
+      opacity: 1;
+      transform: translateY(0);
+    }
   }
 }

@@ -373,13 +373,18 @@ export class DatabaseStorage implements IStorage {
       return result[0];
     } else {
       // Create new config
+      const configAny = config as any;
       const result = await db.insert(chatbotConfigs)
         .values({
           agentName: config.agentName,
           triggerKeywords: config.triggerKeywords || [],
           ragBaseUrl: config.ragBaseUrl || '',
           ragAccessKey: config.ragAccessKey || '',
-          contextMessageCount: config.contextMessageCount || 3,
+          systemPrompt: configAny.systemPrompt || null,
+          greetingMessage: configAny.greetingMessage || null,
+          contextMessageCount: config.contextMessageCount || 5,
+          replyCooldownSeconds: configAny.replyCooldownSeconds || 8,
+          typingDelayMs: configAny.typingDelayMs || 2000,
           isActive: typeof config.isActive === 'boolean' ? (config.isActive ? 'true' : 'false') : 'true',
         })
         .returning();

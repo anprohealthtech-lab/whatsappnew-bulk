@@ -10,7 +10,18 @@ import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/com
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table";
 import { Badge } from "@/components/ui/badge";
 import { Dialog, DialogContent, DialogDescription, DialogHeader, DialogTitle, DialogTrigger } from "@/components/ui/dialog";
-import { UserPlus, MessageSquare, Calendar, Trash2, Pause, Play } from "lucide-react";
+import {
+  AlertDialog,
+  AlertDialogAction,
+  AlertDialogCancel,
+  AlertDialogContent,
+  AlertDialogDescription,
+  AlertDialogFooter,
+  AlertDialogHeader,
+  AlertDialogTitle,
+} from "@/components/ui/alert-dialog";
+import { Skeleton } from "@/components/ui/skeleton";
+import { UserPlus, MessageSquare, Calendar, Trash2, Pause, Play, Info } from "lucide-react";
 import { useToast } from "@/hooks/use-toast";
 
 const flagLeadSchema = z.object({
@@ -23,6 +34,7 @@ type FlagLeadFormData = z.infer<typeof flagLeadSchema>;
 
 export function LeadsPanel() {
   const [isDialogOpen, setIsDialogOpen] = useState(false);
+  const [deleteTarget, setDeleteTarget] = useState<string | null>(null);
   const { toast } = useToast();
   const queryClient = useQueryClient();
 
@@ -38,7 +50,7 @@ export function LeadsPanel() {
   // Query leads
   const { data: leadsData, isLoading } = useQuery<{ leads: any[] }>({
     queryKey: ["/api/leads"],
-    refetchInterval: 30000, // Refresh every 30 seconds
+    refetchInterval: 30000,
   });
 
   const leads = leadsData?.leads || [];
@@ -157,22 +169,22 @@ export function LeadsPanel() {
   };
 
   return (
-    <div className="space-y-6">
+    <div className="space-y-6 animate-fade-in-up">
       <div className="flex items-center justify-between">
         <div>
-          <h2 className="text-3xl font-bold tracking-tight">Leads Management</h2>
-          <p className="text-muted-foreground">
+          <h2 className="text-2xl font-bold tracking-tight">Leads Management</h2>
+          <p className="text-muted-foreground text-sm">
             View and manage leads detected by the chatbot system
           </p>
         </div>
         <Dialog open={isDialogOpen} onOpenChange={setIsDialogOpen}>
           <DialogTrigger asChild>
-            <Button>
+            <Button className="bg-primary hover:bg-primary/90 text-primary-foreground shadow-lg shadow-primary/20">
               <UserPlus className="mr-2 h-4 w-4" />
               Add Past Lead
             </Button>
           </DialogTrigger>
-          <DialogContent>
+          <DialogContent className="border-none shadow-2xl bg-white/95 dark:bg-zinc-900/95 backdrop-blur-xl">
             <DialogHeader>
               <DialogTitle>Add Past Lead</DialogTitle>
               <DialogDescription>
@@ -186,6 +198,7 @@ export function LeadsPanel() {
                   id="phoneNumber"
                   placeholder="919876543210"
                   {...form.register("phoneNumber")}
+                  className="bg-white dark:bg-zinc-950 border-gray-200 dark:border-zinc-800 focus:ring-primary"
                 />
                 {form.formState.errors.phoneNumber && (
                   <p className="text-sm text-destructive">
@@ -200,6 +213,7 @@ export function LeadsPanel() {
                   id="name"
                   placeholder="John Doe"
                   {...form.register("name")}
+                  className="bg-white dark:bg-zinc-950 border-gray-200 dark:border-zinc-800 focus:ring-primary"
                 />
               </div>
 
@@ -209,6 +223,7 @@ export function LeadsPanel() {
                   id="keyword"
                   placeholder="Manual flag"
                   {...form.register("keyword")}
+                  className="bg-white dark:bg-zinc-950 border-gray-200 dark:border-zinc-800 focus:ring-primary"
                 />
                 <p className="text-xs text-muted-foreground">
                   Leave blank to use "Manual flag" as default
@@ -223,7 +238,11 @@ export function LeadsPanel() {
                 >
                   Cancel
                 </Button>
-                <Button type="submit" disabled={flagLeadMutation.isPending}>
+                <Button
+                  type="submit"
+                  disabled={flagLeadMutation.isPending}
+                  className="bg-primary hover:bg-primary/90 text-primary-foreground shadow-md shadow-primary/20"
+                >
                   {flagLeadMutation.isPending ? "Adding..." : "Add Lead"}
                 </Button>
               </div>
@@ -232,58 +251,67 @@ export function LeadsPanel() {
         </Dialog>
       </div>
 
-      <Card>
+      <Card className="border-none shadow-lg bg-white/50 dark:bg-zinc-900/50 backdrop-blur-sm">
         <CardHeader>
-          <CardTitle>Active Leads</CardTitle>
+          <CardTitle className="text-lg font-semibold">Active Leads</CardTitle>
           <CardDescription>
             Contacts that have been flagged as leads and will receive chatbot auto-responses
           </CardDescription>
         </CardHeader>
         <CardContent>
           {isLoading ? (
-            <div className="flex items-center justify-center py-8">
-              <div className="text-muted-foreground">Loading leads...</div>
+            <div className="space-y-4">
+              {[...Array(3)].map((_, i) => (
+                <div key={i} className="flex items-center space-x-4 p-4">
+                  <Skeleton className="h-5 w-32" />
+                  <Skeleton className="h-5 w-24" />
+                  <Skeleton className="h-5 w-20" />
+                  <Skeleton className="h-6 w-16 rounded-full" />
+                  <Skeleton className="h-5 w-28" />
+                  <Skeleton className="h-8 w-24" />
+                </div>
+              ))}
             </div>
           ) : leads.length === 0 ? (
-            <div className="flex flex-col items-center justify-center py-8 text-center">
-              <UserPlus className="h-12 w-12 text-muted-foreground mb-4" />
+            <div className="flex flex-col items-center justify-center py-12 text-center bg-accent/20 rounded-xl border border-dashed border-border">
+              <UserPlus className="h-12 w-12 text-muted-foreground/50 mb-4" />
               <p className="text-lg font-medium">No leads yet</p>
-              <p className="text-sm text-muted-foreground">
+              <p className="text-sm text-muted-foreground mt-1">
                 Leads will appear here when contacts send trigger keywords or are manually added
               </p>
             </div>
           ) : (
-            <div className="rounded-md border">
+            <div className="overflow-hidden rounded-xl border border-gray-200 dark:border-zinc-800">
               <Table>
                 <TableHeader>
-                  <TableRow>
-                    <TableHead>Phone Number</TableHead>
-                    <TableHead>Name</TableHead>
-                    <TableHead>Trigger Keyword</TableHead>
-                    <TableHead>Status</TableHead>
-                    <TableHead>Last Message</TableHead>
-                    <TableHead>Actions</TableHead>
+                  <TableRow className="bg-gray-50 dark:bg-zinc-900/50 hover:bg-gray-50 dark:hover:bg-zinc-900/50">
+                    <TableHead className="font-medium text-muted-foreground">Phone Number</TableHead>
+                    <TableHead className="font-medium text-muted-foreground">Name</TableHead>
+                    <TableHead className="font-medium text-muted-foreground">Trigger Keyword</TableHead>
+                    <TableHead className="font-medium text-muted-foreground">Status</TableHead>
+                    <TableHead className="font-medium text-muted-foreground">Last Message</TableHead>
+                    <TableHead className="font-medium text-muted-foreground">Actions</TableHead>
                   </TableRow>
                 </TableHeader>
                 <TableBody>
                   {leads.map((lead: any) => (
-                    <TableRow key={lead.id}>
-                      <TableCell className="font-mono">
+                    <TableRow key={lead.id} className="hover:bg-gray-50 dark:hover:bg-zinc-900/50 transition-colors">
+                      <TableCell className="font-mono text-foreground">
                         {lead.phoneNumber}
                       </TableCell>
-                      <TableCell>{lead.name || "—"}</TableCell>
+                      <TableCell className="text-foreground">{lead.name || <span className="text-muted-foreground">--</span>}</TableCell>
                       <TableCell>
-                        <Badge variant="secondary" className="font-normal">
+                        <Badge variant="secondary" className="font-normal bg-primary/10 text-primary hover:bg-primary/20">
                           {lead.leadTriggerKeyword || "Unknown"}
                         </Badge>
                       </TableCell>
                       <TableCell>
                         {lead.chatbotActive === 'false' ? (
-                          <Badge variant="outline" className="border-yellow-500 text-yellow-600">
+                          <Badge variant="outline" className="border-yellow-500/50 text-yellow-600 dark:text-yellow-400 bg-yellow-50 dark:bg-yellow-900/20">
                             Paused
                           </Badge>
                         ) : (
-                          <Badge variant="default">
+                          <Badge className="bg-green-100 text-green-700 dark:bg-green-900/30 dark:text-green-400 hover:bg-green-200">
                             Active
                           </Badge>
                         )}
@@ -295,7 +323,7 @@ export function LeadsPanel() {
                         </div>
                       </TableCell>
                       <TableCell>
-                        <div className="flex items-center gap-2">
+                        <div className="flex items-center gap-1">
                           <Button
                             variant="ghost"
                             size="sm"
@@ -308,23 +336,24 @@ export function LeadsPanel() {
                             }}
                             disabled={toggleChatbotMutation.isPending}
                             title={lead.chatbotActive === 'false' ? 'Resume chatbot' : 'Pause chatbot for manual chat'}
+                            className="hover:bg-accent"
                           >
                             {lead.chatbotActive === 'false' ? (
-                              <Play className="h-4 w-4 text-green-600" />
+                              <Play className="h-4 w-4 text-green-600 dark:text-green-400" />
                             ) : (
-                              <Pause className="h-4 w-4 text-yellow-600" />
+                              <Pause className="h-4 w-4 text-yellow-600 dark:text-yellow-400" />
                             )}
                           </Button>
                           <Button
                             variant="ghost"
                             size="sm"
                             onClick={() => {
-                              // TODO: Open conversation view
                               toast({
                                 title: "Coming soon",
                                 description: "Conversation view will be available soon",
                               });
                             }}
+                            className="text-blue-500 hover:text-blue-600 hover:bg-blue-50 dark:hover:bg-blue-900/20"
                           >
                             <MessageSquare className="h-4 w-4 mr-1" />
                             View Chat
@@ -332,14 +361,11 @@ export function LeadsPanel() {
                           <Button
                             variant="ghost"
                             size="sm"
-                            onClick={() => {
-                              if (confirm(`Remove ${lead.phoneNumber} from leads?`)) {
-                                deleteLeadMutation.mutate(lead.phoneNumber);
-                              }
-                            }}
+                            onClick={() => setDeleteTarget(lead.phoneNumber)}
                             disabled={deleteLeadMutation.isPending}
+                            className="text-red-500 hover:text-red-600 hover:bg-red-50 dark:hover:bg-red-900/20"
                           >
-                            <Trash2 className="h-4 w-4 text-destructive" />
+                            <Trash2 className="h-4 w-4" />
                           </Button>
                         </div>
                       </TableCell>
@@ -359,25 +385,54 @@ export function LeadsPanel() {
       </Card>
 
       {/* Info Card */}
-      <Card>
+      <Card className="border-none shadow-lg bg-white/50 dark:bg-zinc-900/50 backdrop-blur-sm">
         <CardHeader>
-          <CardTitle className="text-base">How Leads Work</CardTitle>
+          <CardTitle className="text-base flex items-center">
+            <Info className="w-4 h-4 mr-2 text-primary" />
+            How Leads Work
+          </CardTitle>
         </CardHeader>
         <CardContent className="text-sm text-muted-foreground space-y-2">
           <p>
-            <strong>Automatic Detection:</strong> When a contact sends a message containing any of your configured trigger keywords, they are automatically flagged as a lead.
+            <strong className="text-foreground">Automatic Detection:</strong> When a contact sends a message containing any of your configured trigger keywords, they are automatically flagged as a lead.
           </p>
           <p>
-            <strong>Chatbot Responses:</strong> All messages from leads are sent to the RAG chatbot, which provides intelligent, context-aware responses.
+            <strong className="text-foreground">Chatbot Responses:</strong> All messages from leads are sent to the RAG chatbot, which provides intelligent, context-aware responses.
           </p>
           <p>
-            <strong>Manual Addition:</strong> You can manually flag past contacts as leads using the "Add Past Lead" button above. This is useful for importing existing prospects.
+            <strong className="text-foreground">Manual Addition:</strong> You can manually flag past contacts as leads using the "Add Past Lead" button above. This is useful for importing existing prospects.
           </p>
           <p>
-            <strong>Context:</strong> The chatbot receives the last 5 messages from each conversation to provide relevant responses.
+            <strong className="text-foreground">Context:</strong> The chatbot receives the last 5 messages from each conversation to provide relevant responses.
           </p>
         </CardContent>
       </Card>
+
+      {/* Delete Confirmation Dialog */}
+      <AlertDialog open={!!deleteTarget} onOpenChange={(open) => !open && setDeleteTarget(null)}>
+        <AlertDialogContent className="border-none shadow-2xl bg-white/95 dark:bg-zinc-900/95 backdrop-blur-xl">
+          <AlertDialogHeader>
+            <AlertDialogTitle>Remove Lead</AlertDialogTitle>
+            <AlertDialogDescription>
+              Are you sure you want to remove <span className="font-mono font-semibold">{deleteTarget}</span> from leads? This will disable chatbot auto-responses for this contact.
+            </AlertDialogDescription>
+          </AlertDialogHeader>
+          <AlertDialogFooter>
+            <AlertDialogCancel>Cancel</AlertDialogCancel>
+            <AlertDialogAction
+              onClick={() => {
+                if (deleteTarget) {
+                  deleteLeadMutation.mutate(deleteTarget);
+                  setDeleteTarget(null);
+                }
+              }}
+              className="bg-destructive text-destructive-foreground hover:bg-destructive/90"
+            >
+              Remove Lead
+            </AlertDialogAction>
+          </AlertDialogFooter>
+        </AlertDialogContent>
+      </AlertDialog>
     </div>
   );
 }

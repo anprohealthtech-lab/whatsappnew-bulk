@@ -24,11 +24,11 @@ export default function CampaignsPage() {
               <ArrowLeft className="w-4 h-4 mr-2" />
               Back to Dashboard
             </Button>
-            <h1 className="text-4xl font-bold tracking-tight flex items-center">
-              <Megaphone className="w-8 h-8 mr-4 text-primary" />
+            <h1 className="text-2xl font-bold tracking-tight flex items-center">
+              <Megaphone className="w-6 h-6 mr-3 text-primary" />
               Campaign Manager
             </h1>
-            <p className="text-muted-foreground mt-2 text-lg">Create and manage bulk messaging campaigns with AI-generated variations</p>
+            <p className="text-muted-foreground mt-1 text-sm">Create and manage bulk messaging campaigns with AI-generated variations</p>
           </div>
         </div>
 

@@ -1,5 +1,6 @@
 import { Card, CardContent } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
+import { Skeleton } from "@/components/ui/skeleton";
 import {
     MessageSquare,
     Send,
@@ -18,9 +19,34 @@ interface StatusCardsProps {
     formatTimestamp: (timestamp: string) => string;
 }
 
-export function StatusCards({ whatsappStatus, status, generateQRMutation, formatTimestamp }: StatusCardsProps) {
+function StatusCardSkeleton() {
     return (
-        <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-6">
+        <Card className="border-none shadow-lg bg-gradient-to-br from-white to-gray-50 dark:from-zinc-900 dark:to-zinc-950">
+            <CardContent className="p-6">
+                <div className="flex items-center justify-between mb-4">
+                    <div className="space-y-2">
+                        <Skeleton className="h-4 w-16" />
+                        <Skeleton className="h-7 w-24" />
+                    </div>
+                    <Skeleton className="w-12 h-12 rounded-2xl" />
+                </div>
+                <Skeleton className="h-5 w-28 rounded-md" />
+            </CardContent>
+        </Card>
+    );
+}
+
+export function StatusCards({ whatsappStatus, status, generateQRMutation, formatTimestamp }: StatusCardsProps) {
+    if (!status && !whatsappStatus) {
+        return (
+            <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-6 animate-fade-in-up">
+                {[...Array(4)].map((_, i) => <StatusCardSkeleton key={i} />)}
+            </div>
+        );
+    }
+
+    return (
+        <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-6 animate-fade-in-up">
             {/* Connection Status */}
             <Card className="border-none shadow-lg bg-gradient-to-br from-white to-gray-50 dark:from-zinc-900 dark:to-zinc-950 relative overflow-hidden group">
                 <div className={cn(

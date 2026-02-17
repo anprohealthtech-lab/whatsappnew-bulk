@@ -7,6 +7,7 @@ import { useLocation } from "wouter";
 import { api } from "@/lib/api";
 import { useSocket } from "@/hooks/useSocket";
 import { useToast } from "@/hooks/use-toast";
+import { useIsMobile } from "@/hooks/use-mobile";
 import { Button } from "@/components/ui/button";
 import { Dialog, DialogContent, DialogHeader, DialogTitle } from "@/components/ui/dialog";
 import {
@@ -14,7 +15,9 @@ import {
   WifiOff,
   Bell,
   RefreshCw,
-  QrCode
+  QrCode,
+  Menu,
+  X
 } from "lucide-react";
 
 import { Sidebar } from "@/components/dashboard/Sidebar";
@@ -54,17 +57,18 @@ export default function Dashboard() {
   const [activeSection, setActiveSection] = useState<string>("dashboard");
   const [showIncomingPanel, setShowIncomingPanel] = useState(false);
   const [unreadCount, setUnreadCount] = useState(0);
+  const [sidebarOpen, setSidebarOpen] = useState(false);
 
   const { toast } = useToast();
   const queryClient = useQueryClient();
   const { isConnected, whatsappStatus, qrCode } = useSocket();
   const [, setLocation] = useLocation();
+  const isMobile = useIsMobile();
 
-  // Auto-show QR modal when WhatsApp is not connected 
+  // Auto-show QR modal when WhatsApp is not connected
   useEffect(() => {
     if (!whatsappStatus.isConnected && !whatsappStatus.isAuthenticated) {
       setShowQRModal(true);
-      console.log('🎯 WhatsApp not connected - showing QR modal to initiate connection');
     }
   }, [whatsappStatus.isConnected, whatsappStatus.isAuthenticated]);
 
@@ -72,9 +76,15 @@ export default function Dashboard() {
   useEffect(() => {
     if (whatsappStatus.isConnected) {
       setShowQRModal(false);
-      console.log('🎯 WhatsApp connected, hiding QR modal');
     }
   }, [whatsappStatus.isConnected]);
+
+  // Close sidebar on mobile when section changes
+  useEffect(() => {
+    if (isMobile) {
+      setSidebarOpen(false);
+    }
+  }, [activeSection, isMobile]);
 
   // Form setup
   const messageForm = useForm<MessageFormData>({
@@ -97,7 +107,7 @@ export default function Dashboard() {
   // Queries
   const { data: status, isLoading: statusLoading } = useQuery({
     queryKey: ["/api/status"],
-    refetchInterval: 30000, // Refresh every 30 seconds
+    refetchInterval: 30000,
   });
 
   const { data: messageHistory, isLoading: messagesLoading } = useQuery({
@@ -107,7 +117,7 @@ export default function Dashboard() {
 
   const { data: incomingMessages = [] } = useQuery({
     queryKey: ["/api/incoming-messages"],
-    refetchInterval: 30000, // Refresh every 30 seconds
+    refetchInterval: 30000,
   });
 
   const { data: autoResponses = [] } = useQuery<any[]>({
@@ -275,9 +285,8 @@ export default function Dashboard() {
   const handleFileSelect = useCallback((event: React.ChangeEvent<HTMLInputElement>) => {
     const file = event.target.files?.[0];
     if (file) {
-      // Validate file type and size
       const allowedTypes = ['application/pdf', 'image/jpeg', 'image/jpg', 'image/png'];
-      const maxSize = 10 * 1024 * 1024; // 10MB
+      const maxSize = 10 * 1024 * 1024;
 
       if (!allowedTypes.includes(file.type)) {
         toast({
@@ -318,7 +327,7 @@ export default function Dashboard() {
     setMessageFilters(prev => ({
       ...prev,
       [key]: value,
-      offset: 0, // Reset to first page when filtering
+      offset: 0,
     }));
   };
 
@@ -328,29 +337,55 @@ export default function Dashboard() {
 
   return (
     <div className="flex h-screen bg-background overflow-hidden">
+      {/* Mobile Sidebar Overlay */}
+      {isMobile && sidebarOpen && (
+        <div
+          className="fixed inset-0 bg-black/50 backdrop-blur-sm z-40"
+          onClick={() => setSidebarOpen(false)}
+        />
+      )}
+
       {/* Sidebar */}
-      <Sidebar
-        activeSection={activeSection}
-        setActiveSection={setActiveSection}
-        setLocation={setLocation}
-      />
+      <div className={
+        isMobile
+          ? `fixed inset-y-0 left-0 z-50 transform transition-transform duration-300 ease-in-out ${sidebarOpen ? 'translate-x-0' : '-translate-x-full'}`
+          : ''
+      }>
+        <Sidebar
+          activeSection={activeSection}
+          setActiveSection={setActiveSection}
+          setLocation={setLocation}
+        />
+      </div>
 
       {/* Main Content */}
       <div className="flex-1 flex flex-col overflow-hidden relative">
         {/* Header */}
-        <header className="bg-white/80 dark:bg-zinc-900/80 backdrop-blur-md border-b border-gray-200 dark:border-zinc-800 px-8 py-5 flex items-center justify-between z-10">
-          <div>
-            <h2 className="text-2xl font-bold text-foreground tracking-tight">Dashboard</h2>
-            <p className="text-muted-foreground text-sm">Overview & Quick Actions</p>
+        <header className="bg-white/80 dark:bg-zinc-900/80 backdrop-blur-md border-b border-gray-200 dark:border-zinc-800 px-4 md:px-8 py-4 md:py-5 flex items-center justify-between z-10">
+          <div className="flex items-center gap-3">
+            {isMobile && (
+              <Button
+                variant="ghost"
+                size="icon"
+                onClick={() => setSidebarOpen(!sidebarOpen)}
+                className="rounded-full w-10 h-10"
+              >
+                {sidebarOpen ? <X className="w-5 h-5" /> : <Menu className="w-5 h-5" />}
+              </Button>
+            )}
+            <div>
+              <h2 className="text-2xl font-bold text-foreground tracking-tight">Dashboard</h2>
+              <p className="text-muted-foreground text-sm hidden sm:block">Overview & Quick Actions</p>
+            </div>
           </div>
-          <div className="flex items-center space-x-4">
+          <div className="flex items-center space-x-2 md:space-x-4">
             <div className="flex items-center px-3 py-1.5 rounded-full bg-gray-100 dark:bg-zinc-800 border border-gray-200 dark:border-zinc-700">
               {isConnected ? (
                 <Wifi className="w-4 h-4 text-green-500 mr-2" />
               ) : (
                 <WifiOff className="w-4 h-4 text-red-500 mr-2" />
               )}
-              <span className="text-sm font-medium text-foreground">
+              <span className="text-sm font-medium text-foreground hidden sm:inline">
                 {isConnected ? 'Connected' : 'Disconnected'}
               </span>
             </div>
@@ -381,7 +416,7 @@ export default function Dashboard() {
           </div>
         </header>
 
-        <main className="flex-1 overflow-y-auto p-8 space-y-8 scrollbar-hide">
+        <main className="flex-1 overflow-y-auto p-4 md:p-8 space-y-6 md:space-y-8 scrollbar-thin">
           {/* Status Cards - Always visible */}
           <StatusCards
             whatsappStatus={whatsappStatus}
@@ -392,15 +427,13 @@ export default function Dashboard() {
 
           {/* Dashboard View */}
           {activeSection === "dashboard" && (
-            <div className="grid grid-cols-1 lg:grid-cols-3 gap-8">
-              {/* Send Message Panel */}
-              <div className="lg:col-span-1 space-y-8">
+            <div className="grid grid-cols-1 lg:grid-cols-3 gap-6 md:gap-8 animate-fade-in-up">
+              <div className="lg:col-span-1 space-y-6 md:space-y-8">
                 <MessageForm
                   form={messageForm}
                   onSubmit={handleSendMessage}
                   isLoading={sendMessageMutation.isPending}
                 />
-
                 <ReportForm
                   form={reportForm}
                   onSubmit={handleSendReport}
@@ -410,8 +443,6 @@ export default function Dashboard() {
                   onFileDrop={handleFileDrop}
                 />
               </div>
-
-              {/* Message History */}
               <div className="lg:col-span-2">
                 <MessageHistory
                   messages={messageHistory?.messages || []}
@@ -427,14 +458,16 @@ export default function Dashboard() {
 
           {/* History Section */}
           {activeSection === "history" && (
-            <MessageHistory
-              messages={messageHistory?.messages || []}
-              isLoading={messagesLoading}
-              filters={messageFilters}
-              onFilterChange={handleFilterChange}
-              onResend={(id) => resendMessageMutation.mutate(id)}
-              formatTimestamp={formatTimestamp}
-            />
+            <div className="animate-fade-in-up">
+              <MessageHistory
+                messages={messageHistory?.messages || []}
+                isLoading={messagesLoading}
+                filters={messageFilters}
+                onFilterChange={handleFilterChange}
+                onResend={(id) => resendMessageMutation.mutate(id)}
+                formatTimestamp={formatTimestamp}
+              />
+            </div>
           )}
 
           {/* Auto-Responses Section */}
@@ -471,7 +504,6 @@ export default function Dashboard() {
                     alt="WhatsApp QR Code"
                     className="w-full h-full object-contain rounded-xl"
                     onError={(e) => {
-                      console.error('QR Code image failed to load:', qrCode);
                       (e.target as HTMLImageElement).style.display = 'none';
                     }}
                   />
@@ -479,7 +511,7 @@ export default function Dashboard() {
               ) : (
                 <div className="text-center">
                   <QrCode className="w-16 h-16 text-gray-300 mx-auto mb-3" />
-                  <p className="text-sm text-gray-500 font-medium">Generating QR code...</p>
+                  <p className="text-sm text-muted-foreground font-medium">Generating QR code...</p>
                 </div>
               )}
             </div>
@@ -491,7 +523,7 @@ export default function Dashboard() {
               </p>
               <ol className="list-decimal list-inside space-y-1 ml-1">
                 <li>Open <strong>WhatsApp</strong> on your phone</li>
-                <li>Go to <strong>Settings</strong> → <strong>Linked Devices</strong></li>
+                <li>Go to <strong>Settings</strong> &rarr; <strong>Linked Devices</strong></li>
                 <li>Tap <strong>"Link a Device"</strong></li>
                 <li>Scan the QR code above</li>
               </ol>

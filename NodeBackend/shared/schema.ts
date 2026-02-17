@@ -136,7 +136,11 @@ export const chatbotConfigs = pgTable("chatbot_configs", {
   triggerKeywords: jsonb("trigger_keywords").notNull(), // array of strings
   ragBaseUrl: text("rag_base_url").notNull(),
   ragAccessKey: text("rag_access_key").notNull(),
-  contextMessageCount: integer("context_message_count").default(3),
+  systemPrompt: text("system_prompt"), // System prompt for RAG agent personality & rules
+  greetingMessage: text("greeting_message"), // Custom greeting for new leads
+  contextMessageCount: integer("context_message_count").default(5),
+  replyCooldownSeconds: integer("reply_cooldown_seconds").default(8), // Min gap between bot replies
+  typingDelayMs: integer("typing_delay_ms").default(2000), // Simulate typing before reply
   isActive: text("is_active").default("true").notNull(), // "true" or "false"
   createdAt: timestamp("created_at").defaultNow(),
   updatedAt: timestamp("updated_at").defaultNow(),
@@ -213,7 +217,11 @@ export const chatbotConfigSchema = z.object({
   triggerKeywords: z.array(z.string()).min(1, "At least one trigger keyword is required"),
   ragBaseUrl: z.string().url("Valid RAG base URL is required"),
   ragAccessKey: z.string().min(1, "RAG access key is required"),
-  contextMessageCount: z.number().int().min(1).max(10).optional(),
+  systemPrompt: z.string().optional(),
+  greetingMessage: z.string().optional(),
+  contextMessageCount: z.number().int().min(1).max(20).optional(),
+  replyCooldownSeconds: z.number().int().min(0).max(60).optional(),
+  typingDelayMs: z.number().int().min(0).max(10000).optional(),
   isActive: z.boolean().optional(),
 });
 
