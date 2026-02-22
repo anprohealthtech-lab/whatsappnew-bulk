@@ -166,13 +166,19 @@ export class ChatbotService {
     }
 
     const keywords = (config.triggerKeywords as string[]) || [];
+    const fallbackKeywords = [
+      'Hello! Can I get more info on this?',
+    ];
+    const allKeywords = [...keywords, ...fallbackKeywords];
     const normalizedMessage = messageText.trim().toLowerCase();
+    const canonicalMessage = normalizedMessage.replace(/[^\p{L}\p{N}\s]/gu, ' ').replace(/\s+/g, ' ').trim();
 
-    for (const keyword of keywords) {
+    for (const keyword of allKeywords) {
       const normalizedKeyword = keyword.trim().toLowerCase();
+      const canonicalKeyword = normalizedKeyword.replace(/[^\p{L}\p{N}\s]/gu, ' ').replace(/\s+/g, ' ').trim();
 
       // Check for exact match first (for multi-word keywords)
-      if (normalizedMessage === normalizedKeyword) {
+      if (normalizedMessage === normalizedKeyword || canonicalMessage === canonicalKeyword) {
         return keyword;
       }
 
