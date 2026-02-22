@@ -355,6 +355,7 @@ export class WhatsAppService extends EventEmitter {
         mimetype: audioMimeTypeMap[fileExtension] || 'audio/mpeg',
         ptt: true,
       };
+      console.log(`[WhatsAppService] Sending audio voice note to ${jid} (${path.basename(filePath)}, ${messageContent.mimetype})`);
     } else if (['.pdf', '.doc', '.docx', '.txt'].includes(fileExtension)) {
       messageContent = { document: fileBuffer, fileName: path.basename(filePath), caption: caption };
     } else {
