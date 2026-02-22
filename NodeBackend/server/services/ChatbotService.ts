@@ -53,6 +53,11 @@ interface ConversationState {
   messageCount: number;
 }
 
+type GreetingItem =
+  | { kind: 'text'; value: string }
+  | { kind: 'audio'; value: string }
+  | { kind: 'audio_url'; value: string };
+
 const DEFAULT_CONVERSATION_STATE: ConversationState = {
   demoAskedCount: 0,
   userIntent: 'unknown',
@@ -203,30 +208,7 @@ export class ChatbotService {
     try {
       const config = await this.storage.getChatbotConfig();
       const greetingRaw = (config as any)?.greetingMessage || DEFAULT_GREETING;
-      const greetingParts = greetingRaw
-        .split('===NEXT_MESSAGE===')
-        .map((p: string) => p.trim())
-        .filter((p: string) => p.length > 0)
-        .map((part: string) => {
-          const mediaUrlMatch = part.match(/^AUDIO_URL\s*:\s*(.+)$/i);
-          if (mediaUrlMatch) {
-            return {
-              kind: 'audio_url' as const,
-              value: mediaUrlMatch[1].trim(),
-            };
-          }
-          const mediaMatch = part.match(/^(AUDIO|VOICE_NOTE)\s*:\s*(.+)$/i);
-          if (mediaMatch) {
-            return {
-              kind: 'audio' as const,
-              value: mediaMatch[2].trim(),
-            };
-          }
-          return {
-            kind: 'text' as const,
-            value: part,
-          };
-        });
+      const greetingParts = this.parseGreetingItems(greetingRaw);
 
       log(`Sending ${greetingParts.length} greeting item(s) to new lead ${phoneNumber}`);
 
@@ -338,7 +320,15 @@ export class ChatbotService {
   /**
    * Build the system prompt with conversation state context
    */
-  buildSystemPrompt(config: ChatbotConfig, state: ConversationState): string {
+  buildSystemPrompt(
+    config: ChatbotConfig,
+    state: ConversationState,
+    voiceContext?: {
+      requestedInLatestMessage: boolean;
+      alreadySentEarlier: boolean;
+      configuredInGreeting: boolean;
+    }
+  ): string {
     const basePrompt = (config as any).systemPrompt || DEFAULT_SYSTEM_PROMPT;
 
     // Append conversation state context so the AI knows where the conversation stands
@@ -349,6 +339,12 @@ export class ChatbotService {
       `Messages exchanged: ${state.messageCount}`,
       state.demoAskedCount >= 2 ? `IMPORTANT: You have already asked for a demo 2 times. Do NOT ask again.` : '',
       state.userIntent === 'declined' ? `IMPORTANT: The user has declined. Do NOT pitch or push. Only respond if they re-engage.` : '',
+      voiceContext ? `Voice note requested in latest message: ${voiceContext.requestedInLatestMessage ? 'yes' : 'no'}` : '',
+      voiceContext ? `Voice note already sent earlier: ${voiceContext.alreadySentEarlier ? 'yes' : 'no'}` : '',
+      voiceContext ? `Voice note configured in greeting: ${voiceContext.configuredInGreeting ? 'yes' : 'no'}` : '',
+      voiceContext?.requestedInLatestMessage && !voiceContext.alreadySentEarlier
+        ? `If user asked for voice note, acknowledge naturally that a voice note is being shared.`
+        : '',
     ].filter(Boolean).join('\n');
 
     return basePrompt + stateContext;
@@ -518,6 +514,11 @@ export class ChatbotService {
       // Get conversation history
       const limit = config.contextMessageCount || 5;
       const history = await this.getConversationHistory(phoneNumber, limit);
+      const recentHistory = await this.getConversationHistory(phoneNumber, 40);
+      const voiceNoteRequested = this.isVoiceNoteRequested(messageText);
+      const voiceNoteAlreadySent = this.hasSentVoiceNoteEarlier(recentHistory);
+      const greetingItems = this.parseGreetingItems((config as any)?.greetingMessage || DEFAULT_GREETING);
+      const hasConfiguredVoiceGreeting = greetingItems.some(item => item.kind === 'audio' || item.kind === 'audio_url');
 
       log(`Retrieved ${history.length} messages from conversation history`);
 
@@ -538,7 +539,11 @@ export class ChatbotService {
 
       // Build system prompt with state context
       const updatedState = await this.getConversationState(phoneNumber);
-      const systemPrompt = this.buildSystemPrompt(config, updatedState);
+      const systemPrompt = this.buildSystemPrompt(config, updatedState, {
+        requestedInLatestMessage: voiceNoteRequested,
+        alreadySentEarlier: voiceNoteAlreadySent,
+        configuredInGreeting: hasConfiguredVoiceGreeting,
+      });
 
       // Call RAG endpoint with system prompt
       const botResponse = await this.callRagEndpoint(systemPrompt, ragMessages, config);
@@ -589,6 +594,11 @@ export class ChatbotService {
       if (imageUrl) {
         log(`📷 Image URL detected: ${imageUrl}`);
         await this.downloadAndSendImage(phoneNumber, imageUrl, replyToJid);
+      }
+
+      if (voiceNoteRequested && !voiceNoteAlreadySent && hasConfiguredVoiceGreeting) {
+        log(`Voice note requested by ${phoneNumber}; sending configured voice note(s)`);
+        await this.sendConfiguredVoiceGreetings(phoneNumber, greetingItems, replyToJid);
       }
 
       log(`✅ Auto-reply sent successfully`);
@@ -737,6 +747,97 @@ export class ChatbotService {
           phoneNumber,
           audioUrl,
           error: error.message,
+        },
+      });
+    }
+  }
+
+  private parseGreetingItems(greetingRaw: string): GreetingItem[] {
+    return greetingRaw
+      .split('===NEXT_MESSAGE===')
+      .map((p: string) => p.trim())
+      .filter((p: string) => p.length > 0)
+      .map((part: string) => {
+        const mediaUrlMatch = part.match(/^AUDIO_URL\s*:\s*(.+)$/i);
+        if (mediaUrlMatch) {
+          return {
+            kind: 'audio_url' as const,
+            value: mediaUrlMatch[1].trim(),
+          };
+        }
+        const mediaMatch = part.match(/^(AUDIO|VOICE_NOTE)\s*:\s*(.+)$/i);
+        if (mediaMatch) {
+          return {
+            kind: 'audio' as const,
+            value: mediaMatch[2].trim(),
+          };
+        }
+        return {
+          kind: 'text' as const,
+          value: part,
+        };
+      });
+  }
+
+  private isVoiceNoteRequested(messageText: string): boolean {
+    const lower = (messageText || '').toLowerCase();
+    const patterns = [
+      'voice note',
+      'voicenote',
+      'audio note',
+      'audio msg',
+      'audio message',
+      'send audio',
+      'voice msg',
+      'send voice',
+      'voice message',
+      'audio bhejo',
+      'voice bhejo',
+      'audio send',
+    ];
+    return patterns.some((p) => lower.includes(p));
+  }
+
+  private hasSentVoiceNoteEarlier(messages: Message[]): boolean {
+    return messages.some((m) => {
+      const metadata = (m.metadata && typeof m.metadata === 'object') ? (m.metadata as any) : {};
+      const byType = m.type === 'audio';
+      const byContent = typeof m.content === 'string' && m.content.startsWith('[Voice Note]');
+      const byMeta = metadata.greeting_kind === 'audio' || metadata.greeting_kind === 'audio_url' || metadata.chatbot_voice_followup === true;
+      return byType || byContent || byMeta;
+    });
+  }
+
+  private async sendConfiguredVoiceGreetings(
+    phoneNumber: string,
+    greetingItems: GreetingItem[],
+    replyToJid?: string
+  ): Promise<void> {
+    const voiceItems = greetingItems.filter(item => item.kind === 'audio' || item.kind === 'audio_url');
+    if (voiceItems.length === 0) return;
+
+    for (let i = 0; i < voiceItems.length; i++) {
+      const item = voiceItems[i];
+      if (i > 0) {
+        await new Promise(resolve => setTimeout(resolve, 1500));
+      }
+
+      if (item.kind === 'audio_url') {
+        await this.downloadAndSendAudio(phoneNumber, item.value, replyToJid);
+      } else {
+        await this.whatsappService.sendMediaMessage(replyToJid || phoneNumber, item.value);
+      }
+
+      await this.storage.createMessage({
+        phoneNumber,
+        content: `[Voice Note] ${item.value}`,
+        type: "audio",
+        status: "sent",
+        metadata: {
+          chatbot_voice_followup: true,
+          greeting_kind: item.kind,
+          voice_part: i + 1,
+          voice_total: voiceItems.length,
         },
       });
     }
