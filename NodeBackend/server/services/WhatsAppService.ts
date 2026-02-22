@@ -341,6 +341,20 @@ export class WhatsAppService extends EventEmitter {
 
     if (['.jpg', '.jpeg', '.png', '.webp'].includes(fileExtension)) {
       messageContent = { image: fileBuffer, caption: caption };
+    } else if (['.mp3', '.ogg', '.wav', '.m4a', '.aac'].includes(fileExtension)) {
+      const audioMimeTypeMap: Record<string, string> = {
+        '.mp3': 'audio/mpeg',
+        '.ogg': 'audio/ogg',
+        '.wav': 'audio/wav',
+        '.m4a': 'audio/mp4',
+        '.aac': 'audio/aac',
+      };
+
+      messageContent = {
+        audio: fileBuffer,
+        mimetype: audioMimeTypeMap[fileExtension] || 'audio/mpeg',
+        ptt: true,
+      };
     } else if (['.pdf', '.doc', '.docx', '.txt'].includes(fileExtension)) {
       messageContent = { document: fileBuffer, fileName: path.basename(filePath), caption: caption };
     } else {

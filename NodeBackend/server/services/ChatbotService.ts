@@ -203,9 +203,32 @@ export class ChatbotService {
     try {
       const config = await this.storage.getChatbotConfig();
       const greetingRaw = (config as any)?.greetingMessage || DEFAULT_GREETING;
-      const greetingParts = greetingRaw.split('===NEXT_MESSAGE===').map((p: string) => p.trim()).filter((p: string) => p.length > 0);
+      const greetingParts = greetingRaw
+        .split('===NEXT_MESSAGE===')
+        .map((p: string) => p.trim())
+        .filter((p: string) => p.length > 0)
+        .map((part: string) => {
+          const mediaUrlMatch = part.match(/^AUDIO_URL\s*:\s*(.+)$/i);
+          if (mediaUrlMatch) {
+            return {
+              kind: 'audio_url' as const,
+              value: mediaUrlMatch[1].trim(),
+            };
+          }
+          const mediaMatch = part.match(/^(AUDIO|VOICE_NOTE)\s*:\s*(.+)$/i);
+          if (mediaMatch) {
+            return {
+              kind: 'audio' as const,
+              value: mediaMatch[2].trim(),
+            };
+          }
+          return {
+            kind: 'text' as const,
+            value: part,
+          };
+        });
 
-      log(`Sending ${greetingParts.length} greeting message(s) to new lead ${phoneNumber}`);
+      log(`Sending ${greetingParts.length} greeting item(s) to new lead ${phoneNumber}`);
 
       for (let i = 0; i < greetingParts.length; i++) {
         const part = greetingParts[i];
@@ -215,17 +238,24 @@ export class ChatbotService {
           await new Promise(resolve => setTimeout(resolve, 1500));
         }
 
-        await this.whatsappService.sendTextMessage(replyToJid || phoneNumber, part);
+        if (part.kind === 'audio') {
+          await this.whatsappService.sendMediaMessage(replyToJid || phoneNumber, part.value);
+        } else if (part.kind === 'audio_url') {
+          await this.downloadAndSendAudio(phoneNumber, part.value, replyToJid);
+        } else {
+          await this.whatsappService.sendTextMessage(replyToJid || phoneNumber, part.value);
+        }
 
-        // Store each greeting message in DB
+        // Store each greeting item in DB
         await this.storage.createMessage({
           phoneNumber,
-          content: part,
-          type: "text",
+          content: (part.kind === 'audio' || part.kind === 'audio_url') ? `[Voice Note] ${part.value}` : part.value,
+          type: (part.kind === 'audio' || part.kind === 'audio_url') ? "audio" : "text",
           status: "sent",
           metadata: {
             chatbot_greeting: true,
             trigger_keyword: keyword,
+            greeting_kind: part.kind,
             greeting_part: i + 1,
             greeting_total: greetingParts.length,
           },
@@ -235,7 +265,7 @@ export class ChatbotService {
       // Record reply timestamp for cooldown
       lastReplyTimestamps.set(phoneNumber, Date.now());
 
-      log(`✅ ${greetingParts.length} greeting message(s) sent to ${phoneNumber}`);
+      log(`✅ ${greetingParts.length} greeting item(s) sent to ${phoneNumber}`);
     } catch (error: any) {
       log(`⚠️ Failed to send greeting message: ${error.message}`);
     }
@@ -663,6 +693,49 @@ export class ChatbotService {
         metadata: {
           phoneNumber,
           imageUrl,
+          error: error.message,
+        },
+      });
+    }
+  }
+
+  /**
+   * Download audio from URL and send as WhatsApp voice note
+   */
+  private async downloadAndSendAudio(phoneNumber: string, audioUrl: string, replyToJid?: string): Promise<void> {
+    const log = (msg: string) => console.log(`[ChatbotService] ${msg}`);
+
+    try {
+      log(`Downloading audio from: ${audioUrl}`);
+
+      const uploadsDir = path.join(process.cwd(), 'uploads', 'chatbot-audio');
+      if (!fs.existsSync(uploadsDir)) {
+        fs.mkdirSync(uploadsDir, { recursive: true });
+      }
+
+      const timestamp = Date.now();
+      const urlObj = new URL(audioUrl);
+      const extension = path.extname(urlObj.pathname) || '.mp3';
+      const filename = `chatbot_${phoneNumber}_${timestamp}${extension}`;
+      const filePath = path.join(uploadsDir, filename);
+
+      await this.downloadFile(audioUrl, filePath);
+      await this.whatsappService.sendMediaMessage(replyToJid || phoneNumber, filePath);
+
+      setTimeout(() => {
+        if (fs.existsSync(filePath)) {
+          fs.unlinkSync(filePath);
+          log(`Cleaned up temporary audio: ${filename}`);
+        }
+      }, 5 * 60 * 1000);
+    } catch (error: any) {
+      log(`Failed to download/send audio: ${error.message}`);
+      await this.storage.createSystemLog({
+        level: "error",
+        message: `Failed to send audio to ${phoneNumber}: ${error.message}`,
+        metadata: {
+          phoneNumber,
+          audioUrl,
           error: error.message,
         },
       });
