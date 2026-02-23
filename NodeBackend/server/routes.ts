@@ -406,7 +406,7 @@ export async function registerRoutes(app: Express): Promise<Server> {
             } else {
               // No audio data available (download failed)
               console.log(`🎤 Voice note from HR Admin ${data.phoneNumber} - no audio data, sending acknowledgment`);
-              await whatsAppService.sendMessage(
+              await whatsAppService.sendTextMessage(
                 data.from || `${data.phoneNumber}@s.whatsapp.net`,
                 "🎤 I received your voice note but couldn't process it. Please try again or type your message."
               );
@@ -419,7 +419,7 @@ export async function registerRoutes(app: Express): Promise<Server> {
           if (messageType === 'image' || messageType === 'video' || messageType === 'document') {
             // For media, acknowledge but can't process
             console.log(`📎 Media (${messageType}) from HR Admin ${data.phoneNumber} - sending acknowledgment`);
-            await whatsAppService.sendMessage(
+            await whatsAppService.sendTextMessage(
               data.from || `${data.phoneNumber}@s.whatsapp.net`,
               `📎 I received your ${messageType}! However, I can only process text messages at the moment.\n\nPlease type your request and I'll be happy to help.`
             );

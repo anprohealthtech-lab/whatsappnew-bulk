@@ -19,6 +19,7 @@ export interface WhatsAppStatus {
 
 export class WhatsAppService extends EventEmitter {
   private socket: WASocket | null = null;
+  private reconnectTimer: NodeJS.Timeout | null = null;
   private status: WhatsAppStatus = {
     isConnected: false,
     isAuthenticated: false,
@@ -52,7 +53,7 @@ export class WhatsAppService extends EventEmitter {
       this.socket = makeWASocket({
         version,
         auth: state,
-        printQRInTerminal: true,
+        printQRInTerminal: false,
         browser: ['LIMS System', 'Chrome', '1.0.0'],
         connectTimeoutMs: 30000,
         defaultQueryTimeoutMs: 60000,
@@ -91,18 +92,28 @@ export class WhatsAppService extends EventEmitter {
           this.status.isAuthenticated = false;
 
           // Only reconnect for network issues, not for logout or manual disconnect
-          const shouldReconnect = statusCode !== DisconnectReason.loggedOut
-            && statusCode !== undefined; // Don't reconnect on undefined (manual disconnect)
+          const isLoggedOut = statusCode === DisconnectReason.loggedOut;
+          const isBadSession = statusCode === DisconnectReason.badSession;
+          const shouldReconnect = !isLoggedOut && !isBadSession && statusCode !== undefined;
 
           if (shouldReconnect) {
             console.log('🔄 Reconnecting in 30 seconds...');
-            setTimeout(() => this.initialize(), 30000); // 30 seconds delay
+            if (this.reconnectTimer) {
+              clearTimeout(this.reconnectTimer);
+            }
+            this.reconnectTimer = setTimeout(() => {
+              this.reconnectTimer = null;
+              this.initialize();
+            }, 30000); // 30 seconds delay
           } else {
-            console.log('🚪 Logged out or connection closed - clearing auth and need new QR scan');
-            // Clear auth state when logged out
+            if (isBadSession) {
+              console.log('Bad session detected - clearing auth state to force re-pair');
+            } else {
+              console.log('🚪 Logged out or connection closed - clearing auth and need new QR scan');
+            }
             await this.clearAuthState();
             this.currentQR = null;
-            this.emit('whatsapp-auth-failure', { error: 'Logged out or disconnected' });
+            this.emit('whatsapp-auth-failure', { error: isBadSession ? 'Bad session, re-pair required' : 'Logged out or disconnected' });
           }
         } else if (connection === 'connecting') {
           console.log('🔄 Baileys connecting...');
@@ -471,6 +482,11 @@ export class WhatsAppService extends EventEmitter {
   }
 
   async cleanup(): Promise<void> {
+    if (this.reconnectTimer) {
+      clearTimeout(this.reconnectTimer);
+      this.reconnectTimer = null;
+    }
+
     if (this.socket) {
       console.log('🧹 Cleaning up Baileys connection...');
       this.socket.end(undefined);

@@ -226,12 +226,17 @@ export class ChatbotService {
           await new Promise(resolve => setTimeout(resolve, 1500));
         }
 
-        if (part.kind === 'audio') {
-          await this.whatsappService.sendMediaMessage(replyToJid || phoneNumber, part.value);
-        } else if (part.kind === 'audio_url') {
-          await this.downloadAndSendAudio(phoneNumber, part.value, replyToJid);
-        } else {
-          await this.whatsappService.sendTextMessage(replyToJid || phoneNumber, part.value);
+        try {
+          if (part.kind === 'audio') {
+            await this.whatsappService.sendMediaMessage(replyToJid || phoneNumber, part.value);
+          } else if (part.kind === 'audio_url') {
+            await this.downloadAndSendAudio(phoneNumber, part.value, replyToJid);
+          } else {
+            await this.whatsappService.sendTextMessage(replyToJid || phoneNumber, part.value);
+          }
+        } catch (sendError: any) {
+          log(`⚠️ Failed to send greeting part ${i + 1}/${greetingParts.length} (${part.kind}): ${this.errorMessage(sendError)}`);
+          continue;
         }
 
         // Store each greeting item in DB
@@ -255,7 +260,7 @@ export class ChatbotService {
 
       log(`✅ ${greetingParts.length} greeting item(s) sent to ${phoneNumber}`);
     } catch (error: any) {
-      log(`⚠️ Failed to send greeting message: ${error.message}`);
+      log(`⚠️ Failed to send greeting message: ${this.errorMessage(error)}`);
     }
 
     return contact;
@@ -745,14 +750,14 @@ export class ChatbotService {
         }
       }, 5 * 60 * 1000);
     } catch (error: any) {
-      log(`Failed to download/send audio: ${error.message}`);
+      log(`Failed to download/send audio: ${this.errorMessage(error)}`);
       await this.storage.createSystemLog({
         level: "error",
-        message: `Failed to send audio to ${phoneNumber}: ${error.message}`,
+        message: `Failed to send audio to ${phoneNumber}: ${this.errorMessage(error)}`,
         metadata: {
           phoneNumber,
           audioUrl,
-          error: error.message,
+          error: this.errorMessage(error),
         },
       });
     }
@@ -773,9 +778,16 @@ export class ChatbotService {
         }
         const mediaMatch = part.match(/^(AUDIO|VOICE_NOTE)\s*:\s*(.+)$/i);
         if (mediaMatch) {
+          const value = mediaMatch[2].trim();
+          if (this.isHttpUrl(value)) {
+            return {
+              kind: 'audio_url' as const,
+              value,
+            };
+          }
           return {
             kind: 'audio' as const,
-            value: mediaMatch[2].trim(),
+            value,
           };
         }
         return {
@@ -846,6 +858,20 @@ export class ChatbotService {
           voice_total: voiceItems.length,
         },
       });
+    }
+  }
+
+  private isHttpUrl(value: string): boolean {
+    return /^https?:\/\//i.test((value || '').trim());
+  }
+
+  private errorMessage(error: unknown): string {
+    if (error instanceof Error && error.message) return error.message;
+    if (typeof error === 'string' && error.trim().length > 0) return error;
+    try {
+      return JSON.stringify(error);
+    } catch {
+      return 'Unknown error';
     }
   }
 
