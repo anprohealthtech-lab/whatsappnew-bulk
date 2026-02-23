@@ -149,11 +149,93 @@ Regards,
 // In-memory cooldown tracker (per phone number)
 const lastReplyTimestamps = new Map<string, number>();
 
+// Pending greetings that failed due to WhatsApp being disconnected
+const pendingGreetings = new Map<string, { keyword: string; replyToJid?: string; timestamp: number }>();
+
 export class ChatbotService {
   constructor(
     private storage: IStorage,
     private whatsappService: any
-  ) {}
+  ) {
+    // Listen for WhatsApp reconnection to retry pending greetings
+    if (this.whatsappService?.on) {
+      this.whatsappService.on('whatsapp-authenticated', () => {
+        this.retryPendingGreetings();
+      });
+    }
+  }
+
+  /**
+   * Retry greetings that failed because WhatsApp was disconnected
+   */
+  private async retryPendingGreetings(): Promise<void> {
+    if (pendingGreetings.size === 0) return;
+
+    const log = (msg: string) => console.log(`[ChatbotService] ${msg}`);
+    log(`🔄 WhatsApp reconnected — retrying ${pendingGreetings.size} pending greeting(s)`);
+
+    // Copy and clear to avoid infinite loops
+    const toRetry = new Map(pendingGreetings);
+    pendingGreetings.clear();
+
+    // Wait 5 seconds for connection to stabilize
+    await new Promise(resolve => setTimeout(resolve, 5000));
+
+    for (const [phoneNumber, info] of Array.from(toRetry.entries())) {
+      // Skip if too old (> 1 hour)
+      if (Date.now() - info.timestamp > 60 * 60 * 1000) {
+        log(`⏭️ Skipping stale pending greeting for ${phoneNumber} (${Math.round((Date.now() - info.timestamp) / 60000)}min old)`);
+        continue;
+      }
+
+      try {
+        log(`🔄 Retrying greeting for ${phoneNumber}`);
+        const config = await this.storage.getChatbotConfig();
+        const greetingRaw = (config as any)?.greetingMessage || DEFAULT_GREETING;
+        const greetingParts = this.parseGreetingItems(greetingRaw);
+
+        for (let i = 0; i < greetingParts.length; i++) {
+          const part = greetingParts[i];
+          if (i > 0) await new Promise(resolve => setTimeout(resolve, 1500));
+
+          try {
+            if (part.kind === 'audio') {
+              await this.whatsappService.sendMediaMessage(info.replyToJid || phoneNumber, part.value);
+            } else if (part.kind === 'audio_url') {
+              await this.downloadAndSendAudio(phoneNumber, part.value, info.replyToJid);
+            } else {
+              await this.whatsappService.sendTextMessage(info.replyToJid || phoneNumber, part.value);
+            }
+          } catch (sendError: any) {
+            log(`⚠️ Retry failed for ${phoneNumber} part ${i + 1}: ${this.errorMessage(sendError)}`);
+            if (this.errorMessage(sendError).includes('not connected')) {
+              pendingGreetings.set(phoneNumber, info);
+              break;
+            }
+            continue;
+          }
+
+          await this.storage.createMessage({
+            phoneNumber,
+            content: (part.kind === 'audio' || part.kind === 'audio_url') ? `[Voice Note] ${part.value}` : part.value,
+            type: (part.kind === 'audio' || part.kind === 'audio_url') ? "audio" : "text",
+            status: "sent",
+            metadata: {
+              chatbot_greeting: true,
+              trigger_keyword: info.keyword,
+              greeting_kind: part.kind,
+              greeting_part: i + 1,
+              greeting_total: greetingParts.length,
+              retried: true,
+            },
+          });
+        }
+        log(`✅ Retry greeting sent to ${phoneNumber}`);
+      } catch (error: any) {
+        log(`⚠️ Retry greeting failed for ${phoneNumber}: ${this.errorMessage(error)}`);
+      }
+    }
+  }
 
   /**
    * Detect if message text contains any configured trigger keyword (case-insensitive word match)
@@ -216,7 +298,18 @@ export class ChatbotService {
       const greetingRaw = (config as any)?.greetingMessage || DEFAULT_GREETING;
       const greetingParts = this.parseGreetingItems(greetingRaw);
 
+      // Check WhatsApp connection before attempting to send
+      if (!this.whatsappService?.status?.isConnected) {
+        log(`⚠️ WhatsApp not connected — queueing greeting for ${phoneNumber} to retry later`);
+        // Store pending greeting so it can be retried
+        pendingGreetings.set(phoneNumber, { keyword, replyToJid, timestamp: Date.now() });
+        return contact;
+      }
+
       log(`Sending ${greetingParts.length} greeting item(s) to new lead ${phoneNumber}`);
+
+      let sentCount = 0;
+      let failedCount = 0;
 
       for (let i = 0; i < greetingParts.length; i++) {
         const part = greetingParts[i];
@@ -234,12 +327,20 @@ export class ChatbotService {
           } else {
             await this.whatsappService.sendTextMessage(replyToJid || phoneNumber, part.value);
           }
+          sentCount++;
         } catch (sendError: any) {
+          failedCount++;
           log(`⚠️ Failed to send greeting part ${i + 1}/${greetingParts.length} (${part.kind}): ${this.errorMessage(sendError)}`);
+          // If WhatsApp disconnected mid-greeting, stop trying and queue for retry
+          if (this.errorMessage(sendError).includes('not connected')) {
+            log(`⏸️ WhatsApp disconnected mid-greeting — queueing remaining parts for ${phoneNumber}`);
+            pendingGreetings.set(phoneNumber, { keyword, replyToJid, timestamp: Date.now() });
+            break;
+          }
           continue;
         }
 
-        // Store each greeting item in DB
+        // Store each greeting item in DB only if sent successfully
         await this.storage.createMessage({
           phoneNumber,
           content: (part.kind === 'audio' || part.kind === 'audio_url') ? `[Voice Note] ${part.value}` : part.value,
@@ -256,9 +357,15 @@ export class ChatbotService {
       }
 
       // Record reply timestamp for cooldown
-      lastReplyTimestamps.set(phoneNumber, Date.now());
+      if (sentCount > 0) {
+        lastReplyTimestamps.set(phoneNumber, Date.now());
+      }
 
-      log(`✅ ${greetingParts.length} greeting item(s) sent to ${phoneNumber}`);
+      if (failedCount > 0) {
+        log(`⚠️ ${sentCount}/${greetingParts.length} greeting item(s) sent to ${phoneNumber} (${failedCount} failed)`);
+      } else {
+        log(`✅ ${sentCount}/${greetingParts.length} greeting item(s) sent to ${phoneNumber}`);
+      }
     } catch (error: any) {
       log(`⚠️ Failed to send greeting message: ${this.errorMessage(error)}`);
     }

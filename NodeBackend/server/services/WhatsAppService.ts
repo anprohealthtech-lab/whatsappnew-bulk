@@ -105,15 +105,25 @@ export class WhatsAppService extends EventEmitter {
               this.reconnectTimer = null;
               this.initialize();
             }, 30000); // 30 seconds delay
-          } else {
-            if (isBadSession) {
-              console.log('Bad session detected - clearing auth state to force re-pair');
-            } else {
-              console.log('🚪 Logged out or connection closed - clearing auth and need new QR scan');
-            }
+          } else if (isBadSession) {
+            console.log('Bad session detected - clearing auth state and auto-reconnecting...');
             await this.clearAuthState();
             this.currentQR = null;
-            this.emit('whatsapp-auth-failure', { error: isBadSession ? 'Bad session, re-pair required' : 'Logged out or disconnected' });
+            this.emit('whatsapp-auth-failure', { error: 'Bad session, re-pair required' });
+            // Auto-reconnect after clearing bad session (will present new QR)
+            if (this.reconnectTimer) {
+              clearTimeout(this.reconnectTimer);
+            }
+            this.reconnectTimer = setTimeout(() => {
+              this.reconnectTimer = null;
+              console.log('🔄 Re-initializing after badSession cleanup...');
+              this.initialize();
+            }, 5000); // 5 seconds after clearing
+          } else {
+            console.log('🚪 Logged out or connection closed - clearing auth and need new QR scan');
+            await this.clearAuthState();
+            this.currentQR = null;
+            this.emit('whatsapp-auth-failure', { error: 'Logged out or disconnected' });
           }
         } else if (connection === 'connecting') {
           console.log('🔄 Baileys connecting...');
