@@ -361,12 +361,15 @@ export class WhatsAppService extends EventEmitter {
         '.aac': 'audio/aac',
       };
 
+      // Only OGG Opus can be sent as voice note (ptt: true).
+      // MP3/WAV/M4A/AAC are sent as regular audio so WhatsApp can play them.
+      const isOggOpus = fileExtension === '.ogg';
       messageContent = {
         audio: fileBuffer,
         mimetype: audioMimeTypeMap[fileExtension] || 'audio/mpeg',
-        ptt: true,
+        ptt: isOggOpus,
       };
-      console.log(`[WhatsAppService] Sending audio voice note to ${jid} (${path.basename(filePath)}, ${messageContent.mimetype})`);
+      console.log(`[WhatsAppService] Sending audio ${isOggOpus ? 'voice note' : 'file'} to ${jid} (${path.basename(filePath)}, ${messageContent.mimetype}, ptt=${isOggOpus})`);
     } else if (['.pdf', '.doc', '.docx', '.txt'].includes(fileExtension)) {
       messageContent = { document: fileBuffer, fileName: path.basename(filePath), caption: caption };
     } else {
