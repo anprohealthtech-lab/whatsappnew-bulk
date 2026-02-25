@@ -2,6 +2,7 @@ import 'dotenv/config';
 import express, { type Request, Response, NextFunction } from "express";
 import { registerRoutes } from "./routes";
 import { serveStatic, log } from "./utils";
+import { runMigrations } from "./migrate";
 
 const app = express();
 app.use(express.json());
@@ -39,6 +40,10 @@ app.use((req, res, next) => {
 
 (async () => {
   try {
+    // Run DB migrations on startup — creates all tables if they don't exist
+    // This ensures DO PostgreSQL has the schema before the app starts
+    await runMigrations();
+
     const server = await registerRoutes(app);
 
     app.use((err: any, _req: Request, res: Response, _next: NextFunction) => {

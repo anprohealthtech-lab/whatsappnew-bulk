@@ -1,20 +1,36 @@
-import { drizzle } from 'drizzle-orm/neon-http';
-import { neon } from '@neondatabase/serverless';
+import { drizzle } from 'drizzle-orm/postgres-js';
+import postgres from 'postgres';
 import * as schema from '@shared/schema';
+import dns from 'node:dns';
 
 if (!process.env.DATABASE_URL) {
   throw new Error('DATABASE_URL environment variable is required');
 }
 
+// Force IPv4 — DO pods sometimes have broken IPv6 routing
+dns.setDefaultResultOrder('ipv4first');
+
 const dbUrl = new URL(process.env.DATABASE_URL);
-console.log(`🔌 DB host: ${dbUrl.hostname}`);
-console.log(`🌐 Using Neon HTTP driver (no TCP port 5432 needed — works from any cloud)`);
+console.log(`🔌 DB host: ${dbUrl.hostname}:${dbUrl.port || 5432}`);
 
-// Neon serverless HTTP driver — uses HTTPS (port 443) instead of TCP (port 5432)
-// This eliminates ETIMEDOUT errors caused by TCP/5432 being blocked between DO and AWS
-const sql = neon(process.env.DATABASE_URL);
+// Standard postgres-js driver — works perfectly with DO Managed PostgreSQL (same network)
+const queryClient = postgres(process.env.DATABASE_URL, {
+  max: 5,                     // Connection pool size
+  idle_timeout: 30,           // Release idle connections after 30s
+  connect_timeout: 30,        // 30s connection timeout
+  max_lifetime: 60 * 30,      // Recycle connections every 30 minutes
+  fetch_types: false,         // Disable type fetching (safe default)
+  prepare: false,             // Disable prepared statements (safe default)
+  connection: {
+    application_name: 'whatsapp-persistent',
+  },
+  transform: {
+    undefined: null
+  },
+  onnotice: () => {},
+  ssl: process.env.DATABASE_URL.includes('sslmode=require') ? 'require' : false,
+});
 
-// Test connection on startup with retry
 let isConnected = false;
 let keepAliveFailures = 0;
 
@@ -22,12 +38,12 @@ async function connectWithRetry(): Promise<void> {
   const maxAttempts = 5;
   for (let attempt = 1; attempt <= maxAttempts; attempt++) {
     try {
-      await sql`SELECT 1`;
+      await queryClient.unsafe('SELECT 1');
       isConnected = true;
-      console.log('✅ Database connection established (Neon HTTP driver)');
+      console.log('✅ Database connection established');
       return;
     } catch (err: any) {
-      console.error(`❌ DB connection attempt ${attempt}/${maxAttempts} failed: ${err.message}`);
+      console.error(`❌ DB connection attempt ${attempt}/${maxAttempts} failed: ${err.code || err.message}`);
       if (attempt < maxAttempts) {
         const delay = attempt * 2000;
         console.log(`⏳ Retrying in ${delay / 1000}s...`);
@@ -35,15 +51,15 @@ async function connectWithRetry(): Promise<void> {
       }
     }
   }
-  console.error('❌ Could not establish DB connection after all attempts. Will retry via keep-alive.');
+  console.error('❌ Could not connect to DB. Check DATABASE_URL in environment variables.');
 }
 
 connectWithRetry();
 
-// Keep-alive ping every 4 minutes to prevent Neon compute suspension
+// Keep-alive ping every 4 minutes
 setInterval(async () => {
   try {
-    await sql`SELECT 1`;
+    await queryClient.unsafe('SELECT 1');
     if (!isConnected) {
       isConnected = true;
       keepAliveFailures = 0;
@@ -53,18 +69,13 @@ setInterval(async () => {
   } catch (err: any) {
     keepAliveFailures++;
     isConnected = false;
-    console.warn(`⚠️ Database keep-alive ping failed (${keepAliveFailures} consecutive): ${err.message}`);
-    if (keepAliveFailures >= 3) {
-      console.error('🚨 DB unreachable. Check Neon dashboard — is compute paused?');
-      console.error(`   DB host: ${dbUrl.hostname}`);
-    }
+    console.warn(`⚠️ Database keep-alive failed (${keepAliveFailures} consecutive): ${err.code || err.message}`);
   }
 }, 4 * 60 * 1000);
 
-// Export connection health status
 export const getDbHealth = async (): Promise<boolean> => {
   try {
-    await sql`SELECT 1`;
+    await queryClient.unsafe('SELECT 1');
     return true;
   } catch (error) {
     console.error('Database health check failed:', error);
@@ -72,5 +83,5 @@ export const getDbHealth = async (): Promise<boolean> => {
   }
 };
 
-export const db = drizzle(sql, { schema });
+export const db = drizzle(queryClient, { schema });
 export type Database = typeof db;
