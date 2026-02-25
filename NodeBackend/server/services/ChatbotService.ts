@@ -985,45 +985,22 @@ export class ChatbotService {
   /**
    * Download file from URL to local path
    */
-  private downloadFile(url: string, destPath: string): Promise<void> {
-    return new Promise((resolve, reject) => {
-      const protocol = url.startsWith('https') ? https : http;
+  private async downloadFile(url: string, destPath: string): Promise<void> {
+    const log = (msg: string) => console.log(`[ChatbotService] ${msg}`);
+    log(`Fetching: ${url}`);
 
-      const file = fs.createWriteStream(destPath);
-
-      protocol.get(url, (response) => {
-        // Handle redirects
-        if (response.statusCode === 301 || response.statusCode === 302) {
-          const redirectUrl = response.headers.location;
-          if (redirectUrl) {
-            file.close();
-            fs.unlinkSync(destPath);
-            this.downloadFile(redirectUrl, destPath).then(resolve).catch(reject);
-            return;
-          }
-        }
-
-        if (response.statusCode !== 200) {
-          reject(new Error(`Failed to download: HTTP ${response.statusCode}`));
-          return;
-        }
-
-        response.pipe(file);
-
-        file.on('finish', () => {
-          file.close();
-          resolve();
-        });
-
-        file.on('error', (err) => {
-          fs.unlinkSync(destPath);
-          reject(err);
-        });
-      }).on('error', (err) => {
-        fs.unlinkSync(destPath);
-        reject(err);
-      });
+    const response = await fetch(url, {
+      redirect: 'follow',
+      headers: { 'User-Agent': 'WhatsApp-Bot/1.0' },
     });
+
+    if (!response.ok) {
+      throw new Error(`Failed to download ${url}: HTTP ${response.status} ${response.statusText}`);
+    }
+
+    const buffer = Buffer.from(await response.arrayBuffer());
+    fs.writeFileSync(destPath, buffer);
+    log(`✅ Downloaded ${buffer.length} bytes → ${destPath}`);
   }
 
   /**
