@@ -55,9 +55,9 @@ export async function withRetry<T>(
   options: RetryOptions = {}
 ): Promise<T> {
   const {
-    maxAttempts = 3,
-    initialDelay = 100,
-    maxDelay = 5000,
+    maxAttempts = 4,
+    initialDelay = 1000,
+    maxDelay = 15000,
     backoffMultiplier = 2
   } = options;
 

@@ -16,20 +16,19 @@ const connectionString = dbUrl.toString();
 
 // Configure postgres-js with robust pooling and retry logic
 const queryClient = postgres(connectionString, {
-  max: 20,                    // Increased pool size for better concurrency
-  idle_timeout: 30,           // Keep connections alive longer
-  connect_timeout: 10,        // Faster timeout to fail fast and retry
+  max: 10,                    // Moderate pool — Neon has connection limits
+  idle_timeout: 20,           // Release idle connections (Neon bills by compute time)
+  connect_timeout: 30,        // Allow time for Neon cold-start wake-up (can take 5-10s)
   max_lifetime: 60 * 30,      // Recycle connections every 30 minutes
+  fetch_types: true,
   connection: {
     application_name: 'whatsapp-persistent',
   },
-  // Retry logic for transient connection errors
   transform: {
     undefined: null
   },
-  onnotice: () => {}, // Suppress notices
+  onnotice: () => {},         // Suppress notices
   debug: false,
-  // Connection preparation
   prepare: true,
 });
 
@@ -41,6 +40,21 @@ queryClient.unsafe('SELECT 1').then(() => {
 }).catch((err) => {
   console.error('❌ Initial database connection failed:', err.message);
 });
+
+// Keep-alive ping every 4 minutes to prevent Neon compute suspension
+// Neon suspends after ~5 min of inactivity; this keeps it warm
+setInterval(async () => {
+  try {
+    await queryClient.unsafe('SELECT 1');
+    if (!isConnected) {
+      isConnected = true;
+      console.log('✅ Database connection restored');
+    }
+  } catch (err: any) {
+    isConnected = false;
+    console.warn('⚠️ Database keep-alive ping failed:', err.code || err.message);
+  }
+}, 4 * 60 * 1000); // 4 minutes
 
 // Export connection health status
 export const getDbHealth = async (): Promise<boolean> => {
