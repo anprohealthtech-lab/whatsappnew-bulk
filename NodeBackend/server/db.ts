@@ -30,7 +30,7 @@ const queryClient = postgres(connectionString, {
   idle_timeout: 30,           // Release idle connections
   connect_timeout: 60,        // Neon cold-start can take up to 30s — give extra buffer
   max_lifetime: 60 * 20,      // Recycle connections every 20 minutes
-  fetch_types: true,
+  fetch_types: false,          // CRITICAL: Must be false for Neon pooler (PgBouncer) — type fetching query breaks PgBouncer transaction mode
   connection: {
     application_name: 'whatsapp-persistent',
   },
@@ -42,7 +42,10 @@ const queryClient = postgres(connectionString, {
   prepare: false,             // Disable prepared statements — required for Neon pooler (PgBouncer)
   // Handle connection errors gracefully
   onclose: (connection_id) => {
-    console.warn(`⚠️ DB connection ${connection_id} closed unexpectedly`);
+    // Only log if we think we're connected — normal idle timeout closures are expected
+    if (isConnected) {
+      console.warn(`⚠️ DB connection ${connection_id} closed (will reconnect on next query)`);
+    }
   },
 });
 
