@@ -2253,7 +2253,7 @@ export async function registerRoutes(app: Express): Promise<Server> {
 
       await db.execute(
         drizzleSql`INSERT INTO demo_schedules (phone_number, contact_name, meeting_link, demo_at)
-          VALUES (${cleanPhone}, ${contactName || null}, ${meetingLink}, ${demoAt})`
+          VALUES (${cleanPhone}, ${contactName || null}, ${meetingLink}, ${demoAt.toISOString()})`
       );
 
       // Pause chatbot for this lead so they can interact freely around demo time
