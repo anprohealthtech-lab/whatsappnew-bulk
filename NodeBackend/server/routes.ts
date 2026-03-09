@@ -2290,8 +2290,8 @@ export async function registerRoutes(app: Express): Promise<Server> {
         const window40 = new Date(now.getTime() + 40 * 60 * 1000);
         const rows: any[] = await db.execute(
           drizzleSql`SELECT * FROM demo_schedules
-            WHERE demo_at >= ${now}
-              AND demo_at <= ${window40}
+            WHERE demo_at >= ${now.toISOString()}
+              AND demo_at <= ${window40.toISOString()}
               AND remind_5_sent_at IS NULL`
         );
 
