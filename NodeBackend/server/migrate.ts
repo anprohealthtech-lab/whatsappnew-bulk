@@ -166,6 +166,22 @@ export async function runMigrations(): Promise<void> {
         "updated_at" timestamp DEFAULT now()
       );
 
+      CREATE TABLE IF NOT EXISTS "demo_schedules" (
+        "id" varchar PRIMARY KEY DEFAULT gen_random_uuid() NOT NULL,
+        "phone_number" text NOT NULL,
+        "contact_name" text,
+        "meeting_link" text NOT NULL,
+        "demo_at" timestamp NOT NULL,
+        "remind_30_sent_at" timestamp,
+        "remind_15_sent_at" timestamp,
+        "remind_5_sent_at" timestamp,
+        "created_at" timestamp DEFAULT now()
+      );
+
+      CREATE INDEX IF NOT EXISTS idx_demo_schedules_demo_at
+        ON demo_schedules(demo_at)
+        WHERE remind_5_sent_at IS NULL;
+
       -- Add FK constraints (safe with IF NOT EXISTS pattern via DO blocks)
       DO $$ BEGIN
         IF NOT EXISTS (
@@ -191,11 +207,102 @@ export async function runMigrations(): Promise<void> {
     `);
 
     log('✅ Database migrations completed — all tables ready');
+
+    // Seed essential data if tables are empty
+    await seedData(sql);
+
   } catch (err: any) {
     log(`❌ Migration failed: ${err.message}`);
     console.error('Migration error:', err);
     // Don't throw — let app start anyway, some tables may already exist
   } finally {
     await sql.end();
+  }
+}
+
+/**
+ * Seeds critical data that was in Neon DB.
+ * Only inserts if the table is empty — safe to run on every startup.
+ */
+async function seedData(sql: postgres.Sql): Promise<void> {
+  try {
+    // Check if chatbot_configs already has data
+    const existing = await sql`SELECT COUNT(*) as count FROM chatbot_configs`;
+    const count = parseInt((existing[0] as any).count, 10);
+
+    if (count > 0) {
+      log(`ℹ️ chatbot_configs already has ${count} row(s) — skipping seed`);
+      return;
+    }
+
+    log('🌱 Seeding chatbot_configs...');
+
+    const systemPrompt = `You are AnPro AI Assistant — a Senior Technical Sales Specialist for AnPro Solutions.
+
+TONE: Professional, helpful, and concise. Never overly enthusiastic or pushy. You can respond in Hinglish (Hindi + English mix) if the user writes in Hindi/Hinglish.
+
+MISSION: Help pathology labs understand AnPro AI LIMS. Convert genuine interest into a scheduled Google Meet demo.
+
+IMPORTANT — DEMO VIDEO LINK:
+The user has already received the demo video link in the greeting message: https://app.supademo.com/demo/cml52cn4j3h6nzsadnq3xl323
+- If the user asks about features, demo, or how AnPro works, remind them to watch the video first.
+- If they have already watched the video and have specific questions, answer those questions directly.
+- Do NOT resend the full greeting. Just reference the video if needed: "Kya aapne demo video dekha? Usme AnPro ke saare key features covered hain."
+
+HARD RULES — YOU MUST FOLLOW THESE:
+1. ONE reply per user message. NEVER send multiple messages.
+2. Keep replies to 2-4 sentences MAX unless the user explicitly asks for detailed info.
+3. Ask at most 1 question per reply. Wait for the user's answer before asking more.
+4. You may invite for a demo at most 2 times in the ENTIRE conversation. If declined twice, stop asking.
+5. If the user says "not interested", "later", "just browsing", or "busy" — acknowledge politely and STOP pitching. Only re-engage if THEY bring it up.
+6. If the user gives short dismissals twice in a row, offer to help later and stop the flow.
+7. NEVER send follow-up messages if the user doesn't reply.
+8. NEVER repeat the same pitch or CTA in back-to-back replies.
+9. Match the user's energy: if they ask one thing, answer ONLY that one thing.
+
+KEY FEATURES (use when relevant):
+- AI TRF Digitization: Scan handwritten TRFs, 99% accuracy, zero manual entry.
+- AI Instrument Screen Reading: Camera reads analyzer screens — no cables, no HL7.
+- Objective AI Analysis: Blood group & rapid card image analysis with proof.
+- WhatsApp Integration: Auto-send PDF reports & invoices, included in AI Premium plan.
+- Smart Verification: Delta checks, abnormal value flagging (age/gender specific).
+- Pricing: Basic ₹2,499/mo | AI Premium ₹3,499/mo (recommended).
+
+VISUALS: If the user asks about a feature with an image reference, include "image url: [URL]" on a new line at the end.
+- TRF: image url: https://ik.imagekit.io/18tsendxqy/website/trf%20scan.png?tr=f-auto
+- Instrument: image url: https://ik.imagekit.io/18tsendxqy/website/scan%20machine.png?tr=f-auto
+- Blood Group: image url: https://ik.imagekit.io/18tsendxqy/website/blood%20group.png?tr=f-auto
+- Rapid Card: image url: https://ik.imagekit.io/18tsendxqy/website/rapid%20card.png?tr=f-auto
+- WhatsApp: image url: https://ik.imagekit.io/18tsendxqy/website/whatsapp.png?tr=f-auto
+
+POLITE EXIT (use exactly once if user declines):
+"Samajh gaye. Aapka time dene ke liye shukriya. Jab bhi aap AI automation explore karna chahein, bas humein message kar dijiye."`;
+
+    const greetingMessage = `Hello 👋\nWelcome to *AnPro Solutions!*\n\n*AnPro LIMS* में interest दिखाने के लिए thank you।\n\nAnPro India का first *AI-based Laboratory Information Management System (LIMS)* है, जो specially modern diagnostic labs के लिए design किया गया है।\nयह lab operations को automate करता है, manual work कम करता है, और complete *WhatsApp integration* provide करता है — बिना किसी extra cost के।\n\nआपसे request है कि पहले नीचे दिया गया short introduction video देख लें।\nइस video में आपको AnPro का overview, key features, pricing और additional demo video links मिल जाएंगे:\n\n👉 https://app.supademo.com/demo/cml52cn4j3h6nzsadnq3xl323\n\nअगर आपको AnPro आपकी lab के लिए suitable लगे, तो इसी number पर हमें वापस contact कीजिए।\n\nआपसे बात करने का इंतज़ार रहेगा 😊\n\nRegards,\n*Team AnPro Solutions*\n===NEXT_MESSAGE===\nAUDIO_URL: https://api.limsapp.in/storage/v1/object/public/reports/reports/ElevenLabs_2026-02-22T05_04_24_Riya%20Rao%20-%20Hindi%20Customer%20Care_pvc_sp109_s50_sb17_se0_b_m2.mp3\n===NEXT_MESSAGE===\nHello 👋\n\nWelcome to *AnPro Solutions!*\n\nThank you for showing interest in *AnPro LIMS*.\n\nAnPro is India's first AI-based Laboratory Information Management System, specially designed for modern diagnostic laboratories. It helps automate lab operations, reduce manual work, and provides complete WhatsApp integration — without any additional cost.\n\nWe request you to please watch the short introduction video below first.\nIn this video, you will find an overview of AnPro, key features, pricing details, and links to additional demo videos:\n\n👉 https://app.supademo.com/demo/cml52cn4j3h6nzsadnq3xl323\n\nIf you find AnPro suitable for your lab, please feel free to contact us on this number.\n\nWe look forward to speaking with you 😊\n\nRegards,\n*Team AnPro Solutions*\n===NEXT_MESSAGE===\nAUDIO_URL: https://api.limsapp.in/storage/v1/object/public/reports/reports/ElevenLabs_2026-02-22T05_02_26_Riya%20Rao%20-%20Hindi%20Customer%20Care_pvc_sp109_s50_sb17_se0_b_m2.mp3`;
+
+    await sql`
+      INSERT INTO chatbot_configs (
+        id, agent_name, trigger_keywords, rag_base_url, rag_access_key,
+        system_prompt, greeting_message, context_message_count,
+        reply_cooldown_seconds, typing_delay_ms, is_active,
+        created_at, updated_at
+      ) VALUES (
+        '233e172a-fccc-4a07-9939-c283880a94b2',
+        'AnPro Sales Assistant',
+        ${JSON.stringify(["LIMS", "Demo", "Price"])},
+        'https://tnfqq3vcirfyalnqzg3c4wwy.agents.do-ai.run',
+        '71VkYUHciWpo0I8DsK4n8nUfA-Vjr70j',
+        ${systemPrompt},
+        ${greetingMessage},
+        5, 8, 2000, 'true',
+        '2025-12-29 16:49:16.63061',
+        '2026-02-23 07:13:51.685068'
+      )
+    `;
+
+    log('✅ chatbot_configs seeded — AnPro Sales Assistant restored');
+  } catch (err: any) {
+    log(`⚠️ Seed failed (non-fatal): ${err.message}`);
+    console.error('Seed error:', err);
   }
 }

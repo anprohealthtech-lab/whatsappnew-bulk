@@ -146,6 +146,19 @@ export const chatbotConfigs = pgTable("chatbot_configs", {
   updatedAt: timestamp("updated_at").defaultNow(),
 });
 
+// Demo schedules — manual demo booking from NodeBackend UI
+export const demoSchedules = pgTable("demo_schedules", {
+  id: varchar("id").primaryKey().default(sql`gen_random_uuid()`),
+  phoneNumber: text("phone_number").notNull(),
+  contactName: text("contact_name"),
+  meetingLink: text("meeting_link").notNull(),
+  demoAt: timestamp("demo_at").notNull(), // UTC — converted from IST at insert time
+  remind30SentAt: timestamp("remind_30_sent_at"),
+  remind15SentAt: timestamp("remind_15_sent_at"),
+  remind5SentAt: timestamp("remind_5_sent_at"),
+  createdAt: timestamp("created_at").defaultNow(),
+});
+
 export const insertUserSchema = createInsertSchema(users).pick({
   username: true,
   password: true,
@@ -178,6 +191,7 @@ export type Contact = typeof contacts.$inferSelect;
 export type ChatbotConfig = typeof chatbotConfigs.$inferSelect;
 export type HRAdmin = typeof hrAdmins.$inferSelect;
 export type HRChatbotConfig = typeof hrChatbotConfigs.$inferSelect;
+export type DemoSchedule = typeof demoSchedules.$inferSelect;
 
 // Additional schemas for API requests
 export const sendMessageSchema = z.object({

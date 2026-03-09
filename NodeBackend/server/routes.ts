@@ -13,9 +13,10 @@ import { autoResponseService } from "./services/AutoResponseService";
 import { ChatbotService } from "./services/ChatbotService";
 import { HRChatbotService } from "./services/HRChatbotService";
 import { initializeChatbotConfig } from "./initChatbot";
-import { sendMessageSchema, sendReportSchema, createCampaignSchema, bulkSendSchema, chatbotConfigSchema, flagLeadSchema, registerHRAdminSchema, hrChatbotConfigSchema } from "@shared/schema";
+import { sendMessageSchema, sendReportSchema, createCampaignSchema, bulkSendSchema, chatbotConfigSchema, flagLeadSchema, registerHRAdminSchema, hrChatbotConfigSchema, demoSchedules } from "@shared/schema";
 import { log } from "./utils";
-import { getDbHealth } from "./db";
+import { getDbHealth, db } from "./db";
+import { sql as drizzleSql } from "drizzle-orm";
 import { withRetry } from "./dbRetry";
 import { z } from "zod";
 import * as XLSX from 'xlsx';
@@ -2200,6 +2201,141 @@ export async function registerRoutes(app: Express): Promise<Server> {
   });
 
   // ==================== END NOTIFICATION API ====================
+
+  // ==================== DEMO SCHEDULER ====================
+
+  // GET /api/demo-schedules — list all upcoming and recent demo schedules
+  app.get("/api/demo-schedules", async (req: Request, res: Response) => {
+    try {
+      const rows = await db.execute(
+        drizzleSql`SELECT * FROM demo_schedules ORDER BY demo_at DESC LIMIT 100`
+      );
+      res.json({ schedules: rows });
+    } catch (error) {
+      const msg = error instanceof Error ? error.message : "Unknown error";
+      log(`❌ GET /api/demo-schedules error: ${msg}`);
+      res.status(500).json({ error: msg });
+    }
+  });
+
+  // POST /api/leads/:phoneNumber/schedule-demo — manually schedule a demo for a lead
+  app.post("/api/leads/:phoneNumber/schedule-demo", async (req: Request, res: Response) => {
+    try {
+      const { phoneNumber } = req.params;
+      const { demoDate, demoTime, meetingLink, contactName } = req.body as {
+        demoDate: string;  // YYYY-MM-DD
+        demoTime: string;  // HH:MM (IST)
+        meetingLink: string;
+        contactName?: string;
+      };
+
+      if (!demoDate || !demoTime || !meetingLink) {
+        return res.status(400).json({ error: "demoDate, demoTime, and meetingLink are required" });
+      }
+      if (!meetingLink.startsWith("http")) {
+        return res.status(400).json({ error: "meetingLink must be a valid URL" });
+      }
+
+      // Parse as IST (UTC+05:30) to avoid timezone shift
+      const timePart = demoTime.includes(":") && demoTime.split(":").length === 2
+        ? `${demoTime}:00`
+        : demoTime;
+      const demoAt = new Date(`${demoDate}T${timePart}+05:30`);
+      if (isNaN(demoAt.getTime())) {
+        return res.status(400).json({ error: "Invalid date/time format. Use YYYY-MM-DD and HH:MM" });
+      }
+      if (demoAt.getTime() <= Date.now()) {
+        return res.status(400).json({ error: "Demo time must be in the future" });
+      }
+
+      // Normalize phone (strip leading + or spaces)
+      const cleanPhone = phoneNumber.replace(/\D/g, "");
+
+      await db.execute(
+        drizzleSql`INSERT INTO demo_schedules (phone_number, contact_name, meeting_link, demo_at)
+          VALUES (${cleanPhone}, ${contactName || null}, ${meetingLink}, ${demoAt})`
+      );
+
+      // Pause chatbot for this lead so they can interact freely around demo time
+      try {
+        await storage.updateContact(cleanPhone, { chatbotActive: "false" });
+        log(`⏸ Chatbot paused for ${cleanPhone} (demo scheduled)`);
+      } catch (e: any) {
+        log(`⚠️ Could not pause chatbot for ${cleanPhone}: ${e.message}`);
+      }
+
+      log(`📅 Demo scheduled: ${cleanPhone} at ${demoAt.toISOString()}`);
+      res.json({ success: true, demoAt: demoAt.toISOString() });
+    } catch (error) {
+      const msg = error instanceof Error ? error.message : "Unknown error";
+      log(`❌ POST schedule-demo error: ${msg}`);
+      res.status(500).json({ error: msg });
+    }
+  });
+
+  // ==================== END DEMO SCHEDULER ====================
+
+  // Demo reminder scheduler — runs every 60 seconds
+  function startDemoReminderScheduler() {
+    const buildMessage = (type: "30min" | "15min" | "5min", meetingLink: string, name: string | null) => {
+      const greeting = name ? `Hi ${name}! ` : "";
+      if (type === "30min") return `${greeting}⏰ *Reminder:* Your AnPro LIMS demo starts in *30 minutes*.\n\nJoin here 👇\n${meetingLink}`;
+      if (type === "15min") return `${greeting}⏰ *Reminder:* Your AnPro LIMS demo is in *15 minutes*!\n\nJoin here 👇\n${meetingLink}`;
+      return `${greeting}🚀 *Your AnPro demo starts in 5 minutes!*\n\nJoin now 👇\n${meetingLink}`;
+    };
+
+    setInterval(async () => {
+      try {
+        const now = new Date();
+        const window40 = new Date(now.getTime() + 40 * 60 * 1000);
+        const rows: any[] = await db.execute(
+          drizzleSql`SELECT * FROM demo_schedules
+            WHERE demo_at >= ${now}
+              AND demo_at <= ${window40}
+              AND remind_5_sent_at IS NULL`
+        );
+
+        for (const s of rows) {
+          const demoAt = new Date(s.demo_at);
+          const minsLeft = (demoAt.getTime() - now.getTime()) / 60000;
+          const jid = String(s.phone_number).replace(/\D/g, "") + "@s.whatsapp.net";
+
+          // 30-min reminder window: 25–35 mins remaining
+          if (!s.remind_30_sent_at && minsLeft >= 25 && minsLeft <= 35) {
+            try {
+              await whatsAppService.sendTextMessage(jid, buildMessage("30min", s.meeting_link, s.contact_name));
+              await db.execute(drizzleSql`UPDATE demo_schedules SET remind_30_sent_at = NOW() WHERE id = ${s.id}`);
+              log(`✅ Demo 30-min reminder → ${s.phone_number}`);
+            } catch (e: any) { log(`⚠️ 30-min reminder failed for ${s.phone_number}: ${e.message}`); }
+          }
+
+          // 15-min reminder window: 10–20 mins remaining
+          if (!s.remind_15_sent_at && minsLeft >= 10 && minsLeft <= 20) {
+            try {
+              await whatsAppService.sendTextMessage(jid, buildMessage("15min", s.meeting_link, s.contact_name));
+              await db.execute(drizzleSql`UPDATE demo_schedules SET remind_15_sent_at = NOW() WHERE id = ${s.id}`);
+              log(`✅ Demo 15-min reminder → ${s.phone_number}`);
+            } catch (e: any) { log(`⚠️ 15-min reminder failed for ${s.phone_number}: ${e.message}`); }
+          }
+
+          // 5-min reminder window: 0–10 mins remaining
+          if (!s.remind_5_sent_at && minsLeft >= 0 && minsLeft <= 10) {
+            try {
+              await whatsAppService.sendTextMessage(jid, buildMessage("5min", s.meeting_link, s.contact_name));
+              await db.execute(drizzleSql`UPDATE demo_schedules SET remind_5_sent_at = NOW() WHERE id = ${s.id}`);
+              log(`✅ Demo 5-min reminder → ${s.phone_number}`);
+            } catch (e: any) { log(`⚠️ 5-min reminder failed for ${s.phone_number}: ${e.message}`); }
+          }
+        }
+      } catch (e: any) {
+        log(`⚠️ Demo reminder scheduler error: ${e.message}`);
+      }
+    }, 60 * 1000);
+
+    log("📅 Demo reminder scheduler started (60s interval)");
+  }
+
+  startDemoReminderScheduler();
 
   // Cleanup old files periodically
   setInterval(async () => {

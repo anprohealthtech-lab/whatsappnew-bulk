@@ -30,11 +30,19 @@ const flagLeadSchema = z.object({
   keyword: z.string().optional(),
 });
 
+const scheduleDemoSchema = z.object({
+  demoDate: z.string().min(1, "Date is required"),
+  demoTime: z.string().min(1, "Time is required"),
+  meetingLink: z.string().url("Must be a valid URL (e.g. https://meet.google.com/...)"),
+});
+
 type FlagLeadFormData = z.infer<typeof flagLeadSchema>;
+type ScheduleDemoFormData = z.infer<typeof scheduleDemoSchema>;
 
 export function LeadsPanel() {
   const [isDialogOpen, setIsDialogOpen] = useState(false);
   const [deleteTarget, setDeleteTarget] = useState<string | null>(null);
+  const [scheduleDemoTarget, setScheduleDemoTarget] = useState<{ phoneNumber: string; name: string } | null>(null);
   const { toast } = useToast();
   const queryClient = useQueryClient();
 
@@ -44,6 +52,15 @@ export function LeadsPanel() {
       phoneNumber: "",
       name: "",
       keyword: "",
+    },
+  });
+
+  const scheduleForm = useForm<ScheduleDemoFormData>({
+    resolver: zodResolver(scheduleDemoSchema),
+    defaultValues: {
+      demoDate: "",
+      demoTime: "10:00",
+      meetingLink: "",
     },
   });
 
@@ -156,6 +173,38 @@ export function LeadsPanel() {
         description: error.message,
         variant: "destructive",
       });
+    },
+  });
+
+  // Mutation to schedule a demo
+  const scheduleDemoMutation = useMutation({
+    mutationFn: async ({ phoneNumber, data }: { phoneNumber: string; data: ScheduleDemoFormData }) => {
+      const response = await fetch(`/api/leads/${encodeURIComponent(phoneNumber)}/schedule-demo`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          demoDate: data.demoDate,
+          demoTime: data.demoTime,
+          meetingLink: data.meetingLink,
+          contactName: scheduleDemoTarget?.name || undefined,
+        }),
+      });
+      if (!response.ok) {
+        const err = await response.json();
+        throw new Error(err.error || "Failed to schedule demo");
+      }
+      return response.json();
+    },
+    onSuccess: (result) => {
+      toast({
+        title: "Demo Scheduled",
+        description: `Reminders will be sent at 30, 15, and 5 minutes before the demo. Chatbot paused for this lead.`,
+      });
+      setScheduleDemoTarget(null);
+      scheduleForm.reset({ demoDate: "", demoTime: "10:00", meetingLink: "" });
+    },
+    onError: (error: Error) => {
+      toast({ title: "Error", description: error.message, variant: "destructive" });
     },
   });
 
@@ -347,6 +396,15 @@ export function LeadsPanel() {
                           <Button
                             variant="ghost"
                             size="sm"
+                            onClick={() => setScheduleDemoTarget({ phoneNumber: lead.phoneNumber, name: lead.name || "" })}
+                            title="Schedule a demo for this lead"
+                            className="text-purple-500 hover:text-purple-600 hover:bg-purple-50 dark:hover:bg-purple-900/20"
+                          >
+                            <Calendar className="h-4 w-4" />
+                          </Button>
+                          <Button
+                            variant="ghost"
+                            size="sm"
                             onClick={() => {
                               toast({
                                 title: "Coming soon",
@@ -433,6 +491,86 @@ export function LeadsPanel() {
           </AlertDialogFooter>
         </AlertDialogContent>
       </AlertDialog>
+
+      {/* Schedule Demo Dialog */}
+      <Dialog open={!!scheduleDemoTarget} onOpenChange={(open) => { if (!open) { setScheduleDemoTarget(null); scheduleForm.reset({ demoDate: "", demoTime: "10:00", meetingLink: "" }); } }}>
+        <DialogContent className="border-none shadow-2xl bg-white/95 dark:bg-zinc-900/95 backdrop-blur-xl">
+          <DialogHeader>
+            <DialogTitle>Schedule Demo</DialogTitle>
+            <DialogDescription>
+              Book a demo for <span className="font-mono font-semibold">{scheduleDemoTarget?.phoneNumber}</span>
+              {scheduleDemoTarget?.name ? ` (${scheduleDemoTarget.name})` : ""}. WhatsApp reminders will be sent at 30, 15, and 5 minutes before the demo.
+            </DialogDescription>
+          </DialogHeader>
+          <form
+            onSubmit={scheduleForm.handleSubmit((data) => {
+              if (scheduleDemoTarget) {
+                scheduleDemoMutation.mutate({ phoneNumber: scheduleDemoTarget.phoneNumber, data });
+              }
+            })}
+            className="space-y-4"
+          >
+            <div className="grid grid-cols-2 gap-3">
+              <div className="space-y-2">
+                <Label htmlFor="demoDate">Demo Date *</Label>
+                <Input
+                  id="demoDate"
+                  type="date"
+                  {...scheduleForm.register("demoDate")}
+                  className="bg-white dark:bg-zinc-950 border-gray-200 dark:border-zinc-800 focus:ring-primary"
+                />
+                {scheduleForm.formState.errors.demoDate && (
+                  <p className="text-sm text-destructive">{scheduleForm.formState.errors.demoDate.message}</p>
+                )}
+              </div>
+              <div className="space-y-2">
+                <Label htmlFor="demoTime">Demo Time * (IST)</Label>
+                <Input
+                  id="demoTime"
+                  type="time"
+                  {...scheduleForm.register("demoTime")}
+                  className="bg-white dark:bg-zinc-950 border-gray-200 dark:border-zinc-800 focus:ring-primary"
+                />
+                {scheduleForm.formState.errors.demoTime && (
+                  <p className="text-sm text-destructive">{scheduleForm.formState.errors.demoTime.message}</p>
+                )}
+              </div>
+            </div>
+            <div className="space-y-2">
+              <Label htmlFor="meetingLink">Meeting Link *</Label>
+              <Input
+                id="meetingLink"
+                type="url"
+                placeholder="https://meet.google.com/abc-defg-hij"
+                {...scheduleForm.register("meetingLink")}
+                className="bg-white dark:bg-zinc-950 border-gray-200 dark:border-zinc-800 focus:ring-primary"
+              />
+              {scheduleForm.formState.errors.meetingLink && (
+                <p className="text-sm text-destructive">{scheduleForm.formState.errors.meetingLink.message}</p>
+              )}
+            </div>
+            <p className="text-xs text-muted-foreground">
+              🕐 All times are in IST (Indian Standard Time). Chatbot will be paused for this lead after scheduling.
+            </p>
+            <div className="flex justify-end gap-2">
+              <Button
+                type="button"
+                variant="outline"
+                onClick={() => { setScheduleDemoTarget(null); scheduleForm.reset({ demoDate: "", demoTime: "10:00", meetingLink: "" }); }}
+              >
+                Cancel
+              </Button>
+              <Button
+                type="submit"
+                disabled={scheduleDemoMutation.isPending}
+                className="bg-purple-600 hover:bg-purple-700 text-white shadow-md"
+              >
+                {scheduleDemoMutation.isPending ? "Scheduling..." : "Schedule Demo"}
+              </Button>
+            </div>
+          </form>
+        </DialogContent>
+      </Dialog>
     </div>
   );
 }
