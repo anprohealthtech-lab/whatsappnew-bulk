@@ -1603,6 +1603,74 @@ export async function registerRoutes(app: Express): Promise<Server> {
     }
   });
 
+  // Pause / resume chatbot for a lead — called by the CRM Netlify functions.
+  // Protected by the same NOTIFICATION_API_KEY used for WhatsApp notifications.
+  // Body: { phoneNumber: string, active: boolean }
+  // phoneNumber must be in 91XXXXXXXXXX format (digits only, no @).
+  app.post('/api/demo-chatbot-pause', async (req, res) => {
+    try {
+      // Reuse the notification API key guard already defined below
+      const apiKey = req.headers['x-api-key'] || req.headers['authorization']?.replace('Bearer ', '');
+      const expectedKey = process.env.NOTIFICATION_API_KEY || 'whatsapp-notification-secret-key';
+      if (apiKey !== expectedKey) {
+        return res.status(401).json({ success: false, error: 'Invalid API key' });
+      }
+
+      const { phoneNumber, active } = req.body;
+      if (!phoneNumber) {
+        return res.status(400).json({ success: false, error: 'phoneNumber is required' });
+      }
+
+      const newState = active === true ? 'true' : 'false';
+      await withRetry(() => storage.updateContact(phoneNumber, {
+        chatbotActive: newState,
+      }));
+
+      log(`🎛️ demo-chatbot-pause: ${phoneNumber} → chatbotActive=${newState}`);
+      res.json({
+        success: true,
+        message: `Chatbot ${active ? 'resumed' : 'paused'} for ${phoneNumber}`,
+      });
+    } catch (error) {
+      const errorMessage = error instanceof Error ? error.message : 'Unknown error';
+      log(`demo-chatbot-pause error: ${errorMessage}`);
+      res.status(500).json({ success: false, error: errorMessage });
+    }
+  });
+
+  // Send a plain WhatsApp text message — called by the CRM demo-reminder scheduler.
+  // Protected by NOTIFICATION_API_KEY.  Does NOT require HR admin org lookup.
+  // Body: { phoneNumber: string, message: string }
+  // phoneNumber: 91XXXXXXXXXX digits-only; this endpoint appends @s.whatsapp.net.
+  app.post('/api/demo-reminder-send', async (req, res) => {
+    try {
+      const apiKey = req.headers['x-api-key'] || req.headers['authorization']?.replace('Bearer ', '');
+      const expectedKey = process.env.NOTIFICATION_API_KEY || 'whatsapp-notification-secret-key';
+      if (apiKey !== expectedKey) {
+        return res.status(401).json({ success: false, error: 'Invalid API key' });
+      }
+
+      const { phoneNumber, message } = req.body;
+      if (!phoneNumber || !message) {
+        return res.status(400).json({ success: false, error: 'phoneNumber and message are required' });
+      }
+
+      // Normalise to full WhatsApp JID
+      let digits = String(phoneNumber).replace(/\D/g, '');
+      if (digits.length === 10) digits = `91${digits}`;
+      const jid = `${digits}@s.whatsapp.net`;
+
+      log(`📤 demo-reminder-send → ${jid}: ${String(message).substring(0, 60)}...`);
+      await whatsAppService.sendTextMessage(jid, String(message));
+
+      res.json({ success: true });
+    } catch (error) {
+      const errorMessage = error instanceof Error ? error.message : 'Unknown error';
+      log(`demo-reminder-send error: ${errorMessage}`);
+      res.status(500).json({ success: false, error: errorMessage });
+    }
+  });
+
   // ==================== END CHATBOT & LEADS API ====================
 
   // ==================== HR ADMIN & HR CHATBOT API ====================
