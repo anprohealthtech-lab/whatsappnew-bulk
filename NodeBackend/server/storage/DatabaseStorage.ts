@@ -4,6 +4,8 @@ import { users, messages, systemLogs, blockedNumbers, autoResponses, contacts, c
 import type { User, InsertUser, Message, InsertMessage, SystemLog, InsertSystemLog, BlockedNumber, AutoResponse, Contact, ChatbotConfig, HRAdmin, HRChatbotConfig } from '@shared/schema';
 import type { IStorage } from '../storage';
 
+export type TenantFilter = { organizationId: string; userId: string };
+
 export class DatabaseStorage implements IStorage {
   // User methods
   async getUser(id: string): Promise<User | undefined> {
@@ -692,6 +694,138 @@ export class DatabaseStorage implements IStorage {
         })
         .returning();
       
+      return result[0];
+    }
+  }
+
+  // ============================================================================
+  // TENANT-AWARE METHODS (multi-user scoped)
+  // ============================================================================
+
+  async getMessagesByTenant(tenant: TenantFilter, filters?: {
+    status?: string; phoneNumber?: string; type?: string; limit?: number; offset?: number;
+  }): Promise<Message[]> {
+    const conditions = [
+      eq(messages.organizationId, tenant.organizationId),
+      eq(messages.userId, tenant.userId),
+    ];
+    if (filters?.status) conditions.push(eq(messages.status, filters.status));
+    if (filters?.phoneNumber) conditions.push(eq(messages.phoneNumber, filters.phoneNumber));
+    if (filters?.type) conditions.push(eq(messages.type, filters.type));
+
+    let query = db.select().from(messages).where(and(...conditions)).orderBy(desc(messages.createdAt));
+    if (filters?.limit) query = query.limit(filters.limit) as any;
+    if (filters?.offset) query = query.offset(filters.offset) as any;
+    return await query;
+  }
+
+  async createMessageForTenant(tenant: TenantFilter, message: InsertMessage): Promise<Message> {
+    const result = await db.insert(messages).values({
+      ...message,
+      organizationId: tenant.organizationId,
+      userId: tenant.userId,
+    }).returning();
+    return result[0];
+  }
+
+  async getAutoResponsesByTenant(tenant: TenantFilter): Promise<AutoResponse[]> {
+    return db.select().from(autoResponses).where(and(
+      eq(autoResponses.organizationId, tenant.organizationId),
+      eq(autoResponses.userId, tenant.userId),
+      eq(autoResponses.isActive, 'true'),
+    )).orderBy(desc(autoResponses.createdAt));
+  }
+
+  async createAutoResponseForTenant(tenant: TenantFilter, data: {
+    keyword: string; response: string; isActive?: boolean;
+  }): Promise<AutoResponse> {
+    const result = await db.insert(autoResponses).values({
+      keyword: data.keyword,
+      response: data.response,
+      isActive: data.isActive === false ? 'false' : 'true',
+      organizationId: tenant.organizationId,
+      userId: tenant.userId,
+    }).returning();
+    return result[0];
+  }
+
+  async getBlockedNumbersByTenant(tenant: TenantFilter): Promise<BlockedNumber[]> {
+    return db.select().from(blockedNumbers).where(and(
+      eq(blockedNumbers.organizationId, tenant.organizationId),
+      eq(blockedNumbers.userId, tenant.userId),
+    )).orderBy(desc(blockedNumbers.blockedAt));
+  }
+
+  async addToBlocklistForTenant(tenant: TenantFilter, phoneNumber: string, reason = 'user_requested'): Promise<BlockedNumber> {
+    const cleanedNumber = phoneNumber.replace(/\D/g, '');
+    const result = await db.insert(blockedNumbers).values({
+      phoneNumber: cleanedNumber,
+      reason,
+      organizationId: tenant.organizationId,
+      userId: tenant.userId,
+    }).returning();
+    return result[0];
+  }
+
+  async isNumberBlockedForTenant(tenant: TenantFilter, phoneNumber: string): Promise<boolean> {
+    const cleanedNumber = phoneNumber.replace(/\D/g, '');
+    const result = await db.select().from(blockedNumbers).where(and(
+      eq(blockedNumbers.organizationId, tenant.organizationId),
+      eq(blockedNumbers.userId, tenant.userId),
+      eq(blockedNumbers.phoneNumber, cleanedNumber),
+    )).limit(1);
+    return result.length > 0;
+  }
+
+  async getContactsByTenant(tenant: TenantFilter, filters?: { limit?: number; offset?: number }): Promise<Contact[]> {
+    let query = db.select().from(contacts).where(and(
+      eq(contacts.organizationId, tenant.organizationId),
+      eq(contacts.userId, tenant.userId),
+    )).orderBy(desc(contacts.lastMessageAt));
+    if (filters?.limit) query = query.limit(filters.limit) as any;
+    if (filters?.offset) query = query.offset(filters.offset) as any;
+    return await query;
+  }
+
+  async getLeadsByTenant(tenant: TenantFilter, filters?: { limit?: number; offset?: number }): Promise<Contact[]> {
+    let query = db.select().from(contacts).where(and(
+      eq(contacts.organizationId, tenant.organizationId),
+      eq(contacts.userId, tenant.userId),
+      eq(contacts.isLead, 'true'),
+    )).orderBy(desc(contacts.lastMessageAt));
+    if (filters?.limit) query = query.limit(filters.limit) as any;
+    if (filters?.offset) query = query.offset(filters.offset) as any;
+    return await query;
+  }
+
+  async flagAsLeadForTenant(tenant: TenantFilter, phoneNumber: string, keyword: string, name?: string): Promise<Contact> {
+    const normalizedPhone = this.normalizePhoneNumber(phoneNumber);
+    const existing = await db.select().from(contacts)
+      .where(and(
+        eq(contacts.organizationId, tenant.organizationId),
+        eq(contacts.userId, tenant.userId),
+        eq(contacts.phoneNumber, normalizedPhone),
+      )).limit(1);
+
+    if (existing.length > 0) {
+      const result = await db.update(contacts).set({
+        isLead: 'true',
+        leadTriggerKeyword: keyword,
+        lastMessageAt: new Date(),
+        updatedAt: new Date(),
+        ...(name && { name }),
+      }).where(eq(contacts.id, existing[0].id)).returning();
+      return result[0];
+    } else {
+      const result = await db.insert(contacts).values({
+        phoneNumber: normalizedPhone,
+        name: name || null,
+        isLead: 'true',
+        leadTriggerKeyword: keyword,
+        lastMessageAt: new Date(),
+        organizationId: tenant.organizationId,
+        userId: tenant.userId,
+      }).returning();
       return result[0];
     }
   }

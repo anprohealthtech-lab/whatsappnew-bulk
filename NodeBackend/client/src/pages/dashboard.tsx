@@ -28,6 +28,11 @@ import { MessageHistory } from "@/components/dashboard/MessageHistory";
 import { AutoResponsePanel } from "@/components/dashboard/AutoResponsePanel";
 import { LeadsPanel } from "@/components/dashboard/LeadsPanel";
 import { HRAdminsPanel } from "@/components/dashboard/HRAdminsPanel";
+import { WhatsAppSessionPanel } from "@/components/dashboard/WhatsAppSessionPanel";
+import { CampaignTemplatesPanel } from "@/components/dashboard/CampaignTemplatesPanel";
+import { ScheduleCampaignPanel } from "@/components/dashboard/ScheduleCampaignPanel";
+import { GroupScraperPanel } from "@/components/dashboard/GroupScraperPanel";
+import { UserRagSettingsPanel } from "@/components/dashboard/UserRagSettingsPanel";
 
 // Form schemas
 const messageSchema = z.object({
@@ -485,6 +490,21 @@ export default function Dashboard() {
 
           {/* HR Admins Section */}
           {activeSection === "hr-admins" && <HRAdminsPanel />}
+
+          {/* WhatsApp Sessions Section */}
+          {activeSection === "sessions" && <WhatsAppSessionPanel />}
+
+          {/* Templates Section */}
+          {activeSection === "templates" && <CampaignTemplatesPanel />}
+
+          {/* Schedules Section */}
+          {activeSection === "schedules" && <ScheduleCampaignPanel />}
+
+          {/* Group Scraper Section */}
+          {activeSection === "groups" && <GroupScraperPanel />}
+
+          {/* AI Chatbot / RAG Settings Section */}
+          {activeSection === "rag-settings" && <UserRagSettingsPanel />}
         </main>
       </div>
 

@@ -14,7 +14,10 @@
  */
 
 import type { IStorage } from "../storage";
-import type { ChatbotConfig, Contact, Message } from "@shared/schema";
+import type { ChatbotConfig, Contact, Message, UserRagAgent } from "@shared/schema";
+import { userRagAgents } from "@shared/schema";
+import { db } from "../db";
+import { eq, and, desc } from "drizzle-orm";
 import * as fs from 'fs';
 import * as path from 'path';
 import * as https from 'https';
@@ -153,15 +156,39 @@ const lastReplyTimestamps = new Map<string, number>();
 const pendingGreetings = new Map<string, { keyword: string; replyToJid?: string; timestamp: number }>();
 
 export class ChatbotService {
+  private tenantContext?: { organizationId: string; userId: string };
+
   constructor(
     private storage: IStorage,
-    private whatsappService: any
+    private whatsappService: any,
+    tenantContext?: { organizationId: string; userId: string }
   ) {
+    this.tenantContext = tenantContext;
     // Listen for WhatsApp reconnection to retry pending greetings
     if (this.whatsappService?.on) {
       this.whatsappService.on('whatsapp-authenticated', () => {
         this.retryPendingGreetings();
       });
+    }
+  }
+
+  /**
+   * Get user-scoped RAG agent config if available.
+   * Returns null if no tenant context or no user RAG config found.
+   */
+  async getUserRagConfig(): Promise<UserRagAgent | null> {
+    if (!this.tenantContext) return null;
+    try {
+      const result = await db.select().from(userRagAgents).where(
+        and(
+          eq(userRagAgents.organizationId, this.tenantContext.organizationId),
+          eq(userRagAgents.userId, this.tenantContext.userId),
+          eq(userRagAgents.isActive, 'true')
+        )
+      ).orderBy(desc(userRagAgents.updatedAt)).limit(1);
+      return result[0] || null;
+    } catch {
+      return null;
     }
   }
 
@@ -663,8 +690,22 @@ export class ChatbotService {
         configuredInGreeting: hasConfiguredVoiceGreeting,
       });
 
+      // Check for user-scoped RAG config override
+      const userRagConfig = await this.getUserRagConfig();
+      let effectiveConfig = config;
+      if (userRagConfig) {
+        log(`🔧 Using user RAG agent config: ${userRagConfig.agentName}`);
+        effectiveConfig = {
+          ...config,
+          ragBaseUrl: userRagConfig.ragBaseUrl,
+          ragAccessKey: userRagConfig.ragAccessKey,
+        };
+      }
+
+      const effectiveSystemPrompt = userRagConfig?.systemPrompt || systemPrompt;
+
       // Call RAG endpoint with system prompt
-      const botResponse = await this.callRagEndpoint(systemPrompt, ragMessages, config);
+      const botResponse = await this.callRagEndpoint(effectiveSystemPrompt, ragMessages, effectiveConfig);
 
       // Analyze response to update state (demo ask tracking)
       const responseStateUpdates = this.analyzeResponseForState(botResponse, updatedState);

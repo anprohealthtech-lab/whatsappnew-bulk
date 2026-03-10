@@ -13,13 +13,16 @@ import { autoResponseService } from "./services/AutoResponseService";
 import { ChatbotService } from "./services/ChatbotService";
 import { HRChatbotService } from "./services/HRChatbotService";
 import { initializeChatbotConfig } from "./initChatbot";
-import { sendMessageSchema, sendReportSchema, createCampaignSchema, bulkSendSchema, chatbotConfigSchema, flagLeadSchema, registerHRAdminSchema, hrChatbotConfigSchema, demoSchedules } from "@shared/schema";
+import { sendMessageSchema, sendReportSchema, createCampaignSchema, bulkSendSchema, chatbotConfigSchema, flagLeadSchema, registerHRAdminSchema, hrChatbotConfigSchema, demoSchedules, scheduleCampaignSchema, userRagAgentSchema, userRagAgents, registerSchema, loginSchema } from "@shared/schema";
 import { log } from "./utils";
 import { getDbHealth, db } from "./db";
-import { sql as drizzleSql } from "drizzle-orm";
+import { sql as drizzleSql, eq, and, desc } from "drizzle-orm";
 import { withRetry } from "./dbRetry";
 import { z } from "zod";
 import * as XLSX from 'xlsx';
+import { authService } from "./services/AuthService";
+import { requireAuth, optionalAuth, getTenant } from "./authMiddleware";
+import { sessionManager } from "./services/WhatsAppSessionManager";
 
 // Configure CORS
 const corsOptions = {
@@ -55,6 +58,22 @@ type PhoneNormalizationResult = {
   defaultCountryAdded: boolean;
   notes: string[];
 };
+
+type TenantContext = {
+  organizationId: string;
+  userId: string;
+};
+
+function getTenantFromRequest(req: Request): TenantContext {
+  // Prefer JWT auth context if available
+  if (req.auth) {
+    return { organizationId: req.auth.organizationId, userId: req.auth.userId };
+  }
+  // Fallback for backwards compat / migration period
+  const organizationId = String(req.headers['x-organization-id'] || req.query.organizationId || req.body?.organizationId || 'default_org');
+  const userId = String(req.headers['x-user-id'] || req.query.userId || req.body?.userId || 'default_user');
+  return { organizationId, userId };
+}
 
 function firstNonEmpty(...values: Array<unknown>): string | undefined {
   for (const value of values) {
@@ -173,12 +192,104 @@ export async function registerRoutes(app: Express): Promise<Server> {
   // Apply CORS middleware
   app.use(cors(corsOptions));
 
-  // Initialize WhatsApp service
+  // ============================================================
+  // AUTH ROUTES (public — no middleware)
+  // ============================================================
+  app.post('/api/auth/register', async (req, res) => {
+    try {
+      const data = registerSchema.parse(req.body);
+      const result = await authService.register(data.username, data.password, data.email, data.organizationId);
+      res.json(result);
+    } catch (error: any) {
+      const status = error.message?.includes('already') ? 409 : 400;
+      res.status(status).json({ message: error.message });
+    }
+  });
+
+  app.post('/api/auth/login', async (req, res) => {
+    try {
+      const data = loginSchema.parse(req.body);
+      const result = await authService.login(data.username, data.password);
+      res.json(result);
+    } catch (error: any) {
+      res.status(401).json({ message: error.message || 'Invalid credentials' });
+    }
+  });
+
+  app.get('/api/auth/me', requireAuth, async (req, res) => {
+    try {
+      const user = await authService.getUser(req.auth!.userId);
+      if (!user) return res.status(404).json({ message: 'User not found' });
+      const { password, ...safe } = user;
+      res.json(safe);
+    } catch (error: any) {
+      res.status(500).json({ message: error.message });
+    }
+  });
+
+  // ============================================================
+  // PER-USER WHATSAPP SESSION ROUTES
+  // ============================================================
+  app.post('/api/whatsapp/session/init', requireAuth, async (req, res) => {
+    try {
+      const userId = req.auth!.userId;
+      const sessionName = req.body.sessionName || 'default';
+      const wa = await sessionManager.getSession(userId, sessionName);
+      await wa.initialize();
+      res.json({ status: 'initializing', sessionName });
+    } catch (error: any) {
+      res.status(500).json({ message: error.message });
+    }
+  });
+
+  app.get('/api/whatsapp/session/status', requireAuth, async (req, res) => {
+    try {
+      const userId = req.auth!.userId;
+      const sessionName = (req.query.sessionName as string) || 'default';
+      const wa = sessionManager.getLoadedSession(userId, sessionName);
+      res.json(wa ? wa.getStatus() : { isConnected: false, isAuthenticated: false, lastSeen: null, sessionInfo: null });
+    } catch (error: any) {
+      res.status(500).json({ message: error.message });
+    }
+  });
+
+  app.get('/api/whatsapp/session/qr', requireAuth, async (req, res) => {
+    try {
+      const userId = req.auth!.userId;
+      const sessionName = (req.query.sessionName as string) || 'default';
+      const wa = sessionManager.getLoadedSession(userId, sessionName);
+      res.json({ qr: wa?.getCurrentQR() || null });
+    } catch (error: any) {
+      res.status(500).json({ message: error.message });
+    }
+  });
+
+  app.post('/api/whatsapp/session/disconnect', requireAuth, async (req, res) => {
+    try {
+      const userId = req.auth!.userId;
+      const sessionName = req.body.sessionName || 'default';
+      await sessionManager.removeSession(userId, sessionName);
+      res.json({ status: 'disconnected' });
+    } catch (error: any) {
+      res.status(500).json({ message: error.message });
+    }
+  });
+
+  app.get('/api/whatsapp/sessions', requireAuth, async (req, res) => {
+    try {
+      const sessions = await sessionManager.listSessions(req.auth!.userId);
+      res.json(sessions);
+    } catch (error: any) {
+      res.status(500).json({ message: error.message });
+    }
+  });
+
+  // Initialize legacy WhatsApp service (for backwards compatibility)
   try {
     await whatsAppService.initialize();
-    log("WhatsApp service initialized successfully");
-  } catch (error) {
-    log(`Failed to initialize WhatsApp service: ${error.message}`);
+    log("Legacy WhatsApp service initialized successfully");
+  } catch (error: any) {
+    log(`Failed to initialize legacy WhatsApp service: ${(error as Error).message}`);
   }
 
   // Initialize chatbot configuration
@@ -523,7 +634,7 @@ export async function registerRoutes(app: Express): Promise<Server> {
   // API Routes
 
   // Send text message
-  app.post('/api/send-message', async (req, res) => {
+  app.post('/api/send-message', requireAuth, async (req, res) => {
     try {
       const validatedData = sendMessageSchema.parse(req.body);
       const message = await messageService.sendTextMessage(
@@ -542,7 +653,7 @@ export async function registerRoutes(app: Express): Promise<Server> {
   });
 
   // Send report with file attachment
-  app.post('/api/send-report', upload.single('file'), async (req, res) => {
+  app.post('/api/send-report', requireAuth, upload.single('file'), async (req, res) => {
     try {
       if (!req.file) {
         return res.status(400).json({
@@ -611,7 +722,7 @@ export async function registerRoutes(app: Express): Promise<Server> {
   });
 
   // Get system status
-  app.get('/api/status', async (req, res) => {
+  app.get('/api/status', requireAuth, async (req, res) => {
     try {
       const whatsappStatus = whatsAppService.getStatus();
       const messageStats = await messageService.getMessageStats();
@@ -636,7 +747,7 @@ export async function registerRoutes(app: Express): Promise<Server> {
   });
 
   // Get message history
-  app.get('/api/messages', async (req, res) => {
+  app.get('/api/messages', requireAuth, async (req, res) => {
     try {
       const { status, phoneNumber, type, limit = '50', offset = '0', search } = req.query;
 
@@ -681,7 +792,7 @@ export async function registerRoutes(app: Express): Promise<Server> {
   });
 
   // Generate QR code endpoint
-  app.post('/api/generate-qr', async (req: Request, res: Response) => {
+  app.post('/api/generate-qr', requireAuth, async (req: Request, res: Response) => {
     try {
       log('Generate QR code request received');
       await whatsAppService.generateQRCode();
@@ -696,7 +807,7 @@ export async function registerRoutes(app: Express): Promise<Server> {
   });
 
   // Get current QR code endpoint (fallback for when WebSocket fails)
-  app.get('/api/qr-code', (req: Request, res: Response) => {
+  app.get('/api/qr-code', requireAuth, (req: Request, res: Response) => {
     try {
       // Return the last generated QR code
       const currentQR = whatsAppService.getCurrentQR();
@@ -725,7 +836,7 @@ export async function registerRoutes(app: Express): Promise<Server> {
   });
 
   // WhatsApp API endpoints
-  app.get('/api/whatsapp/status', async (req, res) => {
+  app.get('/api/whatsapp/status', requireAuth, async (req, res) => {
     try {
       const status = whatsAppService.getStatus();
       res.json({
@@ -742,7 +853,7 @@ export async function registerRoutes(app: Express): Promise<Server> {
     }
   });
 
-  app.post('/api/whatsapp/connect', async (req, res) => {
+  app.post('/api/whatsapp/connect', requireAuth, async (req, res) => {
     try {
       // Re-setup event listeners before connecting
       setupWhatsAppEventListeners();
@@ -762,7 +873,7 @@ export async function registerRoutes(app: Express): Promise<Server> {
     }
   });
 
-  app.post('/api/whatsapp/disconnect', async (req, res) => {
+  app.post('/api/whatsapp/disconnect', requireAuth, async (req, res) => {
     try {
       await whatsAppService.disconnect();
       res.json({
@@ -779,7 +890,7 @@ export async function registerRoutes(app: Express): Promise<Server> {
     }
   });
 
-  app.get('/api/whatsapp/qr', async (req, res) => {
+  app.get('/api/whatsapp/qr', requireAuth, async (req, res) => {
     try {
       // For now, return a placeholder since qrCode isn't in the status type
       // The QR code will be handled via WebSocket events
@@ -798,7 +909,7 @@ export async function registerRoutes(app: Express): Promise<Server> {
   });
 
   // Resend failed message
-  app.post('/api/messages/:id/resend', async (req, res) => {
+  app.post('/api/messages/:id/resend', requireAuth, async (req, res) => {
     try {
       const { id } = req.params;
       const message = await messageService.resendMessage(id);
@@ -815,7 +926,7 @@ export async function registerRoutes(app: Express): Promise<Server> {
   });
 
   // Get system logs
-  app.get('/api/logs', async (req, res) => {
+  app.get('/api/logs', requireAuth, async (req, res) => {
     try {
       const { limit = '50', offset = '0' } = req.query;
       const logs = await storage.getSystemLogs(
@@ -836,16 +947,45 @@ export async function registerRoutes(app: Express): Promise<Server> {
 
   // Campaign Routes
 
-  // Create campaign
-  app.post('/api/campaigns', async (req, res) => {
+  // List campaigns for tenant
+  app.get('/api/campaigns', requireAuth, async (req, res) => {
     try {
+      const tenant = getTenantFromRequest(req);
+      const campaigns = await campaignService.listCampaigns(tenant, 'campaign');
+      res.json({ success: true, data: campaigns });
+    } catch (error) {
+      const errorMessage = error instanceof Error ? error.message : 'Unknown error';
+      log(`List campaigns error: ${errorMessage}`);
+      res.status(500).json({ success: false, error: errorMessage });
+    }
+  });
+
+  // List campaign templates for tenant
+  app.get('/api/campaign-templates', requireAuth, async (req, res) => {
+    try {
+      const tenant = getTenantFromRequest(req);
+      const templates = await campaignService.listCampaigns(tenant, 'template');
+      res.json({ success: true, data: templates });
+    } catch (error) {
+      const errorMessage = error instanceof Error ? error.message : 'Unknown error';
+      log(`List templates error: ${errorMessage}`);
+      res.status(500).json({ success: false, error: errorMessage });
+    }
+  });
+
+  // Create campaign
+  app.post('/api/campaigns', requireAuth, async (req, res) => {
+    try {
+      const tenant = getTenantFromRequest(req);
       const validatedData = createCampaignSchema.parse(req.body);
       const campaign = await withRetry(() => campaignService.createCampaign(
         validatedData.name,
         validatedData.originalMessage,
+        validatedData.campaignType || 'campaign',
         validatedData.fixedParams,
         validatedData.buttons,
-        validatedData.includeStopButton
+        validatedData.includeStopButton,
+        tenant
       ));
 
       res.json({ success: true, data: campaign });
@@ -860,8 +1000,9 @@ export async function registerRoutes(app: Express): Promise<Server> {
   });
 
   // Upload attachment for campaign
-  app.post('/api/campaigns/:campaignId/attachment', upload.single('file'), async (req, res) => {
+  app.post('/api/campaigns/:campaignId/attachment', requireAuth, upload.single('file'), async (req, res) => {
     try {
+      const tenant = getTenantFromRequest(req);
       const { campaignId } = req.params;
 
       if (!req.file) {
@@ -880,7 +1021,8 @@ export async function registerRoutes(app: Express): Promise<Server> {
       const campaign = await campaignService.updateCampaignAttachment(
         campaignId,
         fileInfo.filePath,
-        fileInfo.fileName
+        fileInfo.fileName,
+        tenant
       );
 
       res.json({ success: true, data: campaign });
@@ -895,10 +1037,11 @@ export async function registerRoutes(app: Express): Promise<Server> {
   });
 
   // Download campaign attachment
-  app.get('/api/campaigns/:campaignId/attachment/download', async (req, res) => {
+  app.get('/api/campaigns/:campaignId/attachment/download', requireAuth, async (req, res) => {
     try {
+      const tenant = getTenantFromRequest(req);
       const { campaignId } = req.params;
-      const campaign = await campaignService.getCampaign(campaignId);
+      const campaign = await campaignService.getCampaign(campaignId, tenant);
 
       if (!campaign || !campaign.attachmentPath) {
         return res.status(404).json({
@@ -919,10 +1062,11 @@ export async function registerRoutes(app: Express): Promise<Server> {
   });
 
   // Get campaign
-  app.get('/api/campaigns/:campaignId', async (req, res) => {
+  app.get('/api/campaigns/:campaignId', requireAuth, async (req, res) => {
     try {
+      const tenant = getTenantFromRequest(req);
       const { campaignId } = req.params;
-      const campaign = await campaignService.getCampaign(campaignId);
+      const campaign = await campaignService.getCampaign(campaignId, tenant);
 
       if (!campaign) {
         return res.status(404).json({
@@ -943,8 +1087,9 @@ export async function registerRoutes(app: Express): Promise<Server> {
   });
 
   // Upload contacts for campaign
-  app.post('/api/campaigns/:campaignId/contacts/upload', upload.single('file'), async (req, res) => {
+  app.post('/api/campaigns/:campaignId/contacts/upload', requireAuth, upload.single('file'), async (req, res) => {
     try {
+      const tenant = getTenantFromRequest(req);
       const { campaignId } = req.params;
 
       if (!req.file) {
@@ -975,7 +1120,7 @@ export async function registerRoutes(app: Express): Promise<Server> {
       });
 
       // Upload to database
-      const result = await campaignService.uploadContacts(campaignId, contacts);
+      const result = await campaignService.uploadContacts(campaignId, contacts, tenant);
 
       res.json(result);
     } catch (error) {
@@ -989,10 +1134,11 @@ export async function registerRoutes(app: Express): Promise<Server> {
   });
 
   // Get contacts for campaign
-  app.get('/api/campaigns/:campaignId/contacts', async (req, res) => {
+  app.get('/api/campaigns/:campaignId/contacts', requireAuth, async (req, res) => {
     try {
+      const tenant = getTenantFromRequest(req);
       const { campaignId } = req.params;
-      const contacts = await campaignService.getContacts(campaignId);
+      const contacts = await campaignService.getContacts(campaignId, tenant);
 
       res.json({
         success: true,
@@ -1010,8 +1156,9 @@ export async function registerRoutes(app: Express): Promise<Server> {
   });
 
   // Save message variation
-  app.post('/api/campaigns/:campaignId/variations', async (req, res) => {
+  app.post('/api/campaigns/:campaignId/variations', requireAuth, async (req, res) => {
     try {
+      const tenant = getTenantFromRequest(req);
       const { campaignId } = req.params;
       const { variation } = req.body;
 
@@ -1022,8 +1169,8 @@ export async function registerRoutes(app: Express): Promise<Server> {
         });
       }
 
-      const saved = await campaignService.saveMessageVariation(campaignId, variation);
-      await campaignService.updateCampaignVariation(campaignId, variation);
+      const saved = await campaignService.saveMessageVariation(campaignId, variation, tenant);
+      await campaignService.updateCampaignVariation(campaignId, variation, tenant);
 
       res.json({ success: true, data: saved });
     } catch (error) {
@@ -1037,10 +1184,11 @@ export async function registerRoutes(app: Express): Promise<Server> {
   });
 
   // Get message variations
-  app.get('/api/campaigns/:campaignId/variations', async (req, res) => {
+  app.get('/api/campaigns/:campaignId/variations', requireAuth, async (req, res) => {
     try {
+      const tenant = getTenantFromRequest(req);
       const { campaignId } = req.params;
-      const variations = await campaignService.getMessageVariations(campaignId);
+      const variations = await campaignService.getMessageVariations(campaignId, tenant);
 
       res.json({
         success: true,
@@ -1057,15 +1205,21 @@ export async function registerRoutes(app: Express): Promise<Server> {
   });
 
   // Bulk send campaign messages
-  app.post('/api/campaigns/:campaignId/send-bulk', async (req, res) => {
+  app.post('/api/campaigns/:campaignId/send-bulk', requireAuth, async (req, res) => {
     try {
+      const tenant = getTenantFromRequest(req);
       const { campaignId } = req.params;
       const validatedData = bulkSendSchema.parse(req.body);
 
       const result = await campaignService.sendBulkMessages(
         campaignId,
         validatedData.variation_message,
-        validatedData.contacts
+        validatedData.contacts,
+        {
+          intervalSeconds: validatedData.intervalSeconds,
+          jitterSeconds: validatedData.jitterSeconds,
+        },
+        tenant
       );
 
       res.json(result);
@@ -1079,8 +1233,143 @@ export async function registerRoutes(app: Express): Promise<Server> {
     }
   });
 
+  // Schedule campaign for later run
+  app.post('/api/campaigns/:campaignId/schedule', requireAuth, async (req, res) => {
+    try {
+      const tenant = getTenantFromRequest(req);
+      const { campaignId } = req.params;
+      const payload = scheduleCampaignSchema.parse(req.body);
+
+      const schedule = await campaignService.scheduleCampaign(
+        campaignId,
+        payload.variation_message,
+        new Date(payload.scheduledAt),
+        tenant,
+        {
+          intervalSeconds: payload.intervalSeconds,
+          jitterSeconds: payload.jitterSeconds,
+        }
+      );
+
+      res.json({ success: true, data: schedule });
+    } catch (error) {
+      const errorMessage = error instanceof Error ? error.message : 'Unknown error';
+      log(`Schedule campaign error: ${errorMessage}`);
+      res.status(400).json({ success: false, error: errorMessage });
+    }
+  });
+
+  // List scheduled campaigns
+  app.get('/api/campaign-schedules', requireAuth, async (req, res) => {
+    try {
+      const tenant = getTenantFromRequest(req);
+      const schedules = await campaignService.listSchedules(tenant);
+      res.json({ success: true, data: schedules });
+    } catch (error) {
+      const errorMessage = error instanceof Error ? error.message : 'Unknown error';
+      log(`List schedules error: ${errorMessage}`);
+      res.status(500).json({ success: false, error: errorMessage });
+    }
+  });
+
+  // Get all WhatsApp groups from connected account
+  app.get('/api/whatsapp/groups', requireAuth, async (_req, res) => {
+    try {
+      const groups = await whatsAppService.listGroups();
+      res.json({ success: true, data: groups });
+    } catch (error) {
+      const errorMessage = error instanceof Error ? error.message : 'Unknown error';
+      res.status(400).json({ success: false, error: errorMessage });
+    }
+  });
+
+  // Scrape members from a WhatsApp group
+  app.get('/api/whatsapp/groups/:groupId/members', requireAuth, async (req, res) => {
+    try {
+      const { groupId } = req.params;
+      const members = await whatsAppService.scrapeGroupNumbers(groupId);
+      res.json({ success: true, data: members, total: members.length });
+    } catch (error) {
+      const errorMessage = error instanceof Error ? error.message : 'Unknown error';
+      res.status(400).json({ success: false, error: errorMessage });
+    }
+  });
+
+  // Save user-scoped RAG agent config
+  app.post('/api/user-rag-agent', requireAuth, async (req, res) => {
+    try {
+      const validated = userRagAgentSchema.parse(req.body);
+
+      const existing = await db.select().from(userRagAgents).where(and(
+        eq(userRagAgents.organizationId, validated.organizationId),
+        eq(userRagAgents.userId, validated.userId)
+      )).orderBy(desc(userRagAgents.updatedAt)).limit(1);
+
+      let data;
+      if (existing[0]) {
+        const [updated] = await db.update(userRagAgents).set({
+          agentName: validated.agentName,
+          ragBaseUrl: validated.ragBaseUrl,
+          ragAccessKey: validated.ragAccessKey,
+          systemPrompt: validated.systemPrompt || null,
+          isActive: validated.isActive === false ? 'false' : 'true',
+          updatedAt: new Date(),
+        }).where(eq(userRagAgents.id, existing[0].id)).returning();
+        data = updated;
+      } else {
+        const [created] = await db.insert(userRagAgents).values({
+          organizationId: validated.organizationId,
+          userId: validated.userId,
+          agentName: validated.agentName,
+          ragBaseUrl: validated.ragBaseUrl,
+          ragAccessKey: validated.ragAccessKey,
+          systemPrompt: validated.systemPrompt || null,
+          isActive: validated.isActive === false ? 'false' : 'true',
+        }).returning();
+        data = created;
+      }
+
+      res.json({
+        success: true,
+        data: {
+          ...data,
+          ragAccessKey: data.ragAccessKey ? `${data.ragAccessKey.slice(0, 4)}...****` : '',
+        }
+      });
+    } catch (error) {
+      const errorMessage = error instanceof Error ? error.message : 'Unknown error';
+      res.status(400).json({ success: false, error: errorMessage });
+    }
+  });
+
+  // Get user-scoped RAG agent config
+  app.get('/api/user-rag-agent', requireAuth, async (req, res) => {
+    try {
+      const tenant = getTenantFromRequest(req);
+      const result = await db.select().from(userRagAgents).where(and(
+        eq(userRagAgents.organizationId, tenant.organizationId),
+        eq(userRagAgents.userId, tenant.userId)
+      )).orderBy(desc(userRagAgents.updatedAt)).limit(1);
+
+      if (!result[0]) {
+        return res.json({ success: true, data: null });
+      }
+
+      res.json({
+        success: true,
+        data: {
+          ...result[0],
+          ragAccessKey: result[0].ragAccessKey ? `${result[0].ragAccessKey.slice(0, 4)}...****` : '',
+        }
+      });
+    } catch (error) {
+      const errorMessage = error instanceof Error ? error.message : 'Unknown error';
+      res.status(500).json({ success: false, error: errorMessage });
+    }
+  });
+
   // Block a phone number
-  app.post('/api/blocklist/add', async (req, res) => {
+  app.post('/api/blocklist/add', requireAuth, async (req, res) => {
     try {
       const { phoneNumber, reason } = req.body;
 
@@ -1100,7 +1389,7 @@ export async function registerRoutes(app: Express): Promise<Server> {
   });
 
   // Unblock a phone number
-  app.post('/api/blocklist/remove', async (req, res) => {
+  app.post('/api/blocklist/remove', requireAuth, async (req, res) => {
     try {
       const { phoneNumber } = req.body;
 
@@ -1120,7 +1409,7 @@ export async function registerRoutes(app: Express): Promise<Server> {
   });
 
   // Check if number is blocked
-  app.get('/api/blocklist/check/:phoneNumber', async (req, res) => {
+  app.get('/api/blocklist/check/:phoneNumber', requireAuth, async (req, res) => {
     try {
       const { phoneNumber } = req.params;
       const isBlocked = await storage.isNumberBlocked(phoneNumber);
@@ -1134,7 +1423,7 @@ export async function registerRoutes(app: Express): Promise<Server> {
   });
 
   // Get all blocked numbers
-  app.get('/api/blocklist', async (req, res) => {
+  app.get('/api/blocklist', requireAuth, async (req, res) => {
     try {
       const blockedNumbers = await storage.getBlockedNumbers();
       res.json(blockedNumbers);
@@ -1148,7 +1437,7 @@ export async function registerRoutes(app: Express): Promise<Server> {
   // Auto-response routes
 
   // Get all auto-responses (active only)
-  app.get('/api/auto-responses', async (req, res) => {
+  app.get('/api/auto-responses', requireAuth, async (req, res) => {
     try {
       const autoResponses = await storage.getAutoResponses();
       res.json(autoResponses);
@@ -1160,7 +1449,7 @@ export async function registerRoutes(app: Express): Promise<Server> {
   });
 
   // Get all auto-responses (including inactive)
-  app.get('/api/auto-responses/all', async (req, res) => {
+  app.get('/api/auto-responses/all', requireAuth, async (req, res) => {
     try {
       const autoResponses = await withRetry(() => storage.getAllAutoResponses());
       res.json(autoResponses);
@@ -1175,7 +1464,7 @@ export async function registerRoutes(app: Express): Promise<Server> {
   });
 
   // Create new auto-response
-  app.post('/api/auto-responses', async (req, res) => {
+  app.post('/api/auto-responses', requireAuth, async (req, res) => {
     try {
       const { keyword, response, isActive } = req.body;
 
@@ -1204,7 +1493,7 @@ export async function registerRoutes(app: Express): Promise<Server> {
   });
 
   // Update auto-response
-  app.put('/api/auto-responses/:id', async (req, res) => {
+  app.put('/api/auto-responses/:id', requireAuth, async (req, res) => {
     try {
       const { id } = req.params;
       const { keyword, response, isActive } = req.body;
@@ -1231,7 +1520,7 @@ export async function registerRoutes(app: Express): Promise<Server> {
   });
 
   // Delete auto-response
-  app.delete('/api/auto-responses/:id', async (req, res) => {
+  app.delete('/api/auto-responses/:id', requireAuth, async (req, res) => {
     try {
       const { id } = req.params;
       await withRetry(() => storage.deleteAutoResponse(id));
@@ -1244,7 +1533,7 @@ export async function registerRoutes(app: Express): Promise<Server> {
   });
 
   // Get recent incoming messages
-  app.get('/api/incoming-messages', async (req, res) => {
+  app.get('/api/incoming-messages', requireAuth, async (req, res) => {
     try {
       const limit = parseInt(req.query.limit as string) || 50;
       const messages = await withRetry(() => storage.getMessages({
@@ -1265,7 +1554,7 @@ export async function registerRoutes(app: Express): Promise<Server> {
   // ==================== CHATBOT & LEADS API ====================
 
   // Get chatbot configuration
-  app.get('/api/chatbot/config', async (req, res) => {
+  app.get('/api/chatbot/config', requireAuth, async (req, res) => {
     try {
       const config = await withRetry(() => storage.getChatbotConfig());
 
@@ -1294,7 +1583,7 @@ export async function registerRoutes(app: Express): Promise<Server> {
   });
 
   // Update chatbot configuration
-  app.put('/api/chatbot/config', async (req, res) => {
+  app.put('/api/chatbot/config', requireAuth, async (req, res) => {
     try {
       const validation = chatbotConfigSchema.safeParse(req.body);
 
@@ -1338,7 +1627,7 @@ export async function registerRoutes(app: Express): Promise<Server> {
   });
 
   // Test chatbot RAG endpoint connection
-  app.post('/api/chatbot/test', async (req, res) => {
+  app.post('/api/chatbot/test', requireAuth, async (req, res) => {
     try {
       const config = await withRetry(() => storage.getChatbotConfig());
 
@@ -1479,7 +1768,7 @@ export async function registerRoutes(app: Express): Promise<Server> {
   });
 
   // Get all leads
-  app.get('/api/leads', async (req, res) => {
+  app.get('/api/leads', requireAuth, async (req, res) => {
     try {
       const limit = parseInt(req.query.limit as string) || 50;
       const offset = parseInt(req.query.offset as string) || 0;
@@ -1499,7 +1788,7 @@ export async function registerRoutes(app: Express): Promise<Server> {
   });
 
   // Get lead details with conversation
-  app.get('/api/leads/:phoneNumber/conversation', async (req, res) => {
+  app.get('/api/leads/:phoneNumber/conversation', requireAuth, async (req, res) => {
     try {
       const { phoneNumber } = req.params;
       const limit = parseInt(req.query.limit as string) || 20;
@@ -1520,7 +1809,7 @@ export async function registerRoutes(app: Express): Promise<Server> {
   });
 
   // Manually flag a number as lead
-  app.post('/api/leads/flag', async (req, res) => {
+  app.post('/api/leads/flag', requireAuth, async (req, res) => {
     try {
       const validation = flagLeadSchema.safeParse(req.body);
 
@@ -1555,7 +1844,7 @@ export async function registerRoutes(app: Express): Promise<Server> {
   });
 
   // Delete/unflag lead
-  app.delete('/api/leads/:phoneNumber', async (req, res) => {
+  app.delete('/api/leads/:phoneNumber', requireAuth, async (req, res) => {
     try {
       const { phoneNumber } = req.params;
 
@@ -1577,7 +1866,7 @@ export async function registerRoutes(app: Express): Promise<Server> {
   });
 
   // Toggle chatbot active status for a lead
-  app.patch('/api/leads/:phoneNumber/chatbot-status', async (req, res) => {
+  app.patch('/api/leads/:phoneNumber/chatbot-status', requireAuth, async (req, res) => {
     try {
       const { phoneNumber } = req.params;
       const { active } = req.body;
@@ -1677,7 +1966,7 @@ export async function registerRoutes(app: Express): Promise<Server> {
   // ==================== HR ADMIN & HR CHATBOT API ====================
 
   // Get HR chatbot config
-  app.get('/api/hr-chatbot/config', async (req, res) => {
+  app.get('/api/hr-chatbot/config', requireAuth, async (req, res) => {
     try {
       const config = await withRetry(() => storage.getHRChatbotConfig());
 
@@ -1708,7 +1997,7 @@ export async function registerRoutes(app: Express): Promise<Server> {
   });
 
   // Update HR chatbot config
-  app.put('/api/hr-chatbot/config', async (req, res) => {
+  app.put('/api/hr-chatbot/config', requireAuth, async (req, res) => {
     try {
       const validation = hrChatbotConfigSchema.safeParse(req.body);
 
@@ -1748,7 +2037,7 @@ export async function registerRoutes(app: Express): Promise<Server> {
   });
 
   // Test HR chatbot connection
-  app.post('/api/hr-chatbot/test', async (req, res) => {
+  app.post('/api/hr-chatbot/test', requireAuth, async (req, res) => {
     try {
       const config = await withRetry(() => storage.getHRChatbotConfig());
 
@@ -1774,7 +2063,7 @@ export async function registerRoutes(app: Express): Promise<Server> {
   });
 
   // Get all HR admins
-  app.get('/api/hr-admins', async (req, res) => {
+  app.get('/api/hr-admins', requireAuth, async (req, res) => {
     try {
       const limit = parseInt(req.query.limit as string) || 50;
       const offset = parseInt(req.query.offset as string) || 0;
@@ -1794,7 +2083,7 @@ export async function registerRoutes(app: Express): Promise<Server> {
   });
 
   // Register new HR admin (link WhatsApp number to Task Management user)
-  app.post('/api/hr-admins', async (req, res) => {
+  app.post('/api/hr-admins', requireAuth, async (req, res) => {
     try {
       const validation = registerHRAdminSchema.safeParse(req.body);
 
@@ -1836,7 +2125,7 @@ export async function registerRoutes(app: Express): Promise<Server> {
   });
 
   // Get HR admin details with conversation
-  app.get('/api/hr-admins/:phoneNumber/conversation', async (req, res) => {
+  app.get('/api/hr-admins/:phoneNumber/conversation', requireAuth, async (req, res) => {
     try {
       const { phoneNumber } = req.params;
       const limit = parseInt(req.query.limit as string) || 20;
@@ -1857,7 +2146,7 @@ export async function registerRoutes(app: Express): Promise<Server> {
   });
 
   // Delete HR admin
-  app.delete('/api/hr-admins/:phoneNumber', async (req, res) => {
+  app.delete('/api/hr-admins/:phoneNumber', requireAuth, async (req, res) => {
     try {
       const { phoneNumber } = req.params;
 
@@ -1875,7 +2164,7 @@ export async function registerRoutes(app: Express): Promise<Server> {
   });
 
   // Toggle HR chatbot active status for an admin
-  app.patch('/api/hr-admins/:phoneNumber/chatbot-status', async (req, res) => {
+  app.patch('/api/hr-admins/:phoneNumber/chatbot-status', requireAuth, async (req, res) => {
     try {
       const { phoneNumber } = req.params;
       const { active } = req.body;
@@ -2205,7 +2494,7 @@ export async function registerRoutes(app: Express): Promise<Server> {
   // ==================== DEMO SCHEDULER ====================
 
   // GET /api/demo-schedules — list all upcoming and recent demo schedules
-  app.get("/api/demo-schedules", async (req: Request, res: Response) => {
+  app.get("/api/demo-schedules", requireAuth, async (req: Request, res: Response) => {
     try {
       const rows = await db.execute(
         drizzleSql`SELECT * FROM demo_schedules ORDER BY demo_at DESC LIMIT 100`
@@ -2219,7 +2508,7 @@ export async function registerRoutes(app: Express): Promise<Server> {
   });
 
   // POST /api/leads/:phoneNumber/schedule-demo — manually schedule a demo for a lead
-  app.post("/api/leads/:phoneNumber/schedule-demo", async (req: Request, res: Response) => {
+  app.post("/api/leads/:phoneNumber/schedule-demo", requireAuth, async (req: Request, res: Response) => {
     try {
       const { phoneNumber } = req.params;
       const { demoDate, demoTime, meetingLink, contactName } = req.body as {

@@ -7,15 +7,15 @@ name: whatsapp-management-app
 services:
 - name: whatsapp-api
   github:
-    repo: YOUR-USERNAME/YOUR-REPO-NAME  # ⚠️ UPDATE THIS with your new GitHub repo
-    branch: main  # or 'master' depending on your default branch
+    repo: anprohealthtech-lab/whatsappnew-bulk
+    branch: main
     deploy_on_push: true
   
   build_command: npm run build
   run_command: npm start
   environment_slug: node-js
   instance_count: 1
-  instance_size_slug: basic-s  # 512MB RAM, 0.5 vCPU
+  instance_size_slug: professional-xs  # 1GB RAM, 1 vCPU — needed for Baileys
   http_port: 3001
   
   envs:
@@ -26,8 +26,20 @@ services:
     scope: RUN_AND_BUILD_TIME
     type: SECRET
     
-  - key: SESSION_SECRET
+  - key: JWT_SECRET
     scope: RUN_AND_BUILD_TIME
+    type: SECRET
+
+  - key: ANTHROPIC_API_KEY
+    scope: RUN_TIME
+    type: SECRET
+    
+  - key: NOTIFICATION_API_KEY
+    scope: RUN_TIME
+    type: SECRET
+
+  - key: LEAD_WEBHOOK_SECRET
+    scope: RUN_TIME
     type: SECRET
     
   - key: PORT
@@ -35,49 +47,27 @@ services:
     
   - key: MAX_FILE_SIZE
     value: "10485760"
-    
-  - key: ALLOWED_FILE_TYPES
-    value: "pdf,jpg,jpeg,png"
-  
-  # Optional: Add these if using Supabase for campaigns
-  # - key: VITE_SUPABASE_URL
-  #   scope: RUN_AND_BUILD_TIME
-  #   type: SECRET
-  #   
-  # - key: VITE_SUPABASE_ANON_KEY
-  #   scope: RUN_AND_BUILD_TIME
-  #   type: SECRET
 
   health_check:
-    http_path: /api/status
-    initial_delay_seconds: 30
+    http_path: /api/health
+    initial_delay_seconds: 45
     period_seconds: 30
     timeout_seconds: 10
-    failure_threshold: 3
+    failure_threshold: 5
   
-  # IMPORTANT: Volume for WhatsApp session persistence
-  # Uncomment this to prevent WhatsApp disconnections on redeploy
+  # Volume for WhatsApp session persistence across deploys
+  # Without this, users must re-scan QR after every deploy
   # volumes:
   # - name: whatsapp-sessions
   #   size: 2GiB
-  #   mount_path: /app/NodeBackend/.local
+  #   mount_path: /workspace/NodeBackend/server/sessions
 
 databases:
 - name: whatsapp-db
   engine: PG
-  version: "15"
+  version: "16"
   size: db-s-1vcpu-1gb
   num_nodes: 1
-
-# Optional: Add Redis for session storage in production
-# - name: whatsapp-redis
-#   engine: REDIS
-#   version: "7"
-#   size: db-s-1vcpu-1gb
-
-# Optional: Domain configuration
-# domains:
-# - domain: your-domain.com
 #   type: PRIMARY
 #   wildcard: false
 #   certificate:

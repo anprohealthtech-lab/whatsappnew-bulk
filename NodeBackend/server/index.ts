@@ -3,6 +3,8 @@ import express, { type Request, Response, NextFunction } from "express";
 import { registerRoutes } from "./routes";
 import { serveStatic, log } from "./utils";
 import { runMigrations } from "./migrate";
+import { campaignService } from "./services/CampaignService";
+import { sessionManager } from "./services/WhatsAppSessionManager";
 
 const app = express();
 app.use(express.json());
@@ -43,6 +45,10 @@ app.use((req, res, next) => {
     // Run DB migrations on startup — creates all tables if they don't exist
     // This ensures DO PostgreSQL has the schema before the app starts
     await runMigrations();
+    campaignService.startScheduler();
+
+    // Restore any previously connected WhatsApp sessions
+    await sessionManager.restoreConnectedSessions();
 
     const server = await registerRoutes(app);
 
@@ -94,6 +100,17 @@ app.use((req, res, next) => {
       console.error(reason);
       // Don't exit the process in production
     });
+
+    // Graceful shutdown
+    const shutdown = async () => {
+      log('🛑 Graceful shutdown initiated...');
+      campaignService.stopScheduler();
+      await sessionManager.shutdownAll();
+      server.close(() => process.exit(0));
+      setTimeout(() => process.exit(1), 10000); // Force exit after 10s
+    };
+    process.on('SIGTERM', shutdown);
+    process.on('SIGINT', shutdown);
 
   } catch (error) {
     log(`Failed to start server: ${error instanceof Error ? error.message : 'Unknown error'}`);

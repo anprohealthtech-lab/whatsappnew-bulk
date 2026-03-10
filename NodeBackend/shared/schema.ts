@@ -1,16 +1,37 @@
 import { sql } from "drizzle-orm";
-import { pgTable, text, varchar, timestamp, jsonb, integer } from "drizzle-orm/pg-core";
+import { pgTable, text, varchar, timestamp, jsonb, integer, boolean as pgBoolean } from "drizzle-orm/pg-core";
 import { createInsertSchema } from "drizzle-zod";
 import { z } from "zod";
 
 export const users = pgTable("users", {
   id: varchar("id").primaryKey().default(sql`gen_random_uuid()`),
   username: text("username").notNull().unique(),
-  password: text("password").notNull(),
+  password: text("password").notNull(), // bcrypt hash
+  email: text("email").unique(),
+  organizationId: text("organization_id").default("default_org").notNull(),
+  role: text("role").default("user").notNull(), // 'admin' | 'user'
+  lastLoginAt: timestamp("last_login_at"),
+  createdAt: timestamp("created_at").defaultNow(),
+  updatedAt: timestamp("updated_at").defaultNow(),
+});
+
+// Per-user WhatsApp sessions
+export const whatsappSessions = pgTable("whatsapp_sessions", {
+  id: varchar("id").primaryKey().default(sql`gen_random_uuid()`),
+  userId: varchar("user_id").notNull().references(() => users.id, { onDelete: 'cascade' }),
+  organizationId: text("organization_id").default("default_org").notNull(),
+  phoneNumber: text("phone_number"), // linked WhatsApp number once authenticated
+  sessionName: text("session_name").default("default").notNull(),
+  status: text("status").default("disconnected").notNull(), // 'disconnected' | 'connecting' | 'qr_pending' | 'connected'
+  lastConnectedAt: timestamp("last_connected_at"),
+  createdAt: timestamp("created_at").defaultNow(),
+  updatedAt: timestamp("updated_at").defaultNow(),
 });
 
 export const messages = pgTable("messages", {
   id: varchar("id").primaryKey().default(sql`gen_random_uuid()`),
+  organizationId: text("organization_id").default("default_org").notNull(),
+  userId: text("user_id").default("default_user").notNull(),
   phoneNumber: text("phone_number").notNull(),
   content: text("content").notNull(),
   type: text("type").notNull(), // 'text', 'report', 'image'
@@ -35,7 +56,10 @@ export const systemLogs = pgTable("system_logs", {
 
 export const campaigns = pgTable("campaigns", {
   id: varchar("id").primaryKey().default(sql`gen_random_uuid()`),
+  organizationId: text("organization_id").default("default_org").notNull(),
+  userId: text("user_id").default("default_user").notNull(),
   name: text("name").notNull(),
+  campaignType: text("campaign_type").default("campaign").notNull(), // 'campaign' | 'template'
   originalMessage: text("original_message").notNull(),
   fixedParams: jsonb("fixed_params"),
   selectedVariation: text("selected_variation"),
@@ -44,6 +68,36 @@ export const campaigns = pgTable("campaigns", {
   totalContacts: integer("total_contacts").default(0),
   attachmentPath: text("attachment_path"),
   attachmentName: text("attachment_name"),
+  createdAt: timestamp("created_at").defaultNow(),
+  updatedAt: timestamp("updated_at").defaultNow(),
+});
+
+export const campaignSchedules = pgTable("campaign_schedules", {
+  id: varchar("id").primaryKey().default(sql`gen_random_uuid()`),
+  campaignId: varchar("campaign_id").notNull().references(() => campaigns.id, { onDelete: 'cascade' }),
+  organizationId: text("organization_id").default("default_org").notNull(),
+  userId: text("user_id").default("default_user").notNull(),
+  variationMessage: text("variation_message").notNull(),
+  status: text("status").default("scheduled").notNull(), // scheduled | running | completed | failed | cancelled
+  intervalSeconds: integer("interval_seconds").default(25).notNull(),
+  jitterSeconds: integer("jitter_seconds").default(0).notNull(),
+  scheduledAt: timestamp("scheduled_at").notNull(),
+  startedAt: timestamp("started_at"),
+  completedAt: timestamp("completed_at"),
+  resultSummary: jsonb("result_summary"),
+  createdAt: timestamp("created_at").defaultNow(),
+  updatedAt: timestamp("updated_at").defaultNow(),
+});
+
+export const userRagAgents = pgTable("user_rag_agents", {
+  id: varchar("id").primaryKey().default(sql`gen_random_uuid()`),
+  organizationId: text("organization_id").notNull(),
+  userId: text("user_id").notNull(),
+  agentName: text("agent_name").notNull(),
+  ragBaseUrl: text("rag_base_url").notNull(),
+  ragAccessKey: text("rag_access_key").notNull(),
+  systemPrompt: text("system_prompt"),
+  isActive: text("is_active").default("true").notNull(),
   createdAt: timestamp("created_at").defaultNow(),
   updatedAt: timestamp("updated_at").defaultNow(),
 });
@@ -72,13 +126,17 @@ export const messageVariations = pgTable("message_variations", {
 
 export const blockedNumbers = pgTable("blocked_numbers", {
   id: varchar("id").primaryKey().default(sql`gen_random_uuid()`),
-  phoneNumber: text("phone_number").notNull().unique(),
+  organizationId: text("organization_id").default("default_org").notNull(),
+  userId: text("user_id").default("default_user").notNull(),
+  phoneNumber: text("phone_number").notNull(),
   reason: text("reason").default("user_requested"), // 'user_requested', 'spam', 'admin_blocked'
   blockedAt: timestamp("blocked_at").defaultNow(),
 });
 
 export const autoResponses = pgTable("auto_responses", {
   id: varchar("id").primaryKey().default(sql`gen_random_uuid()`),
+  organizationId: text("organization_id").default("default_org").notNull(),
+  userId: text("user_id").default("default_user").notNull(),
   keyword: text("keyword").notNull(),
   response: text("response").notNull(),
   isActive: text("is_active").default("true").notNull(), // "true" or "false"
@@ -88,7 +146,9 @@ export const autoResponses = pgTable("auto_responses", {
 
 export const contacts = pgTable("contacts", {
   id: varchar("id").primaryKey().default(sql`gen_random_uuid()`),
-  phoneNumber: text("phone_number").notNull().unique(),
+  organizationId: text("organization_id").default("default_org").notNull(),
+  userId: text("user_id").default("default_user").notNull(),
+  phoneNumber: text("phone_number").notNull(),
   name: text("name"),
   isLead: text("is_lead").default("false").notNull(), // "true" or "false"
   leadTriggerKeyword: text("lead_trigger_keyword"),
@@ -149,6 +209,8 @@ export const chatbotConfigs = pgTable("chatbot_configs", {
 // Demo schedules — manual demo booking from NodeBackend UI
 export const demoSchedules = pgTable("demo_schedules", {
   id: varchar("id").primaryKey().default(sql`gen_random_uuid()`),
+  organizationId: text("organization_id").default("default_org").notNull(),
+  userId: text("user_id").default("default_user").notNull(),
   phoneNumber: text("phone_number").notNull(),
   contactName: text("contact_name"),
   meetingLink: text("meeting_link").notNull(),
@@ -162,6 +224,8 @@ export const demoSchedules = pgTable("demo_schedules", {
 export const insertUserSchema = createInsertSchema(users).pick({
   username: true,
   password: true,
+  email: true,
+  organizationId: true,
 });
 
 export const insertMessageSchema = createInsertSchema(messages).omit({
@@ -185,6 +249,7 @@ export type SystemLog = typeof systemLogs.$inferSelect;
 export type Campaign = typeof campaigns.$inferSelect;
 export type CampaignRecipient = typeof campaignRecipients.$inferSelect;
 export type MessageVariation = typeof messageVariations.$inferSelect;
+export type CampaignSchedule = typeof campaignSchedules.$inferSelect;
 export type BlockedNumber = typeof blockedNumbers.$inferSelect;
 export type AutoResponse = typeof autoResponses.$inferSelect;
 export type Contact = typeof contacts.$inferSelect;
@@ -192,6 +257,8 @@ export type ChatbotConfig = typeof chatbotConfigs.$inferSelect;
 export type HRAdmin = typeof hrAdmins.$inferSelect;
 export type HRChatbotConfig = typeof hrChatbotConfigs.$inferSelect;
 export type DemoSchedule = typeof demoSchedules.$inferSelect;
+export type UserRagAgent = typeof userRagAgents.$inferSelect;
+export type WhatsAppSession = typeof whatsappSessions.$inferSelect;
 
 // Additional schemas for API requests
 export const sendMessageSchema = z.object({
@@ -208,6 +275,7 @@ export const sendReportSchema = z.object({
 export const createCampaignSchema = z.object({
   name: z.string().min(1, "Campaign name is required"),
   originalMessage: z.string().min(1, "Original message is required"),
+  campaignType: z.enum(["campaign", "template"]).optional(),
   fixedParams: z.record(z.any()).optional(),
   buttons: z.array(z.object({
     text: z.string(),
@@ -219,11 +287,30 @@ export const createCampaignSchema = z.object({
 
 export const bulkSendSchema = z.object({
   variation_message: z.string().min(1, "Variation message is required"),
+  intervalSeconds: z.number().int().min(1).max(3600).optional(),
+  jitterSeconds: z.number().int().min(0).max(300).optional(),
   contacts: z.array(z.object({
     name: z.string(),
     phone: z.string(),
     extra: z.record(z.any()).optional(),
   })).optional(),
+});
+
+export const scheduleCampaignSchema = z.object({
+  variation_message: z.string().min(1, "Variation message is required"),
+  scheduledAt: z.string().datetime({ offset: true }),
+  intervalSeconds: z.number().int().min(1).max(3600).optional(),
+  jitterSeconds: z.number().int().min(0).max(300).optional(),
+});
+
+export const userRagAgentSchema = z.object({
+  organizationId: z.string().min(1, "Organization ID is required"),
+  userId: z.string().min(1, "User ID is required"),
+  agentName: z.string().min(1, "Agent name is required"),
+  ragBaseUrl: z.string().url("Valid RAG base URL is required"),
+  ragAccessKey: z.string().min(1, "RAG access key is required"),
+  systemPrompt: z.string().optional(),
+  isActive: z.boolean().optional(),
 });
 
 export const chatbotConfigSchema = z.object({
@@ -265,11 +352,28 @@ export const hrChatbotConfigSchema = z.object({
   isActive: z.boolean().optional(),
 });
 
+// Auth schemas
+export const registerSchema = z.object({
+  username: z.string().min(3, "Username must be at least 3 characters"),
+  password: z.string().min(6, "Password must be at least 6 characters"),
+  email: z.string().email("Valid email is required").optional(),
+  organizationId: z.string().optional(),
+});
+
+export const loginSchema = z.object({
+  username: z.string().min(1, "Username is required"),
+  password: z.string().min(1, "Password is required"),
+});
+
 export type SendMessageRequest = z.infer<typeof sendMessageSchema>;
 export type SendReportRequest = z.infer<typeof sendReportSchema>;
 export type CreateCampaignRequest = z.infer<typeof createCampaignSchema>;
 export type BulkSendRequest = z.infer<typeof bulkSendSchema>;
+export type ScheduleCampaignRequest = z.infer<typeof scheduleCampaignSchema>;
 export type ChatbotConfigRequest = z.infer<typeof chatbotConfigSchema>;
 export type FlagLeadRequest = z.infer<typeof flagLeadSchema>;
 export type RegisterHRAdminRequest = z.infer<typeof registerHRAdminSchema>;
 export type HRChatbotConfigRequest = z.infer<typeof hrChatbotConfigSchema>;
+export type UserRagAgentRequest = z.infer<typeof userRagAgentSchema>;
+export type RegisterRequest = z.infer<typeof registerSchema>;
+export type LoginRequest = z.infer<typeof loginSchema>;

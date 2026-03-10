@@ -57,7 +57,10 @@ export async function runMigrations(): Promise<void> {
 
       CREATE TABLE IF NOT EXISTS "campaigns" (
         "id" varchar PRIMARY KEY DEFAULT gen_random_uuid() NOT NULL,
+        "organization_id" text DEFAULT 'default_org' NOT NULL,
+        "user_id" text DEFAULT 'default_user' NOT NULL,
         "name" text NOT NULL,
+        "campaign_type" text DEFAULT 'campaign' NOT NULL,
         "original_message" text NOT NULL,
         "fixed_params" jsonb,
         "selected_variation" text,
@@ -90,6 +93,36 @@ export async function runMigrations(): Promise<void> {
         "variation_number" integer,
         "fixed_params" jsonb,
         "created_at" timestamp DEFAULT now()
+      );
+
+      CREATE TABLE IF NOT EXISTS "campaign_schedules" (
+        "id" varchar PRIMARY KEY DEFAULT gen_random_uuid() NOT NULL,
+        "campaign_id" varchar NOT NULL,
+        "organization_id" text DEFAULT 'default_org' NOT NULL,
+        "user_id" text DEFAULT 'default_user' NOT NULL,
+        "variation_message" text NOT NULL,
+        "status" text DEFAULT 'scheduled' NOT NULL,
+        "interval_seconds" integer DEFAULT 25 NOT NULL,
+        "jitter_seconds" integer DEFAULT 0 NOT NULL,
+        "scheduled_at" timestamp NOT NULL,
+        "started_at" timestamp,
+        "completed_at" timestamp,
+        "result_summary" jsonb,
+        "created_at" timestamp DEFAULT now(),
+        "updated_at" timestamp DEFAULT now()
+      );
+
+      CREATE TABLE IF NOT EXISTS "user_rag_agents" (
+        "id" varchar PRIMARY KEY DEFAULT gen_random_uuid() NOT NULL,
+        "organization_id" text NOT NULL,
+        "user_id" text NOT NULL,
+        "agent_name" text NOT NULL,
+        "rag_base_url" text NOT NULL,
+        "rag_access_key" text NOT NULL,
+        "system_prompt" text,
+        "is_active" text DEFAULT 'true' NOT NULL,
+        "created_at" timestamp DEFAULT now(),
+        "updated_at" timestamp DEFAULT now()
       );
 
       CREATE TABLE IF NOT EXISTS "auto_responses" (
@@ -168,6 +201,8 @@ export async function runMigrations(): Promise<void> {
 
       CREATE TABLE IF NOT EXISTS "demo_schedules" (
         "id" varchar PRIMARY KEY DEFAULT gen_random_uuid() NOT NULL,
+        "organization_id" text DEFAULT 'default_org' NOT NULL,
+        "user_id" text DEFAULT 'default_user' NOT NULL,
         "phone_number" text NOT NULL,
         "contact_name" text,
         "meeting_link" text NOT NULL,
@@ -178,9 +213,65 @@ export async function runMigrations(): Promise<void> {
         "created_at" timestamp DEFAULT now()
       );
 
+      -- WhatsApp sessions per user (multi-user)
+      CREATE TABLE IF NOT EXISTS "whatsapp_sessions" (
+        "id" varchar PRIMARY KEY DEFAULT gen_random_uuid() NOT NULL,
+        "user_id" varchar NOT NULL,
+        "organization_id" text DEFAULT 'default_org' NOT NULL,
+        "phone_number" text,
+        "session_name" text DEFAULT 'default' NOT NULL,
+        "status" text DEFAULT 'disconnected' NOT NULL,
+        "last_connected_at" timestamp,
+        "created_at" timestamp DEFAULT now(),
+        "updated_at" timestamp DEFAULT now()
+      );
+
       CREATE INDEX IF NOT EXISTS idx_demo_schedules_demo_at
         ON demo_schedules(demo_at)
         WHERE remind_5_sent_at IS NULL;
+
+      CREATE INDEX IF NOT EXISTS idx_campaigns_tenant
+        ON campaigns(organization_id, user_id, created_at);
+
+      CREATE INDEX IF NOT EXISTS idx_campaign_schedules_due
+        ON campaign_schedules(status, scheduled_at);
+
+      CREATE INDEX IF NOT EXISTS idx_user_rag_agents_owner
+        ON user_rag_agents(organization_id, user_id, updated_at);
+
+      ALTER TABLE "campaigns" ADD COLUMN IF NOT EXISTS "organization_id" text DEFAULT 'default_org' NOT NULL;
+      ALTER TABLE "campaigns" ADD COLUMN IF NOT EXISTS "user_id" text DEFAULT 'default_user' NOT NULL;
+      ALTER TABLE "campaigns" ADD COLUMN IF NOT EXISTS "campaign_type" text DEFAULT 'campaign' NOT NULL;
+
+      -- Multi-user columns on existing tables
+      ALTER TABLE "users" ADD COLUMN IF NOT EXISTS "email" text;
+      ALTER TABLE "users" ADD COLUMN IF NOT EXISTS "organization_id" text DEFAULT 'default_org' NOT NULL;
+      ALTER TABLE "users" ADD COLUMN IF NOT EXISTS "role" text DEFAULT 'user' NOT NULL;
+      ALTER TABLE "users" ADD COLUMN IF NOT EXISTS "last_login_at" timestamp;
+      ALTER TABLE "users" ADD COLUMN IF NOT EXISTS "created_at" timestamp DEFAULT now();
+      ALTER TABLE "users" ADD COLUMN IF NOT EXISTS "updated_at" timestamp DEFAULT now();
+
+      ALTER TABLE "messages" ADD COLUMN IF NOT EXISTS "organization_id" text DEFAULT 'default_org' NOT NULL;
+      ALTER TABLE "messages" ADD COLUMN IF NOT EXISTS "user_id" text DEFAULT 'default_user' NOT NULL;
+
+      ALTER TABLE "blocked_numbers" ADD COLUMN IF NOT EXISTS "organization_id" text DEFAULT 'default_org' NOT NULL;
+      ALTER TABLE "blocked_numbers" ADD COLUMN IF NOT EXISTS "user_id" text DEFAULT 'default_user' NOT NULL;
+
+      ALTER TABLE "auto_responses" ADD COLUMN IF NOT EXISTS "organization_id" text DEFAULT 'default_org' NOT NULL;
+      ALTER TABLE "auto_responses" ADD COLUMN IF NOT EXISTS "user_id" text DEFAULT 'default_user' NOT NULL;
+
+      ALTER TABLE "contacts" ADD COLUMN IF NOT EXISTS "organization_id" text DEFAULT 'default_org' NOT NULL;
+      ALTER TABLE "contacts" ADD COLUMN IF NOT EXISTS "user_id" text DEFAULT 'default_user' NOT NULL;
+
+      ALTER TABLE "demo_schedules" ADD COLUMN IF NOT EXISTS "organization_id" text DEFAULT 'default_org' NOT NULL;
+      ALTER TABLE "demo_schedules" ADD COLUMN IF NOT EXISTS "user_id" text DEFAULT 'default_user' NOT NULL;
+
+      -- Indexes for multi-user lookups
+      CREATE INDEX IF NOT EXISTS idx_messages_tenant ON messages(organization_id, user_id, created_at);
+      CREATE INDEX IF NOT EXISTS idx_contacts_tenant ON contacts(organization_id, user_id);
+      CREATE INDEX IF NOT EXISTS idx_auto_responses_tenant ON auto_responses(organization_id, user_id);
+      CREATE INDEX IF NOT EXISTS idx_blocked_numbers_tenant ON blocked_numbers(organization_id, user_id);
+      CREATE INDEX IF NOT EXISTS idx_whatsapp_sessions_user ON whatsapp_sessions(user_id, session_name);
 
       -- Add FK constraints (safe with IF NOT EXISTS pattern via DO blocks)
       DO $$ BEGIN
@@ -201,6 +292,17 @@ export async function runMigrations(): Promise<void> {
         ) THEN
           ALTER TABLE "message_variations"
             ADD CONSTRAINT "message_variations_campaign_id_fk"
+            FOREIGN KEY ("campaign_id") REFERENCES "campaigns"("id") ON DELETE cascade;
+        END IF;
+      END $$;
+
+      DO $$ BEGIN
+        IF NOT EXISTS (
+          SELECT 1 FROM information_schema.table_constraints
+          WHERE constraint_name = 'campaign_schedules_campaign_id_fk'
+        ) THEN
+          ALTER TABLE "campaign_schedules"
+            ADD CONSTRAINT "campaign_schedules_campaign_id_fk"
             FOREIGN KEY ("campaign_id") REFERENCES "campaigns"("id") ON DELETE cascade;
         END IF;
       END $$;

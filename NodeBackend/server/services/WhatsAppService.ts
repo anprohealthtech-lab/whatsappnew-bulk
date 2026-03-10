@@ -31,9 +31,11 @@ export class WhatsAppService extends EventEmitter {
   private badSessionRetryCount: number = 0;
   private static readonly MAX_BAD_SESSION_RETRIES = 3;
 
-  constructor() {
+  constructor(sessionDir?: string) {
     super();
-    this.authPath = path.join(process.cwd(), 'server/sessions/baileys_auth');
+    this.authPath = sessionDir
+      ? path.join(process.cwd(), sessionDir, 'baileys_auth')
+      : path.join(process.cwd(), 'server/sessions/baileys_auth');
     if (!fs.existsSync(this.authPath)) {
       fs.mkdirSync(this.authPath, { recursive: true });
     }
@@ -326,6 +328,34 @@ export class WhatsAppService extends EventEmitter {
       body: message,
       timestamp: Date.now(),
     };
+  }
+
+  async listGroups(): Promise<Array<{ id: string; subject: string; participantsCount: number }>> {
+    if (!this.socket || !this.status.isConnected) {
+      throw new Error('WhatsApp not connected');
+    }
+
+    const chats = await this.socket.groupFetchAllParticipating();
+    return Object.values(chats).map((group: any) => ({
+      id: group.id,
+      subject: group.subject || 'Untitled Group',
+      participantsCount: Array.isArray(group.participants) ? group.participants.length : 0,
+    }));
+  }
+
+  async scrapeGroupNumbers(groupId: string): Promise<Array<{ phone: string; jid: string }>> {
+    if (!this.socket || !this.status.isConnected) {
+      throw new Error('WhatsApp not connected');
+    }
+
+    const meta = await this.socket.groupMetadata(groupId);
+    const participants = meta.participants || [];
+
+    return participants.map((participant: any) => {
+      const jid = participant.id || '';
+      const phone = jid.replace(/@s\.whatsapp\.net$|@lid$/i, '').replace(/\D/g, '');
+      return { phone, jid };
+    }).filter((item) => item.phone.length > 0);
   }
 
   async sendMessageWithButtons(

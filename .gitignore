@@ -48,3 +48,4 @@ app-deployment.json
 # WhatsApp session files (sensitive)
 .wwebjs_auth/
 .wwebjs_cache/
+supabase/.temp/
