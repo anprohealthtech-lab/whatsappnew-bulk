@@ -15,8 +15,8 @@ import { cn } from "@/lib/utils";
 interface StatusCardsProps {
     whatsappStatus: any;
     status: any;
-    generateQRMutation: any;
     formatTimestamp: (timestamp: string) => string;
+    onGoToSessions?: () => void;
 }
 
 function StatusCardSkeleton() {
@@ -36,7 +36,7 @@ function StatusCardSkeleton() {
     );
 }
 
-export function StatusCards({ whatsappStatus, status, generateQRMutation, formatTimestamp }: StatusCardsProps) {
+export function StatusCards({ whatsappStatus, status, formatTimestamp, onGoToSessions }: StatusCardsProps) {
     if (!status && !whatsappStatus) {
         return (
             <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-6 animate-fade-in-up">
@@ -80,15 +80,14 @@ export function StatusCards({ whatsappStatus, status, generateQRMutation, format
                         {whatsappStatus.lastSeen ? `Last seen: ${formatTimestamp(whatsappStatus.lastSeen)}` : 'Never connected'}
                     </div>
 
-                    {!whatsappStatus.isConnected && (
+                    {!whatsappStatus.isConnected && onGoToSessions && (
                         <Button
                             size="sm"
                             className="mt-4 w-full bg-primary hover:bg-primary/90 text-primary-foreground shadow-md shadow-primary/20"
-                            onClick={() => generateQRMutation.mutate()}
-                            disabled={generateQRMutation.isPending}
+                            onClick={onGoToSessions}
                         >
                             <QrCode className="w-4 h-4 mr-2" />
-                            Connect Now
+                            Go to Sessions
                         </Button>
                     )}
                 </CardContent>

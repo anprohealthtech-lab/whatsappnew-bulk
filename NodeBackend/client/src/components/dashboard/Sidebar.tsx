@@ -58,7 +58,7 @@ export function Sidebar({ activeSection, setActiveSection, setLocation }: Sideba
                 </div>
             </div>
 
-            <nav className="flex-1 px-3 py-6 space-y-1">
+            <nav className="flex-1 px-3 py-6 space-y-1 overflow-y-auto scrollbar-thin">
                 {menuItems.map((item) => (
                     <button
                         key={item.id}

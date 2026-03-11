@@ -443,7 +443,7 @@ export function HRAdminsPanel() {
                   </p>
                 </div>
               ) : (
-                <div className="overflow-hidden rounded-xl border border-gray-200 dark:border-zinc-800">
+                <div className="overflow-auto rounded-xl border border-gray-200 dark:border-zinc-800">
                   <Table>
                     <TableHeader>
                       <TableRow className="bg-gray-50 dark:bg-zinc-900/50 hover:bg-gray-50 dark:hover:bg-zinc-900/50">

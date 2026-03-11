@@ -1,4 +1,5 @@
 import { apiRequest } from './queryClient';
+import { getAuthToken } from './AuthContext';
 
 export interface MessageStats {
   totalMessages: number;
@@ -65,6 +66,9 @@ export const api = {
 
     const response = await fetch('/api/send-report', {
       method: 'POST',
+      headers: {
+        Authorization: `Bearer ${getAuthToken()}`,
+      },
       body: formData,
       credentials: 'include',
     });

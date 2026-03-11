@@ -304,10 +304,11 @@ export const scheduleCampaignSchema = z.object({
 });
 
 export const userRagAgentSchema = z.object({
-  organizationId: z.string().min(1, "Organization ID is required"),
-  userId: z.string().min(1, "User ID is required"),
   agentName: z.string().min(1, "Agent name is required"),
-  ragBaseUrl: z.string().url("Valid RAG base URL is required"),
+  ragBaseUrl: z.string().min(1, "RAG base URL is required").refine(
+    (val) => val === "supabase-knowledge-base" || /^https?:\/\/.+/.test(val),
+    "Must be a valid URL or 'supabase-knowledge-base'"
+  ),
   ragAccessKey: z.string().min(1, "RAG access key is required"),
   systemPrompt: z.string().optional(),
   isActive: z.boolean().optional(),

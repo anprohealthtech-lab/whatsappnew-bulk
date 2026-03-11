@@ -9,13 +9,11 @@ import { useSocket } from "@/hooks/useSocket";
 import { useToast } from "@/hooks/use-toast";
 import { useIsMobile } from "@/hooks/use-mobile";
 import { Button } from "@/components/ui/button";
-import { Dialog, DialogContent, DialogHeader, DialogTitle } from "@/components/ui/dialog";
 import {
   Wifi,
   WifiOff,
   Bell,
   RefreshCw,
-  QrCode,
   Menu,
   X
 } from "lucide-react";
@@ -54,7 +52,6 @@ type ReportFormData = z.infer<typeof reportSchema>;
 
 export default function Dashboard() {
   const [selectedFile, setSelectedFile] = useState<File | null>(null);
-  const [showQRModal, setShowQRModal] = useState(false);
   const [messageFilters, setMessageFilters] = useState({
     status: "all",
     search: "",
@@ -68,23 +65,9 @@ export default function Dashboard() {
 
   const { toast } = useToast();
   const queryClient = useQueryClient();
-  const { isConnected, whatsappStatus, qrCode } = useSocket();
+  const { isConnected, whatsappStatus } = useSocket();
   const [, setLocation] = useLocation();
   const isMobile = useIsMobile();
-
-  // Auto-show QR modal when WhatsApp is not connected
-  useEffect(() => {
-    if (!whatsappStatus.isConnected && !whatsappStatus.isAuthenticated) {
-      setShowQRModal(true);
-    }
-  }, [whatsappStatus.isConnected, whatsappStatus.isAuthenticated]);
-
-  // Auto-hide QR modal when WhatsApp connects
-  useEffect(() => {
-    if (whatsappStatus.isConnected) {
-      setShowQRModal(false);
-    }
-  }, [whatsappStatus.isConnected]);
 
   // Close sidebar on mobile when section changes
   useEffect(() => {
@@ -171,24 +154,6 @@ export default function Dashboard() {
       toast({
         title: "Error",
         description: error.message || "Failed to send report",
-        variant: "destructive",
-      });
-    },
-  });
-
-  const generateQRMutation = useMutation({
-    mutationFn: api.generateQR,
-    onSuccess: () => {
-      setShowQRModal(true);
-      toast({
-        title: "QR Code Generated",
-        description: "Scan the QR code with WhatsApp to connect",
-      });
-    },
-    onError: (error: any) => {
-      toast({
-        title: "Error",
-        description: error.message || "Failed to generate QR code",
         variant: "destructive",
       });
     },
@@ -428,8 +393,8 @@ export default function Dashboard() {
           <StatusCards
             whatsappStatus={whatsappStatus}
             status={status}
-            generateQRMutation={generateQRMutation}
             formatTimestamp={formatTimestamp}
+            onGoToSessions={() => setActiveSection('sessions')}
           />
 
           {/* Dashboard View */}
@@ -514,68 +479,6 @@ export default function Dashboard() {
           {activeSection === "super-admin" && <SuperAdminPanel />}
         </main>
       </div>
-
-      {/* QR Code Modal */}
-      <Dialog open={showQRModal} onOpenChange={setShowQRModal}>
-        <DialogContent className="max-w-md border-none shadow-2xl bg-white/95 dark:bg-zinc-900/95 backdrop-blur-xl">
-          <DialogHeader>
-            <DialogTitle className="text-center text-xl font-bold">Connect WhatsApp</DialogTitle>
-          </DialogHeader>
-
-          <div className="text-center">
-            <div className="w-64 h-64 bg-white rounded-2xl mx-auto mb-6 flex items-center justify-center shadow-inner border border-gray-100 p-2">
-              {qrCode ? (
-                <div className="text-center w-full h-full">
-                  <img
-                    src={qrCode}
-                    alt="WhatsApp QR Code"
-                    className="w-full h-full object-contain rounded-xl"
-                    onError={(e) => {
-                      (e.target as HTMLImageElement).style.display = 'none';
-                    }}
-                  />
-                </div>
-              ) : (
-                <div className="text-center">
-                  <QrCode className="w-16 h-16 text-gray-300 mx-auto mb-3" />
-                  <p className="text-sm text-muted-foreground font-medium">Generating QR code...</p>
-                </div>
-              )}
-            </div>
-
-            <div className="space-y-3 text-sm text-muted-foreground mb-8 text-left bg-gray-50 dark:bg-zinc-800/50 p-4 rounded-xl">
-              <p className="font-semibold text-foreground flex items-center">
-                <Wifi className="w-4 h-4 mr-2 text-primary" />
-                To connect your WhatsApp:
-              </p>
-              <ol className="list-decimal list-inside space-y-1 ml-1">
-                <li>Open <strong>WhatsApp</strong> on your phone</li>
-                <li>Go to <strong>Settings</strong> &rarr; <strong>Linked Devices</strong></li>
-                <li>Tap <strong>"Link a Device"</strong></li>
-                <li>Scan the QR code above</li>
-              </ol>
-            </div>
-
-            <div className="flex space-x-3">
-              <Button
-                variant="outline"
-                className="flex-1"
-                onClick={() => generateQRMutation.mutate()}
-                disabled={generateQRMutation.isPending}
-              >
-                <RefreshCw className="w-4 h-4 mr-2" />
-                Refresh QR
-              </Button>
-              <Button
-                className="flex-1 bg-primary hover:bg-primary/90 text-primary-foreground"
-                onClick={() => setShowQRModal(false)}
-              >
-                Done
-              </Button>
-            </div>
-          </div>
-        </DialogContent>
-      </Dialog>
     </div>
   );
 }

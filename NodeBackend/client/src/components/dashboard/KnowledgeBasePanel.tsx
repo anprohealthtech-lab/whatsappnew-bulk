@@ -1,6 +1,7 @@
 import { useState, useRef } from "react";
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
 import { apiRequest } from "@/lib/queryClient";
+import { getAuthToken } from "@/lib/AuthContext";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { useToast } from "@/hooks/use-toast";
@@ -78,7 +79,7 @@ export function KnowledgeBasePanel() {
       const res = await fetch("/api/knowledge/upload", {
         method: "POST",
         headers: {
-          Authorization: `Bearer ${localStorage.getItem("auth_token") || ""}`,
+          Authorization: `Bearer ${getAuthToken() || ""}`,
         },
         body: formData,
       });

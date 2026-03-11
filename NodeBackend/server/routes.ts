@@ -392,10 +392,22 @@ export async function registerRoutes(app: Express): Promise<Server> {
   // ============================================================
   // PER-USER WHATSAPP SESSION ROUTES
   // ============================================================
+  const MAX_SESSIONS_PER_USER = 3;
+
   app.post('/api/whatsapp/session/init', requireAuth, async (req, res) => {
     try {
       const userId = req.auth!.userId;
       const sessionName = req.body.sessionName || 'default';
+
+      // Check if this is a new session (not re-initializing existing)
+      const existingSessions = await sessionManager.listSessions(userId);
+      const isExisting = existingSessions.some(s => s.sessionName === sessionName);
+      if (!isExisting && existingSessions.length >= MAX_SESSIONS_PER_USER) {
+        return res.status(400).json({
+          message: `Maximum ${MAX_SESSIONS_PER_USER} sessions allowed per user. Disconnect an existing session first.`
+        });
+      }
+
       const wa = await sessionManager.getSession(userId, sessionName);
       await wa.initialize();
       res.json({ status: 'initializing', sessionName });
@@ -1461,10 +1473,11 @@ export async function registerRoutes(app: Express): Promise<Server> {
   app.post('/api/user-rag-agent', requireAuth, async (req, res) => {
     try {
       const validated = userRagAgentSchema.parse(req.body);
+      const tenant = getTenantFromRequest(req);
 
       const existing = await db.select().from(userRagAgents).where(and(
-        eq(userRagAgents.organizationId, validated.organizationId),
-        eq(userRagAgents.userId, validated.userId)
+        eq(userRagAgents.organizationId, tenant.organizationId),
+        eq(userRagAgents.userId, tenant.userId)
       )).orderBy(desc(userRagAgents.updatedAt)).limit(1);
 
       let data;
@@ -1480,8 +1493,8 @@ export async function registerRoutes(app: Express): Promise<Server> {
         data = updated;
       } else {
         const [created] = await db.insert(userRagAgents).values({
-          organizationId: validated.organizationId,
-          userId: validated.userId,
+          organizationId: tenant.organizationId,
+          userId: tenant.userId,
           agentName: validated.agentName,
           ragBaseUrl: validated.ragBaseUrl,
           ragAccessKey: validated.ragAccessKey,

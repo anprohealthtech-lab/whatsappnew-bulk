@@ -96,7 +96,7 @@ export function MessageHistory({ messages, isLoading, filters, onFilterChange, o
                 </div>
             </CardHeader>
             <CardContent>
-                <div className="overflow-hidden rounded-xl border border-gray-200 dark:border-zinc-800">
+                <div className="overflow-auto rounded-xl border border-gray-200 dark:border-zinc-800">
                     <table className="w-full text-sm">
                         <thead className="bg-gray-50 dark:bg-zinc-900/50">
                             <tr>

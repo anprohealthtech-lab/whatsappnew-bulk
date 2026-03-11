@@ -108,12 +108,15 @@ export function WhatsAppSessionPanel() {
             />
             <Button
               onClick={() => initMutation.mutate(newSessionName)}
-              disabled={!newSessionName.trim() || initMutation.isPending}
+              disabled={!newSessionName.trim() || initMutation.isPending || sessions.length >= 3}
             >
               {initMutation.isPending ? <Loader2 className="w-4 h-4 animate-spin mr-2" /> : <Plus className="w-4 h-4 mr-2" />}
               Connect
             </Button>
           </div>
+          <p className="text-xs text-muted-foreground">
+            {sessions.length}/3 sessions used. Each session connects a different WhatsApp number.
+          </p>
 
           {/* QR Code Display */}
           {activeQR.qr && (

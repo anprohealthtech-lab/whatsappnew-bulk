@@ -12,7 +12,7 @@ export default function CampaignsPage() {
   const edgeFunctionUrl = `${supabaseUrl}/functions/v1/bulk-message-generator`;
 
   return (
-    <div className="min-h-screen bg-background text-foreground">
+    <div className="min-h-screen bg-background text-foreground overflow-y-auto">
       <div className="container mx-auto py-12 px-4 max-w-5xl">
         <div className="mb-10 flex items-center justify-between">
           <div>

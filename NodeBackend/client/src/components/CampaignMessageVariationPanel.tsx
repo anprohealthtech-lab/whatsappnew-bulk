@@ -1,4 +1,5 @@
 import { useState, useEffect } from 'react';
+import { getAuthToken } from '@/lib/AuthContext';
 import { Button } from '@/components/ui/button';
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/components/ui/card';
 import { Input } from '@/components/ui/input';
@@ -118,7 +119,9 @@ export function CampaignMessageVariationPanel({
 
   const loadCampaign = async () => {
     try {
-      const response = await fetch(`/api/campaigns/${campaignId}`);
+      const response = await fetch(`/api/campaigns/${campaignId}`, {
+        headers: { Authorization: `Bearer ${getAuthToken()}` },
+      });
       const data = await response.json();
 
       if (data.success) {
@@ -134,7 +137,9 @@ export function CampaignMessageVariationPanel({
 
   const loadContacts = async () => {
     try {
-      const response = await fetch(`/api/campaigns/${campaignId}/contacts`);
+      const response = await fetch(`/api/campaigns/${campaignId}/contacts`, {
+        headers: { Authorization: `Bearer ${getAuthToken()}` },
+      });
       const data = await response.json();
 
       if (data.success) {
@@ -147,7 +152,9 @@ export function CampaignMessageVariationPanel({
 
   const loadVariations = async () => {
     try {
-      const response = await fetch(`/api/campaigns/${campaignId}/variations`);
+      const response = await fetch(`/api/campaigns/${campaignId}/variations`, {
+        headers: { Authorization: `Bearer ${getAuthToken()}` },
+      });
       const data = await response.json();
 
       if (data.success) {
@@ -164,7 +171,7 @@ export function CampaignMessageVariationPanel({
 
       const response = await fetch('/api/campaigns', {
         method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
+        headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${getAuthToken()}` },
         body: JSON.stringify({
           name: newCampaignName,
           originalMessage,
@@ -186,6 +193,7 @@ export function CampaignMessageVariationPanel({
             formData.append('file', attachmentFile);
             await fetch(`/api/campaigns/${newCampaignId}/attachment`, {
               method: 'POST',
+              headers: { Authorization: `Bearer ${getAuthToken()}` },
               body: formData,
             });
           } catch (uploadErr) {
@@ -239,7 +247,7 @@ export function CampaignMessageVariationPanel({
         // Save variation to database
         const saveResponse = await fetch(`/api/campaigns/${campaignId}/variations`, {
           method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
+          headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${getAuthToken()}` },
           body: JSON.stringify({ variation: data.tweaked_message }),
         });
 
@@ -270,6 +278,7 @@ export function CampaignMessageVariationPanel({
 
       const response = await fetch(`/api/campaigns/${campaignId}/attachment`, {
         method: 'POST',
+        headers: { Authorization: `Bearer ${getAuthToken()}` },
         body: formData,
       });
 
@@ -300,6 +309,7 @@ export function CampaignMessageVariationPanel({
 
       const response = await fetch(`/api/campaigns/${campaignId}/contacts/upload`, {
         method: 'POST',
+        headers: { Authorization: `Bearer ${getAuthToken()}` },
         body: formData,
       });
 
@@ -341,7 +351,7 @@ export function CampaignMessageVariationPanel({
 
       const response = await fetch(`/api/campaigns/${campaignId}/send-bulk`, {
         method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
+        headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${getAuthToken()}` },
         body: JSON.stringify({
           variation_message: selectedVariation,
         }),

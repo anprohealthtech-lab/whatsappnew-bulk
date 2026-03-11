@@ -193,7 +193,7 @@ export function GroupScraperPanel() {
               )}
 
               {/* Member List Preview */}
-              <div className="max-h-60 overflow-y-auto border rounded-lg">
+              <div className="max-h-60 overflow-auto border rounded-lg">
                 <table className="w-full text-sm">
                   <thead className="bg-accent/30 sticky top-0">
                     <tr>

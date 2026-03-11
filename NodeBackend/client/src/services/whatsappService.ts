@@ -1,3 +1,5 @@
+import { getAuthToken } from '@/lib/AuthContext';
+
 interface WhatsAppStatus {
   connected: boolean;
   phoneNumber?: string;
@@ -17,7 +19,9 @@ class WhatsAppService {
 
   async getStatus(): Promise<WhatsAppStatus> {
     try {
-      const response = await fetch(`${this.baseUrl}/status`);
+      const response = await fetch(`${this.baseUrl}/status`, {
+        headers: { Authorization: `Bearer ${getAuthToken()}` },
+      });
       const data = await response.json();
       
       if (data.success) {
@@ -41,6 +45,7 @@ class WhatsAppService {
         method: 'POST',
         headers: {
           'Content-Type': 'application/json',
+          Authorization: `Bearer ${getAuthToken()}`,
         },
       });
       
@@ -61,6 +66,7 @@ class WhatsAppService {
         method: 'POST',
         headers: {
           'Content-Type': 'application/json',
+          Authorization: `Bearer ${getAuthToken()}`,
         },
       });
       const data = await response.json();
@@ -78,6 +84,7 @@ class WhatsAppService {
     try {
       const response = await fetch(`${this.baseUrl}/whatsapp/disconnect`, {
         method: 'POST',
+        headers: { Authorization: `Bearer ${getAuthToken()}` },
       });
       const data = await response.json();
       return data;
@@ -96,6 +103,7 @@ class WhatsAppService {
         method: 'POST',
         headers: {
           'Content-Type': 'application/json',
+          Authorization: `Bearer ${getAuthToken()}`,
         },
         body: JSON.stringify({
           phoneNumber,
