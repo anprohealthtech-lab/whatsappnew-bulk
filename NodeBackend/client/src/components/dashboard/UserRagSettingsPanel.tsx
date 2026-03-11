@@ -15,6 +15,7 @@ import {
   TestTube2,
   CheckCircle,
   AlertCircle,
+  Database,
 } from "lucide-react";
 
 interface RagConfig {
@@ -32,6 +33,7 @@ export function UserRagSettingsPanel() {
   const [ragAccessKey, setRagAccessKey] = useState("");
   const [systemPrompt, setSystemPrompt] = useState("");
   const [isActive, setIsActive] = useState(true);
+  const [useBuiltInRag, setUseBuiltInRag] = useState(false);
   const { toast } = useToast();
   const queryClient = useQueryClient();
 
@@ -44,8 +46,9 @@ export function UserRagSettingsPanel() {
   useEffect(() => {
     if (config) {
       setAgentName(config.agentName || "");
-      setRagBaseUrl(config.ragBaseUrl || "");
-      // Don't overwrite key field with masked value if user already typed
+      const isBuiltIn = config.ragBaseUrl === "supabase-knowledge-base";
+      setUseBuiltInRag(isBuiltIn);
+      setRagBaseUrl(isBuiltIn ? "" : (config.ragBaseUrl || ""));
       if (!ragAccessKey) setRagAccessKey("");
       setSystemPrompt(config.systemPrompt || "");
       setIsActive(config.isActive !== "false");
@@ -55,15 +58,16 @@ export function UserRagSettingsPanel() {
   const saveMutation = useMutation({
     mutationFn: async () => {
       const body: any = {
-        agentName,
-        ragBaseUrl,
+        agentName: agentName || "Knowledge Base Bot",
+        ragBaseUrl: useBuiltInRag ? "supabase-knowledge-base" : ragBaseUrl,
         isActive,
       };
-      // Only send key if user changed it (not masked)
-      if (ragAccessKey && !ragAccessKey.includes("****")) {
+      // For built-in RAG, set a placeholder key
+      if (useBuiltInRag) {
+        body.ragAccessKey = "built-in";
+      } else if (ragAccessKey && !ragAccessKey.includes("****")) {
         body.ragAccessKey = ragAccessKey;
       } else if (config?.ragAccessKey) {
-        // Keep existing (server will preserve)
         body.ragAccessKey = "KEEP_EXISTING";
       } else {
         body.ragAccessKey = ragAccessKey;
@@ -127,27 +131,45 @@ export function UserRagSettingsPanel() {
             />
           </div>
 
-          <div>
-            <Label>RAG Base URL</Label>
-            <Input
-              value={ragBaseUrl}
-              onChange={(e) => setRagBaseUrl(e.target.value)}
-              placeholder="https://your-agent.digitalocean.app"
-            />
-            <p className="text-xs text-muted-foreground mt-1">
-              The base URL of your DigitalOcean AI Agent or compatible endpoint.
-            </p>
+          {/* Toggle between built-in and external RAG */}
+          <div className="flex items-center justify-between p-3 border rounded-lg bg-muted/50">
+            <div className="flex items-center gap-2">
+              <Database className="w-4 h-4 text-primary" />
+              <div>
+                <Label className="cursor-pointer">Use Built-in Knowledge Base</Label>
+                <p className="text-xs text-muted-foreground">
+                  Uses your uploaded files (Knowledge Base tab) instead of an external AI agent.
+                </p>
+              </div>
+            </div>
+            <Switch checked={useBuiltInRag} onCheckedChange={setUseBuiltInRag} />
           </div>
 
-          <div>
-            <Label>RAG Access Key</Label>
-            <Input
-              type="password"
-              value={ragAccessKey}
-              onChange={(e) => setRagAccessKey(e.target.value)}
-              placeholder={config?.ragAccessKey ? "••••••••" : "Enter access key"}
-            />
-          </div>
+          {!useBuiltInRag && (
+            <>
+              <div>
+                <Label>RAG Base URL</Label>
+                <Input
+                  value={ragBaseUrl}
+                  onChange={(e) => setRagBaseUrl(e.target.value)}
+                  placeholder="https://your-agent.digitalocean.app"
+                />
+                <p className="text-xs text-muted-foreground mt-1">
+                  The base URL of your DigitalOcean AI Agent or compatible endpoint.
+                </p>
+              </div>
+
+              <div>
+                <Label>RAG Access Key</Label>
+                <Input
+                  type="password"
+                  value={ragAccessKey}
+                  onChange={(e) => setRagAccessKey(e.target.value)}
+                  placeholder={config?.ragAccessKey ? "••••••••" : "Enter access key"}
+                />
+              </div>
+            </>
+          )}
 
           <div>
             <Label>Custom System Prompt (optional)</Label>
@@ -165,7 +187,7 @@ export function UserRagSettingsPanel() {
           <div className="flex gap-2">
             <Button
               onClick={() => saveMutation.mutate()}
-              disabled={!agentName.trim() || !ragBaseUrl.trim() || saveMutation.isPending}
+              disabled={!agentName.trim() || (!useBuiltInRag && !ragBaseUrl.trim()) || saveMutation.isPending}
               className="flex-1"
             >
               {saveMutation.isPending ? <Loader2 className="w-4 h-4 animate-spin mr-2" /> : <Save className="w-4 h-4 mr-2" />}

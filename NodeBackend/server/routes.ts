@@ -1368,6 +1368,218 @@ export async function registerRoutes(app: Express): Promise<Server> {
     }
   });
 
+  // ====== Knowledge Base / RAG File Management ======
+
+  const SUPABASE_URL = process.env.VITE_SUPABASE_URL || '';
+  const SUPABASE_SERVICE_KEY = process.env.SUPABASE_SERVICE_ROLE_KEY || '';
+
+  // Upload a knowledge file (PDF, TXT, CSV, MD)
+  app.post('/api/knowledge/upload', requireAuth, upload.single('file'), async (req: any, res) => {
+    try {
+      const tenant = getTenantFromRequest(req);
+
+      if (!req.file) {
+        return res.status(400).json({ success: false, error: 'No file uploaded' });
+      }
+
+      if (!SUPABASE_URL || !SUPABASE_SERVICE_KEY) {
+        return res.status(500).json({ success: false, error: 'Supabase not configured. Set VITE_SUPABASE_URL and SUPABASE_SERVICE_ROLE_KEY.' });
+      }
+
+      const allowedTypes = ['text/plain', 'text/csv', 'text/markdown', 'application/pdf', 'application/vnd.openxmlformats-officedocument.wordprocessingml.document'];
+      if (!allowedTypes.includes(req.file.mimetype) && !req.file.originalname.match(/\.(txt|csv|md|pdf|docx)$/i)) {
+        return res.status(400).json({ success: false, error: 'Unsupported file type. Upload TXT, CSV, MD, PDF, or DOCX files.' });
+      }
+
+      const fileBase64 = req.file.buffer.toString('base64');
+
+      // Create file record in Supabase
+      const createRes = await fetch(`${SUPABASE_URL}/rest/v1/knowledge_files`, {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          'Authorization': `Bearer ${SUPABASE_SERVICE_KEY}`,
+          'apikey': SUPABASE_SERVICE_KEY,
+          'Prefer': 'return=representation',
+        },
+        body: JSON.stringify({
+          organization_id: tenant.organizationId,
+          user_id: tenant.userId,
+          file_name: req.file.originalname,
+          file_size: req.file.size,
+          mime_type: req.file.mimetype,
+          status: 'processing',
+        }),
+      });
+
+      if (!createRes.ok) {
+        const err = await createRes.text();
+        throw new Error(`Failed to create file record: ${err}`);
+      }
+
+      const [fileRecord] = await createRes.json();
+      log(`Knowledge file created: ${fileRecord.id} (${req.file.originalname})`);
+
+      // Call edge function to process (chunk + embed) — fire and don't wait
+      fetch(`${SUPABASE_URL}/functions/v1/process-knowledge-file`, {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          'Authorization': `Bearer ${SUPABASE_SERVICE_KEY}`,
+        },
+        body: JSON.stringify({
+          file_id: fileRecord.id,
+          organization_id: tenant.organizationId,
+          user_id: tenant.userId,
+          file_content: fileBase64,
+          file_name: req.file.originalname,
+          mime_type: req.file.mimetype,
+        }),
+      }).then(async (r) => {
+        if (!r.ok) log(`Knowledge file processing failed: ${await r.text()}`);
+        else log(`Knowledge file processed: ${fileRecord.id}`);
+      }).catch((err) => log(`Knowledge file processing error: ${err.message}`));
+
+      res.json({
+        success: true,
+        data: {
+          id: fileRecord.id,
+          fileName: req.file.originalname,
+          fileSize: req.file.size,
+          status: 'processing',
+        },
+      });
+    } catch (error) {
+      const errorMessage = error instanceof Error ? error.message : 'Unknown error';
+      log(`Knowledge upload error: ${errorMessage}`);
+      res.status(500).json({ success: false, error: errorMessage });
+    }
+  });
+
+  // List user's knowledge files
+  app.get('/api/knowledge/files', requireAuth, async (req, res) => {
+    try {
+      const tenant = getTenantFromRequest(req);
+
+      if (!SUPABASE_URL || !SUPABASE_SERVICE_KEY) {
+        return res.status(500).json({ success: false, error: 'Supabase not configured' });
+      }
+
+      const listRes = await fetch(
+        `${SUPABASE_URL}/rest/v1/knowledge_files?organization_id=eq.${encodeURIComponent(tenant.organizationId)}&user_id=eq.${encodeURIComponent(tenant.userId)}&order=created_at.desc`,
+        {
+          headers: {
+            'Authorization': `Bearer ${SUPABASE_SERVICE_KEY}`,
+            'apikey': SUPABASE_SERVICE_KEY,
+          },
+        }
+      );
+
+      if (!listRes.ok) {
+        throw new Error(`Failed to list files: ${await listRes.text()}`);
+      }
+
+      const files = await listRes.json();
+      res.json({ success: true, data: files });
+    } catch (error) {
+      const errorMessage = error instanceof Error ? error.message : 'Unknown error';
+      res.status(500).json({ success: false, error: errorMessage });
+    }
+  });
+
+  // Delete a knowledge file (and its chunks via CASCADE)
+  app.delete('/api/knowledge/files/:fileId', requireAuth, async (req, res) => {
+    try {
+      const tenant = getTenantFromRequest(req);
+      const { fileId } = req.params;
+
+      if (!SUPABASE_URL || !SUPABASE_SERVICE_KEY) {
+        return res.status(500).json({ success: false, error: 'Supabase not configured' });
+      }
+
+      // Verify ownership
+      const checkRes = await fetch(
+        `${SUPABASE_URL}/rest/v1/knowledge_files?id=eq.${encodeURIComponent(fileId)}&organization_id=eq.${encodeURIComponent(tenant.organizationId)}&user_id=eq.${encodeURIComponent(tenant.userId)}`,
+        {
+          headers: {
+            'Authorization': `Bearer ${SUPABASE_SERVICE_KEY}`,
+            'apikey': SUPABASE_SERVICE_KEY,
+          },
+        }
+      );
+
+      const existing = await checkRes.json();
+      if (!existing || existing.length === 0) {
+        return res.status(404).json({ success: false, error: 'File not found' });
+      }
+
+      // Delete (CASCADE will remove chunks too)
+      const delRes = await fetch(
+        `${SUPABASE_URL}/rest/v1/knowledge_files?id=eq.${encodeURIComponent(fileId)}`,
+        {
+          method: 'DELETE',
+          headers: {
+            'Authorization': `Bearer ${SUPABASE_SERVICE_KEY}`,
+            'apikey': SUPABASE_SERVICE_KEY,
+          },
+        }
+      );
+
+      if (!delRes.ok) {
+        throw new Error(`Failed to delete file: ${await delRes.text()}`);
+      }
+
+      log(`Knowledge file deleted: ${fileId}`);
+      res.json({ success: true });
+    } catch (error) {
+      const errorMessage = error instanceof Error ? error.message : 'Unknown error';
+      res.status(500).json({ success: false, error: errorMessage });
+    }
+  });
+
+  // RAG Chat — call Supabase edge function for knowledge-augmented response
+  app.post('/api/knowledge/chat', requireAuth, async (req, res) => {
+    try {
+      const tenant = getTenantFromRequest(req);
+      const { message, conversation_history, system_prompt } = req.body;
+
+      if (!message) {
+        return res.status(400).json({ success: false, error: 'Message is required' });
+      }
+
+      if (!SUPABASE_URL || !SUPABASE_SERVICE_KEY) {
+        return res.status(500).json({ success: false, error: 'Supabase not configured' });
+      }
+
+      const ragRes = await fetch(`${SUPABASE_URL}/functions/v1/rag-chat`, {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          'Authorization': `Bearer ${SUPABASE_SERVICE_KEY}`,
+        },
+        body: JSON.stringify({
+          organization_id: tenant.organizationId,
+          user_id: tenant.userId,
+          message,
+          conversation_history: conversation_history || [],
+          system_prompt: system_prompt || undefined,
+        }),
+      });
+
+      if (!ragRes.ok) {
+        const err = await ragRes.text();
+        throw new Error(`RAG chat failed: ${err}`);
+      }
+
+      const result = await ragRes.json();
+      res.json({ success: true, data: result });
+    } catch (error) {
+      const errorMessage = error instanceof Error ? error.message : 'Unknown error';
+      log(`RAG chat error: ${errorMessage}`);
+      res.status(500).json({ success: false, error: errorMessage });
+    }
+  });
+
   // Block a phone number
   app.post('/api/blocklist/add', requireAuth, async (req, res) => {
     try {

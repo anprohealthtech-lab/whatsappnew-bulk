@@ -10,6 +10,7 @@ import {
     FileText,
     Clock,
     Bot,
+    Database,
     LogOut,
 } from "lucide-react";
 import { cn } from "@/lib/utils";
@@ -36,6 +37,7 @@ export function Sidebar({ activeSection, setActiveSection, setLocation }: Sideba
         { id: "leads", label: "Leads", icon: Users, action: () => setActiveSection("leads") },
         { id: "hr-admins", label: "HR / Tasks", icon: Building2, action: () => setActiveSection("hr-admins") },
         { id: "rag-settings", label: "AI Chatbot", icon: Bot, action: () => setActiveSection("rag-settings") },
+        { id: "knowledge-base", label: "Knowledge Base", icon: Database, action: () => setActiveSection("knowledge-base") },
     ];
 
     return (

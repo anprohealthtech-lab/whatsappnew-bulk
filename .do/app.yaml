@@ -41,6 +41,18 @@ services:
   - key: LEAD_WEBHOOK_SECRET
     scope: RUN_TIME
     type: SECRET
+
+  - key: SUPABASE_SERVICE_ROLE_KEY
+    scope: RUN_TIME
+    type: SECRET
+
+  - key: VITE_SUPABASE_URL
+    scope: RUN_AND_BUILD_TIME
+    value: ""
+
+  - key: VITE_SUPABASE_ANON_KEY
+    scope: RUN_AND_BUILD_TIME
+    value: ""
     
   - key: PORT
     value: "3001"

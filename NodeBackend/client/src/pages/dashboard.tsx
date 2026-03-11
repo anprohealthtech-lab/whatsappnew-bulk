@@ -33,6 +33,7 @@ import { CampaignTemplatesPanel } from "@/components/dashboard/CampaignTemplates
 import { ScheduleCampaignPanel } from "@/components/dashboard/ScheduleCampaignPanel";
 import { GroupScraperPanel } from "@/components/dashboard/GroupScraperPanel";
 import { UserRagSettingsPanel } from "@/components/dashboard/UserRagSettingsPanel";
+import { KnowledgeBasePanel } from "@/components/dashboard/KnowledgeBasePanel";
 
 // Form schemas
 const messageSchema = z.object({
@@ -505,6 +506,9 @@ export default function Dashboard() {
 
           {/* AI Chatbot / RAG Settings Section */}
           {activeSection === "rag-settings" && <UserRagSettingsPanel />}
+
+          {/* Knowledge Base Section */}
+          {activeSection === "knowledge-base" && <KnowledgeBasePanel />}
         </main>
       </div>
 

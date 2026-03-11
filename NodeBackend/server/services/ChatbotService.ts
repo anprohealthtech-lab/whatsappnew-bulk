@@ -577,6 +577,55 @@ export class ChatbotService {
   }
 
   /**
+   * Call Supabase rag-chat edge function for built-in knowledge base RAG
+   */
+  async callSupabaseRagChat(
+    systemPrompt: string,
+    conversationHistory: RagMessage[],
+    organizationId: string,
+    userId: string
+  ): Promise<string> {
+    const log = (msg: string) => console.log(`[ChatbotService] ${msg}`);
+    const supabaseUrl = process.env.VITE_SUPABASE_URL!;
+    const supabaseKey = process.env.SUPABASE_SERVICE_ROLE_KEY!;
+
+    log(`Calling Supabase RAG chat for user ${userId}`);
+
+    const response = await fetch(`${supabaseUrl}/functions/v1/rag-chat`, {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+        "Authorization": `Bearer ${supabaseKey}`,
+      },
+      body: JSON.stringify({
+        organization_id: organizationId,
+        user_id: userId,
+        message: conversationHistory[conversationHistory.length - 1]?.content || "",
+        conversation_history: conversationHistory.slice(0, -1).map(m => ({
+          role: m.role === "system" ? "user" : m.role,
+          content: m.content,
+        })),
+        system_prompt: systemPrompt,
+      }),
+    });
+
+    if (!response.ok) {
+      const errorText = await response.text();
+      throw new Error(`Supabase RAG chat returned ${response.status}: ${errorText}`);
+    }
+
+    const data = await response.json();
+    const content = data.choices?.[0]?.message?.content;
+
+    if (!content || content.trim().length === 0) {
+      throw new Error("Supabase RAG chat returned empty response");
+    }
+
+    log(`✅ Supabase RAG response received (${content.length} chars, ${data.context_chunks || 0} chunks used)`);
+    return content.trim();
+  }
+
+  /**
    * Analyze bot response to update conversation state (demo asks, user intent detection)
    */
   analyzeResponseForState(botResponse: string, state: ConversationState): Partial<ConversationState> {
@@ -693,19 +742,42 @@ export class ChatbotService {
       // Check for user-scoped RAG config override
       const userRagConfig = await this.getUserRagConfig();
       let effectiveConfig = config;
-      if (userRagConfig) {
+      let useSupabaseRag = false;
+
+      if (userRagConfig && userRagConfig.ragBaseUrl && userRagConfig.ragBaseUrl !== 'supabase-knowledge-base') {
+        // User has external RAG agent configured
         log(`🔧 Using user RAG agent config: ${userRagConfig.agentName}`);
         effectiveConfig = {
           ...config,
           ragBaseUrl: userRagConfig.ragBaseUrl,
           ragAccessKey: userRagConfig.ragAccessKey,
         };
+      } else if (userRagConfig?.ragBaseUrl === 'supabase-knowledge-base' || !userRagConfig?.ragBaseUrl) {
+        // Use built-in Supabase pgvector RAG if configured
+        const supabaseUrl = process.env.VITE_SUPABASE_URL;
+        const supabaseKey = process.env.SUPABASE_SERVICE_ROLE_KEY;
+        if (supabaseUrl && supabaseKey && this.tenantContext) {
+          useSupabaseRag = true;
+          log(`🔧 Using built-in Supabase RAG for user ${this.tenantContext.userId}`);
+        }
       }
 
       const effectiveSystemPrompt = userRagConfig?.systemPrompt || systemPrompt;
 
-      // Call RAG endpoint with system prompt
-      const botResponse = await this.callRagEndpoint(effectiveSystemPrompt, ragMessages, effectiveConfig);
+      let botResponse: string;
+
+      if (useSupabaseRag && this.tenantContext) {
+        // Call Supabase rag-chat edge function directly
+        botResponse = await this.callSupabaseRagChat(
+          effectiveSystemPrompt,
+          ragMessages,
+          this.tenantContext.organizationId,
+          this.tenantContext.userId
+        );
+      } else {
+        // Call external RAG endpoint
+        botResponse = await this.callRagEndpoint(effectiveSystemPrompt, ragMessages, effectiveConfig);
+      }
 
       // Analyze response to update state (demo ask tracking)
       const responseStateUpdates = this.analyzeResponseForState(botResponse, updatedState);
