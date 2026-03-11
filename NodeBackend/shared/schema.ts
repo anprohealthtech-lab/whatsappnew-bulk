@@ -9,7 +9,7 @@ export const users = pgTable("users", {
   password: text("password").notNull(), // bcrypt hash
   email: text("email").unique(),
   organizationId: text("organization_id").default("default_org").notNull(),
-  role: text("role").default("user").notNull(), // 'admin' | 'user'
+  role: text("role").default("user").notNull(), // 'super_admin' | 'admin' | 'user'
   lastLoginAt: timestamp("last_login_at"),
   createdAt: timestamp("created_at").defaultNow(),
   updatedAt: timestamp("updated_at").defaultNow(),

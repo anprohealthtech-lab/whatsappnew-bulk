@@ -34,6 +34,7 @@ import { ScheduleCampaignPanel } from "@/components/dashboard/ScheduleCampaignPa
 import { GroupScraperPanel } from "@/components/dashboard/GroupScraperPanel";
 import { UserRagSettingsPanel } from "@/components/dashboard/UserRagSettingsPanel";
 import { KnowledgeBasePanel } from "@/components/dashboard/KnowledgeBasePanel";
+import { SuperAdminPanel } from "@/components/dashboard/SuperAdminPanel";
 
 // Form schemas
 const messageSchema = z.object({
@@ -509,6 +510,8 @@ export default function Dashboard() {
 
           {/* Knowledge Base Section */}
           {activeSection === "knowledge-base" && <KnowledgeBasePanel />}
+
+          {activeSection === "super-admin" && <SuperAdminPanel />}
         </main>
       </div>
 

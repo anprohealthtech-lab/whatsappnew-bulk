@@ -38,12 +38,16 @@ class AuthService {
 
     const passwordHash = await bcrypt.hash(password, 12);
 
+    // Auto-promote to super_admin if username matches SUPER_ADMIN_USERNAME env var
+    const superAdminUsername = process.env.SUPER_ADMIN_USERNAME;
+    const isSuperAdmin = superAdminUsername && username === superAdminUsername;
+
     const result = await db.insert(users).values({
       username,
       password: passwordHash,
       email: email || null,
-      organizationId: organizationId || 'org_' + Date.now(),
-      role: 'admin', // First user of an org is admin
+      organizationId: isSuperAdmin ? 'platform' : (organizationId || 'org_' + Date.now()),
+      role: isSuperAdmin ? 'super_admin' : 'admin',
     }).returning();
 
     const user = result[0];

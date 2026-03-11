@@ -33,6 +33,30 @@ export function requireAuth(req: Request, res: Response, next: NextFunction): vo
 }
 
 /**
+ * Super admin middleware — requires authenticated user with role 'super_admin'.
+ */
+export function requireSuperAdmin(req: Request, res: Response, next: NextFunction): void {
+  const authHeader = req.headers.authorization;
+  if (!authHeader || !authHeader.startsWith('Bearer ')) {
+    res.status(401).json({ message: 'Authentication required' });
+    return;
+  }
+
+  const token = authHeader.slice(7);
+  try {
+    const payload = authService.verifyToken(token);
+    if (payload.role !== 'super_admin') {
+      res.status(403).json({ message: 'Super admin access required' });
+      return;
+    }
+    req.auth = payload;
+    next();
+  } catch {
+    res.status(401).json({ message: 'Invalid or expired token' });
+  }
+}
+
+/**
  * Optional auth — sets req.auth if token present, but doesn't reject.
  * Useful for endpoints that work for both authenticated and anonymous users.
  */

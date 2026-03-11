@@ -11,6 +11,7 @@ import {
     Clock,
     Bot,
     Database,
+    ShieldCheck,
     LogOut,
 } from "lucide-react";
 import { cn } from "@/lib/utils";
@@ -38,6 +39,9 @@ export function Sidebar({ activeSection, setActiveSection, setLocation }: Sideba
         { id: "hr-admins", label: "HR / Tasks", icon: Building2, action: () => setActiveSection("hr-admins") },
         { id: "rag-settings", label: "AI Chatbot", icon: Bot, action: () => setActiveSection("rag-settings") },
         { id: "knowledge-base", label: "Knowledge Base", icon: Database, action: () => setActiveSection("knowledge-base") },
+        ...(user?.role === 'super_admin' ? [
+            { id: "super-admin", label: "Super Admin", icon: ShieldCheck, action: () => setActiveSection("super-admin") },
+        ] : []),
     ];
 
     return (

@@ -21,8 +21,9 @@ import { withRetry } from "./dbRetry";
 import { z } from "zod";
 import * as XLSX from 'xlsx';
 import { authService } from "./services/AuthService";
-import { requireAuth, optionalAuth, getTenant } from "./authMiddleware";
+import { requireAuth, optionalAuth, getTenant, requireSuperAdmin } from "./authMiddleware";
 import { sessionManager } from "./services/WhatsAppSessionManager";
+import { users } from "@shared/schema";
 
 // Configure CORS
 const corsOptions = {
@@ -222,6 +223,167 @@ export async function registerRoutes(app: Express): Promise<Server> {
       if (!user) return res.status(404).json({ message: 'User not found' });
       const { password, ...safe } = user;
       res.json(safe);
+    } catch (error: any) {
+      res.status(500).json({ message: error.message });
+    }
+  });
+
+  // ============================================================
+  // SUPER ADMIN ROUTES (requires super_admin role)
+  // ============================================================
+
+  // List all organizations with user counts
+  app.get('/api/admin/organizations', requireSuperAdmin, async (_req, res) => {
+    try {
+      const result = await db.select({
+        organizationId: users.organizationId,
+      }).from(users).groupBy(users.organizationId);
+
+      // Get user counts per org
+      const orgs = await Promise.all(
+        [...new Set(result.map(r => r.organizationId))].map(async (orgId) => {
+          const orgUsers = await db.select().from(users).where(eq(users.organizationId, orgId));
+          return {
+            organizationId: orgId,
+            userCount: orgUsers.length,
+            users: orgUsers.map(u => ({ id: u.id, username: u.username, email: u.email, role: u.role, lastLoginAt: u.lastLoginAt, createdAt: u.createdAt })),
+          };
+        })
+      );
+      res.json(orgs);
+    } catch (error: any) {
+      res.status(500).json({ message: error.message });
+    }
+  });
+
+  // List all users
+  app.get('/api/admin/users', requireSuperAdmin, async (_req, res) => {
+    try {
+      const allUsers = await db.select({
+        id: users.id,
+        username: users.username,
+        email: users.email,
+        organizationId: users.organizationId,
+        role: users.role,
+        lastLoginAt: users.lastLoginAt,
+        createdAt: users.createdAt,
+      }).from(users).orderBy(desc(users.createdAt));
+      res.json(allUsers);
+    } catch (error: any) {
+      res.status(500).json({ message: error.message });
+    }
+  });
+
+  // Create a new user (super admin can create users in any org)
+  app.post('/api/admin/users', requireSuperAdmin, async (req, res) => {
+    try {
+      const { username, password, email, organizationId, role } = req.body;
+      if (!username || !password) {
+        return res.status(400).json({ message: 'Username and password are required' });
+      }
+      const validRoles = ['user', 'admin', 'super_admin'];
+      if (role && !validRoles.includes(role)) {
+        return res.status(400).json({ message: 'Invalid role' });
+      }
+
+      const existing = await db.select().from(users).where(eq(users.username, username)).limit(1);
+      if (existing.length > 0) {
+        return res.status(409).json({ message: 'Username already exists' });
+      }
+
+      const bcrypt = await import('bcryptjs');
+      const passwordHash = await bcrypt.hash(password, 12);
+
+      const result = await db.insert(users).values({
+        username,
+        password: passwordHash,
+        email: email || null,
+        organizationId: organizationId || 'org_' + Date.now(),
+        role: role || 'user',
+      }).returning();
+
+      const { password: _, ...safe } = result[0];
+      res.json(safe);
+    } catch (error: any) {
+      res.status(500).json({ message: error.message });
+    }
+  });
+
+  // Update user (change role, org, email)
+  app.patch('/api/admin/users/:userId', requireSuperAdmin, async (req, res) => {
+    try {
+      const { userId } = req.params;
+      const { role, organizationId, email } = req.body;
+
+      const updateData: any = { updatedAt: new Date() };
+      if (role) {
+        const validRoles = ['user', 'admin', 'super_admin'];
+        if (!validRoles.includes(role)) return res.status(400).json({ message: 'Invalid role' });
+        updateData.role = role;
+      }
+      if (organizationId) updateData.organizationId = organizationId;
+      if (email !== undefined) updateData.email = email || null;
+
+      const result = await db.update(users).set(updateData).where(eq(users.id, userId)).returning();
+      if (result.length === 0) return res.status(404).json({ message: 'User not found' });
+
+      const { password: _, ...safe } = result[0];
+      res.json(safe);
+    } catch (error: any) {
+      res.status(500).json({ message: error.message });
+    }
+  });
+
+  // Delete user
+  app.delete('/api/admin/users/:userId', requireSuperAdmin, async (req, res) => {
+    try {
+      const { userId } = req.params;
+      // Prevent deleting yourself
+      if (userId === req.auth!.userId) {
+        return res.status(400).json({ message: 'Cannot delete your own account' });
+      }
+      const result = await db.delete(users).where(eq(users.id, userId)).returning();
+      if (result.length === 0) return res.status(404).json({ message: 'User not found' });
+      res.json({ message: 'User deleted' });
+    } catch (error: any) {
+      res.status(500).json({ message: error.message });
+    }
+  });
+
+  // Reset user password
+  app.post('/api/admin/users/:userId/reset-password', requireSuperAdmin, async (req, res) => {
+    try {
+      const { userId } = req.params;
+      const { newPassword } = req.body;
+      if (!newPassword || newPassword.length < 6) {
+        return res.status(400).json({ message: 'Password must be at least 6 characters' });
+      }
+      const bcrypt = await import('bcryptjs');
+      const hash = await bcrypt.hash(newPassword, 12);
+      const result = await db.update(users).set({ password: hash, updatedAt: new Date() }).where(eq(users.id, userId)).returning();
+      if (result.length === 0) return res.status(404).json({ message: 'User not found' });
+      res.json({ message: 'Password reset successfully' });
+    } catch (error: any) {
+      res.status(500).json({ message: error.message });
+    }
+  });
+
+  // Platform stats for super admin dashboard
+  app.get('/api/admin/stats', requireSuperAdmin, async (_req, res) => {
+    try {
+      const allUsers = await db.select().from(users);
+      const orgSet = new Set(allUsers.map(u => u.organizationId));
+      const superAdmins = allUsers.filter(u => u.role === 'super_admin').length;
+      const admins = allUsers.filter(u => u.role === 'admin').length;
+      const regularUsers = allUsers.filter(u => u.role === 'user').length;
+
+      res.json({
+        totalUsers: allUsers.length,
+        totalOrganizations: orgSet.size,
+        superAdmins,
+        admins,
+        regularUsers,
+      });
     } catch (error: any) {
       res.status(500).json({ message: error.message });
     }
