@@ -4,6 +4,9 @@
 .env.production
 .env.development
 
+# Claude settings (may contain secrets in command history)
+.claude/
+
 # Node modules
 node_modules/
 npm-debug.log*
