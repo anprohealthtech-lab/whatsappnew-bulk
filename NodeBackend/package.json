@@ -101,9 +101,7 @@
     "@vitejs/plugin-react": "^4.3.2",
     "autoprefixer": "^10.4.20",
     "postcss": "^8.4.47",
-    "tailwindcss": "^3.4.17"
-  },
-  "devDependencies": {
+    "tailwindcss": "^3.4.17",
     "@replit/vite-plugin-cartographer": "^0.2.8",
     "@replit/vite-plugin-runtime-error-modal": "^0.0.3",
     "@tailwindcss/typography": "^0.5.15",
@@ -122,6 +120,7 @@
     "tsx": "^4.20.3",
     "typescript": "5.6.3"
   },
+  "devDependencies": {},
   "optionalDependencies": {
     "bufferutil": "^4.0.8"
   }
