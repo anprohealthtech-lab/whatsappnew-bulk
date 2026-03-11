@@ -3,7 +3,7 @@
   "version": "1.0.0",
   "description": "WhatsApp LIMS Integration System - DigitalOcean Deployment",
   "scripts": {
-    "install": "cd NodeBackend && npm install --include=dev",
+    "install": "cd NodeBackend && npm install",
     "build": "cd NodeBackend && npm run build",
     "start": "cd NodeBackend && npm start",
     "dev": "cd NodeBackend && npm run dev"
