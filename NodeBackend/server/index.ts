@@ -5,6 +5,7 @@ import { serveStatic, log } from "./utils";
 import { runMigrations } from "./migrate";
 import { campaignService } from "./services/CampaignService";
 import { sessionManager } from "./services/WhatsAppSessionManager";
+import { seedSuperAdmin } from "./seedSuperAdmin";
 
 const app = express();
 app.use(express.json());
@@ -45,6 +46,10 @@ app.use((req, res, next) => {
     // Run DB migrations on startup — creates all tables if they don't exist
     // This ensures DO PostgreSQL has the schema before the app starts
     await runMigrations();
+
+    // Seed super admin account from env vars (if configured)
+    await seedSuperAdmin();
+
     campaignService.startScheduler();
 
     // Restore any previously connected WhatsApp sessions
