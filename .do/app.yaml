@@ -8,7 +8,7 @@ services:
 - name: whatsapp-api
   github:
     repo: anprohealthtech-lab/whatsappnew-bulk
-    branch: main
+    branch: master
     deploy_on_push: true
   
   build_command: npm run build
@@ -74,13 +74,6 @@ services:
   #   size: 2GiB
   #   mount_path: /workspace/NodeBackend/server/sessions
 
-databases:
-- name: whatsapp-db
-  engine: PG
-  version: "16"
-  size: db-s-1vcpu-1gb
-  num_nodes: 1
-#   type: PRIMARY
-#   wildcard: false
-#   certificate:
+# NOTE: Using external DO Managed PostgreSQL — set DATABASE_URL env var directly
+# Do NOT add a databases block here (it creates a NEW db and breaks the URL reference)
 #     type: LETS_ENCRYPT

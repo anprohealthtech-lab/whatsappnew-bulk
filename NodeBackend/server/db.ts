@@ -10,8 +10,12 @@ if (!process.env.DATABASE_URL) {
 // Force IPv4 — DO pods sometimes have broken IPv6 routing
 dns.setDefaultResultOrder('ipv4first');
 
-const dbUrl = new URL(process.env.DATABASE_URL);
-console.log(`🔌 DB host: ${dbUrl.hostname}:${dbUrl.port || 5432}`);
+try {
+  const dbUrl = new URL(process.env.DATABASE_URL);
+  console.log(`🔌 DB host: ${dbUrl.hostname}:${dbUrl.port || 5432}`);
+} catch {
+  console.log(`🔌 DB URL provided (could not parse as URL, but will try connecting)`);
+}
 
 // Standard postgres-js driver — works perfectly with DO Managed PostgreSQL (same network)
 const queryClient = postgres(process.env.DATABASE_URL, {
