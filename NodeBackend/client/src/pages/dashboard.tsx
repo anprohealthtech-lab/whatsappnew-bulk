@@ -65,9 +65,20 @@ export default function Dashboard() {
 
   const { toast } = useToast();
   const queryClient = useQueryClient();
-  const { isConnected, whatsappStatus } = useSocket();
+  const { isConnected: wsConnected, whatsappStatus: wsWhatsappStatus } = useSocket();
   const [, setLocation] = useLocation();
   const isMobile = useIsMobile();
+
+  // Per-user session status (source of truth for WhatsApp connection)
+  const { data: userSessions = [] } = useQuery<any[]>({
+    queryKey: ["/api/whatsapp/sessions"],
+    refetchInterval: 10000,
+  });
+  const hasConnectedSession = userSessions.some((s: any) => s.status === "connected");
+  const isConnected = hasConnectedSession;
+  const whatsappStatus = hasConnectedSession
+    ? { isConnected: true, isAuthenticated: true, lastSeen: userSessions.find((s: any) => s.status === "connected")?.connectedAt || null }
+    : { isConnected: false, isAuthenticated: false, lastSeen: null };
 
   // Close sidebar on mobile when section changes
   useEffect(() => {

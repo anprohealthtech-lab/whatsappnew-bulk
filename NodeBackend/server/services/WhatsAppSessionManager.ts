@@ -11,10 +11,25 @@ import type { WhatsAppSession } from '@shared/schema';
  */
 export class WhatsAppSessionManager {
   private sessions = new Map<string, WhatsAppService>();
+  /** Registered event handlers that are wired to every session */
+  private sessionEventHandlers: Array<{ event: string; handler: (userId: string, sessionName: string, data: any) => void }> = [];
 
   /** Build a consistent key for lookup */
   private key(userId: string, sessionName = 'default'): string {
     return `${userId}::${sessionName}`;
+  }
+
+  /**
+   * Register an event handler that will be wired to ALL sessions (current and future).
+   * The handler receives (userId, sessionName, eventData).
+   */
+  onSessionEvent(event: string, handler: (userId: string, sessionName: string, data: any) => void) {
+    this.sessionEventHandlers.push({ event, handler });
+    // Wire to all existing loaded sessions
+    this.sessions.forEach((service, key) => {
+      const [uid, sName] = key.split('::');
+      service.on(event, (data: any) => handler(uid, sName, data));
+    });
   }
 
   /**
@@ -45,6 +60,11 @@ export class WhatsAppSessionManager {
 
     this.sessions.set(k, service);
 
+    // Wire registered event handlers from routes
+    for (const { event, handler } of this.sessionEventHandlers) {
+      service.on(event, (data: any) => handler(userId, sessionName, data));
+    }
+
     // Ensure DB record exists
     await this.ensureSessionRecord(userId, sessionName);
 
@@ -54,6 +74,45 @@ export class WhatsAppSessionManager {
   /** Get a session only if already loaded (no DB creation) */
   getLoadedSession(userId: string, sessionName = 'default'): WhatsAppService | undefined {
     return this.sessions.get(this.key(userId, sessionName));
+  }
+
+  /**
+   * Get the first connected session for a user.
+   * Returns the WhatsAppService instance if found, or null if no connected session.
+   */
+  async getFirstConnectedSession(userId: string): Promise<WhatsAppService | null> {
+    const sessions = await this.listSessions(userId);
+    const connected = sessions.find(s => s.status === 'connected');
+    if (!connected) return null;
+    return this.getLoadedSession(userId, connected.sessionName) ?? null;
+  }
+
+  /**
+   * Get any connected session across all users (for system-level operations).
+   * Returns { userId, service } or null if none found.
+   */
+  getAnyConnectedSession(): { userId: string; sessionName: string; service: WhatsAppService } | null {
+    let result: { userId: string; sessionName: string; service: WhatsAppService } | null = null;
+    this.sessions.forEach((service, key) => {
+      if (!result) {
+        const status = service.getStatus();
+        if (status.isConnected) {
+          const [userId, sessionName] = key.split('::');
+          result = { userId, sessionName, service };
+        }
+      }
+    });
+    return result;
+  }
+
+  /** Get all currently loaded sessions with their user info */
+  getAllLoadedSessions(): Array<{ userId: string; sessionName: string; service: WhatsAppService }> {
+    const result: Array<{ userId: string; sessionName: string; service: WhatsAppService }> = [];
+    this.sessions.forEach((service, key) => {
+      const [userId, sessionName] = key.split('::');
+      result.push({ userId, sessionName, service });
+    });
+    return result;
   }
 
   /** List all sessions for a user from DB */

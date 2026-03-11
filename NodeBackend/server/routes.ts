@@ -4,7 +4,7 @@ import { WebSocketServer } from "ws";
 import multer from "multer";
 import cors from "cors";
 import { storage } from "./storage";
-import { whatsAppService } from "./services/WhatsAppService";
+import type { WhatsAppService } from "./services/WhatsAppService";
 import { messageService } from "./services/MessageService";
 import { fileService } from "./services/FileService";
 import { persistentFileService } from "./services/PersistentFileService";
@@ -89,6 +89,15 @@ function extractLineValue(text: string, label: string): string | undefined {
   const escaped = label.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
   const match = text.match(new RegExp(`^\\s*${escaped}\\s*:\\s*(.+)\\s*$`, "im"));
   return match?.[1]?.trim();
+}
+
+/** Get the user's first connected WhatsApp session, or throw */
+async function getUserWASession(req: Request): Promise<WhatsAppService> {
+  const userId = req.auth?.userId;
+  if (!userId) throw new Error('Authentication required');
+  const session = await sessionManager.getFirstConnectedSession(userId);
+  if (!session) throw new Error('No connected WhatsApp session. Please connect WhatsApp first.');
+  return session;
 }
 
 function parseLeadFromFreeText(text: string): Partial<ParsedWebhookLead> {
@@ -458,12 +467,12 @@ export async function registerRoutes(app: Express): Promise<Server> {
     }
   });
 
-  // Initialize legacy WhatsApp service (for backwards compatibility)
+  // Restore previously connected WhatsApp sessions (multi-user)
   try {
-    await whatsAppService.initialize();
-    log("Legacy WhatsApp service initialized successfully");
+    await sessionManager.restoreConnectedSessions();
+    log("WhatsApp sessions restored successfully");
   } catch (error: any) {
-    log(`Failed to initialize legacy WhatsApp service: ${(error as Error).message}`);
+    log(`Failed to restore WhatsApp sessions: ${(error as Error).message}`);
   }
 
   // Initialize chatbot configuration
@@ -479,12 +488,8 @@ export async function registerRoutes(app: Express): Promise<Server> {
   wss.on('connection', (ws) => {
     log('WebSocket client connected');
 
-    // Send current WhatsApp status
-    const status = whatsAppService.getStatus();
-    ws.send(JSON.stringify({
-      type: 'whatsapp-status',
-      data: status,
-    }));
+    // Note: WhatsApp status is now per-user — clients should use /api/whatsapp/sessions
+    // WebSocket is still used for real-time event broadcasts (QR codes, incoming messages, etc.)
 
     ws.on('close', () => {
       log('WebSocket client disconnected');
@@ -506,304 +511,312 @@ export async function registerRoutes(app: Express): Promise<Server> {
     });
   };
 
-  // Setup WhatsApp service event listeners with reconnection handling
-  const setupWhatsAppEventListeners = () => {
-    // Don't remove all listeners as it breaks ongoing QR code broadcasting
-    // Only set up listeners if they don't exist already
+  // Setup per-session WhatsApp event listeners via sessionManager
+  // These handlers are wired to EVERY session (current and future)
 
-    whatsAppService.on('qr-code', (data) => {
-      console.log('🎯 ROUTES: Received qr-code event from WhatsApp service');
-      console.log('🎯 QR Data received:', data);
-      console.log('🎯 WebSocket clients count:', wss.clients.size);
-      console.log('🎯 Broadcasting QR code to WebSocket clients...');
-      broadcast('qr-code', data);
-      console.log('🎯 QR code broadcast completed');
-    });
+  sessionManager.onSessionEvent('qr-code', (userId, sessionName, data) => {
+    console.log(`🎯 ROUTES: Received qr-code event from session ${userId}/${sessionName}`);
+    broadcast('qr-code', { ...data, userId, sessionName });
+  });
 
-    whatsAppService.on('whatsapp-status', (data) => {
-      broadcast('whatsapp-status', data);
-    });
+  sessionManager.onSessionEvent('whatsapp-status', (userId, sessionName, data) => {
+    broadcast('whatsapp-status', { ...data, userId, sessionName });
+  });
 
-    whatsAppService.on('whatsapp-authenticated', (data) => {
-      broadcast('whatsapp-authenticated', data);
-    });
+  sessionManager.onSessionEvent('whatsapp-authenticated', (userId, sessionName, data) => {
+    broadcast('whatsapp-authenticated', { ...data, userId, sessionName });
+  });
 
-    whatsAppService.on('whatsapp-auth-failure', (data) => {
-      broadcast('whatsapp-auth-failure', data);
-    });
+  sessionManager.onSessionEvent('whatsapp-auth-failure', (userId, sessionName, data) => {
+    broadcast('whatsapp-auth-failure', { ...data, userId, sessionName });
+  });
 
-    whatsAppService.on('disconnected', (data) => {
-      broadcast('disconnected', data);
-    });
+  sessionManager.onSessionEvent('disconnected', (userId, sessionName, data) => {
+    broadcast('disconnected', { ...data, userId, sessionName });
+  });
 
-    whatsAppService.on('message-sent', (data) => {
-      broadcast('message-sent', data);
-    });
+  sessionManager.onSessionEvent('message-sent', (userId, sessionName, data) => {
+    broadcast('message-sent', data);
+  });
 
-    whatsAppService.on('message-update', async (data) => {
-      // Update message delivery status
-      await messageService.updateMessageDeliveryStatus(data.messageId, data.ack === 3 ? 'delivered' : 'failed');
-      broadcast('message-update', data);
-    });
+  sessionManager.onSessionEvent('message-update', async (userId, sessionName, data) => {
+    // Update message delivery status
+    await messageService.updateMessageDeliveryStatus(data.messageId, data.ack === 3 ? 'delivered' : 'failed');
+    broadcast('message-update', data);
+  });
 
-    whatsAppService.on('button-clicked', async (data) => {
-      console.log('📱 Button clicked event received:', data);
+  sessionManager.onSessionEvent('button-clicked', async (userId, sessionName, data) => {
+    console.log('📱 Button clicked event received:', data);
 
-      // Handle STOP_MESSAGES button
-      if (data.buttonId === 'STOP_MESSAGES') {
-        try {
-          await storage.addToBlocklist(data.phoneNumber, 'user_requested');
-          console.log(`✅ Added ${data.phoneNumber} to blocklist`);
+    // Handle STOP_MESSAGES button
+    if (data.buttonId === 'STOP_MESSAGES') {
+      try {
+        await storage.addToBlocklist(data.phoneNumber, 'user_requested');
+        console.log(`✅ Added ${data.phoneNumber} to blocklist`);
 
-          // Send confirmation message
-          await whatsAppService.sendTextMessage(
+        // Send confirmation using the session that received the event
+        const session = sessionManager.getLoadedSession(userId, sessionName);
+        if (session) {
+          await session.sendTextMessage(
             data.phoneNumber,
             '✅ You have been unsubscribed. You will not receive any more messages from us.'
           );
-        } catch (error) {
-          console.error('Failed to block number:', error);
         }
+      } catch (error) {
+        console.error('Failed to block number:', error);
       }
+    }
 
-      broadcast('button-clicked', data);
-    });
+    broadcast('button-clicked', data);
+  });
 
-    // Message debouncing: concatenate rapid messages instead of discarding
-    const messageDebounceMap = new Map<string, NodeJS.Timeout>();
-    const messageBatchMap = new Map<string, { messages: string[]; latestData: any }>();
-    const DEBOUNCE_DELAY = 5000; // 5 seconds - wait for user to finish typing
+  // Message debouncing: concatenate rapid messages instead of discarding
+  const messageDebounceMap = new Map<string, NodeJS.Timeout>();
+  const messageBatchMap = new Map<string, { messages: string[]; latestData: any; userId: string; sessionName: string }>();
+  const DEBOUNCE_DELAY = 5000; // 5 seconds - wait for user to finish typing
 
-    // Handle incoming messages
-    whatsAppService.on('incoming-message', async (data) => {
-      console.log('📥 Incoming message received:', data);
+  // Handle incoming messages from any session
+  sessionManager.onSessionEvent('incoming-message', async (userId, sessionName, data) => {
+    console.log(`📥 Incoming message received (user ${userId}/${sessionName}):`, data);
 
-      // Store each incoming message immediately in DB (don't lose any)
-      try {
+    // Store each incoming message immediately in DB (don't lose any)
+    try {
+      await withRetry(() => storage.createMessage({
+        phoneNumber: data.phoneNumber,
+        content: data.content,
+        type: 'incoming',
+        status: 'received',
+      }));
+    } catch (err) {
+      console.error('❌ Failed to store incoming message:', err);
+    }
+
+    // Accumulate messages for this phone number
+    const existing = messageBatchMap.get(data.phoneNumber);
+    if (existing) {
+      existing.messages.push(data.content);
+      existing.latestData = data;
+    } else {
+      messageBatchMap.set(data.phoneNumber, {
+        messages: [data.content],
+        latestData: data,
+        userId,
+        sessionName,
+      });
+    }
+
+    // Clear existing timeout for this phone number if any
+    const existingTimeout = messageDebounceMap.get(data.phoneNumber);
+    if (existingTimeout) {
+      clearTimeout(existingTimeout);
+      console.log(`⏱️ Debouncing message from ${data.phoneNumber} (${messageBatchMap.get(data.phoneNumber)?.messages.length} msgs batched)`);
+    }
+
+    // Set new timeout - process all batched messages after debounce window
+    const timeoutId = setTimeout(async () => {
+      messageDebounceMap.delete(data.phoneNumber);
+      const batch = messageBatchMap.get(data.phoneNumber);
+      messageBatchMap.delete(data.phoneNumber);
+
+      if (batch) {
+        // Combine all batched messages into one for bot processing
+        const combinedContent = batch.messages.join('\n');
+        const processData = {
+          ...batch.latestData,
+          content: combinedContent,
+          _alreadyStored: true, // Flag: messages already saved to DB individually
+          _batchCount: batch.messages.length,
+          _userId: batch.userId,
+          _sessionName: batch.sessionName,
+        };
+        console.log(`📦 Processing batch of ${batch.messages.length} message(s) from ${data.phoneNumber}`);
+        await processIncomingMessage(processData);
+      }
+    }, DEBOUNCE_DELAY);
+
+    messageDebounceMap.set(data.phoneNumber, timeoutId);
+  });
+
+  // Extract message processing logic — now uses the session that received the message
+  async function processIncomingMessage(data: any) {
+    // Get the WhatsApp session that received this message
+    const ownerUserId: string = data._userId;
+    const ownerSessionName: string = data._sessionName;
+    const waSession = sessionManager.getLoadedSession(ownerUserId, ownerSessionName);
+    if (!waSession) {
+      console.error(`❌ Cannot process incoming message: session ${ownerUserId}/${ownerSessionName} no longer loaded`);
+      return;
+    }
+
+    try {
+      // Save incoming message to database (skip if already stored by debounce handler)
+      if (!data._alreadyStored) {
         await withRetry(() => storage.createMessage({
           phoneNumber: data.phoneNumber,
           content: data.content,
           type: 'incoming',
           status: 'received',
         }));
-      } catch (err) {
-        console.error('❌ Failed to store incoming message:', err);
       }
 
-      // Accumulate messages for this phone number
-      const existing = messageBatchMap.get(data.phoneNumber);
-      if (existing) {
-        existing.messages.push(data.content);
-        existing.latestData = data;
-      } else {
-        messageBatchMap.set(data.phoneNumber, {
-          messages: [data.content],
-          latestData: data,
-        });
+      // Check if number is blocked
+      const isBlocked = await withRetry(() => storage.isNumberBlocked(data.phoneNumber));
+      if (isBlocked) {
+        console.log(`⛔ Ignoring message from blocked number: ${data.phoneNumber}`);
+        broadcast('incoming-message', data);
+        return;
       }
 
-      // Clear existing timeout for this phone number if any
-      const existingTimeout = messageDebounceMap.get(data.phoneNumber);
-      if (existingTimeout) {
-        clearTimeout(existingTimeout);
-        console.log(`⏱️ Debouncing message from ${data.phoneNumber} (${messageBatchMap.get(data.phoneNumber)?.messages.length} msgs batched)`);
-      }
+      // ========================================
+      // PRIORITY 1: Check if HR Admin
+      // ========================================
+      const hrChatbotService = new HRChatbotService(storage, waSession);
+      const isHRAdmin = await withRetry(() => hrChatbotService.isHRAdmin(data.phoneNumber));
 
-      // Set new timeout - process all batched messages after debounce window
-      const timeoutId = setTimeout(async () => {
-        messageDebounceMap.delete(data.phoneNumber);
-        const batch = messageBatchMap.get(data.phoneNumber);
-        messageBatchMap.delete(data.phoneNumber);
+      if (isHRAdmin) {
+        console.log(`👔 HR Admin detected: ${data.phoneNumber} (messageType: ${data.messageType || 'text'})`);
 
-        if (batch) {
-          // Combine all batched messages into one for bot processing
-          const combinedContent = batch.messages.join('\n');
-          const processData = {
-            ...batch.latestData,
-            content: combinedContent,
-            _alreadyStored: true, // Flag: messages already saved to DB individually
-            _batchCount: batch.messages.length,
-          };
-          console.log(`📦 Processing batch of ${batch.messages.length} message(s) from ${data.phoneNumber}`);
-          await processIncomingMessage(processData);
-        }
-      }, DEBOUNCE_DELAY);
+        // Check if HR chatbot is active for this admin
+        const hrAdmin = await withRetry(() => storage.getHRAdmin(data.phoneNumber));
+        console.log(`🔍 HR Chatbot status for ${data.phoneNumber}: ${hrAdmin?.chatbotActive === 'false' ? 'PAUSED ⏸️' : 'ACTIVE ✅'}`);
 
-      messageDebounceMap.set(data.phoneNumber, timeoutId);
-    });
-
-    // Extract message processing logic
-    async function processIncomingMessage(data: any) {
-
-      try {
-        // Save incoming message to database (skip if already stored by debounce handler)
-        if (!data._alreadyStored) {
-          await withRetry(() => storage.createMessage({
-            phoneNumber: data.phoneNumber,
-            content: data.content,
-            type: 'incoming',
-            status: 'received',
-          }));
-        }
-
-        // Check if number is blocked
-        const isBlocked = await withRetry(() => storage.isNumberBlocked(data.phoneNumber));
-        if (isBlocked) {
-          console.log(`⛔ Ignoring message from blocked number: ${data.phoneNumber}`);
+        if (hrAdmin?.chatbotActive === 'false') {
+          console.log(`⏸️ HR Chatbot paused for ${data.phoneNumber} - skipping`);
           broadcast('incoming-message', data);
           return;
         }
 
-        // ========================================
-        // PRIORITY 1: Check if HR Admin
-        // ========================================
-        const hrChatbotService = new HRChatbotService(storage, whatsAppService);
-        const isHRAdmin = await withRetry(() => hrChatbotService.isHRAdmin(data.phoneNumber));
+        // Handle different message types
+        const messageType = data.messageType || 'text';
 
-        if (isHRAdmin) {
-          console.log(`👔 HR Admin detected: ${data.phoneNumber} (messageType: ${data.messageType || 'text'})`);
-
-          // Check if HR chatbot is active for this admin
-          const hrAdmin = await withRetry(() => storage.getHRAdmin(data.phoneNumber));
-          console.log(`🔍 HR Chatbot status for ${data.phoneNumber}: ${hrAdmin?.chatbotActive === 'false' ? 'PAUSED ⏸️' : 'ACTIVE ✅'}`);
-
-          if (hrAdmin?.chatbotActive === 'false') {
-            console.log(`⏸️ HR Chatbot paused for ${data.phoneNumber} - skipping`);
+        if (messageType === 'voice_note' || messageType === 'audio') {
+          // Voice notes - send to Claude for transcription and processing
+          if (data.audioData) {
+            console.log(`🎤 Processing voice note from HR Admin ${data.phoneNumber} through Claude`);
+            const audioPayload = {
+              base64: data.audioData,
+              mimetype: data.mediaInfo?.mimetype || 'audio/ogg'
+            };
+            // Use data.from to preserve @lid format for proper message delivery
+            const replyTo = data.from || data.phoneNumber;
+            await hrChatbotService.processHRMessage(data.phoneNumber, '[Voice Note]', audioPayload, replyTo);
+            broadcast('hr-chatbot-response-sent', { phoneNumber: data.phoneNumber, type: 'voice_processed' });
             broadcast('incoming-message', data);
             return;
-          }
-
-          // Handle different message types
-          const messageType = data.messageType || 'text';
-
-          if (messageType === 'voice_note' || messageType === 'audio') {
-            // Voice notes - send to Claude for transcription and processing
-            if (data.audioData) {
-              console.log(`🎤 Processing voice note from HR Admin ${data.phoneNumber} through Claude`);
-              const audioPayload = {
-                base64: data.audioData,
-                mimetype: data.mediaInfo?.mimetype || 'audio/ogg'
-              };
-              // Use data.from to preserve @lid format for proper message delivery
-              const replyTo = data.from || data.phoneNumber;
-              await hrChatbotService.processHRMessage(data.phoneNumber, '[Voice Note]', audioPayload, replyTo);
-              broadcast('hr-chatbot-response-sent', { phoneNumber: data.phoneNumber, type: 'voice_processed' });
-              broadcast('incoming-message', data);
-              return;
-            } else {
-              // No audio data available (download failed)
-              console.log(`🎤 Voice note from HR Admin ${data.phoneNumber} - no audio data, sending acknowledgment`);
-              await whatsAppService.sendTextMessage(
-                data.from || `${data.phoneNumber}@s.whatsapp.net`,
-                "🎤 I received your voice note but couldn't process it. Please try again or type your message."
-              );
-              broadcast('hr-chatbot-response-sent', { phoneNumber: data.phoneNumber, type: 'voice_failed' });
-              broadcast('incoming-message', data);
-              return;
-            }
-          }
-
-          if (messageType === 'image' || messageType === 'video' || messageType === 'document') {
-            // For media, acknowledge but can't process
-            console.log(`📎 Media (${messageType}) from HR Admin ${data.phoneNumber} - sending acknowledgment`);
-            await whatsAppService.sendTextMessage(
+          } else {
+            // No audio data available (download failed)
+            console.log(`🎤 Voice note from HR Admin ${data.phoneNumber} - no audio data, sending acknowledgment`);
+            await waSession.sendTextMessage(
               data.from || `${data.phoneNumber}@s.whatsapp.net`,
-              `📎 I received your ${messageType}! However, I can only process text messages at the moment.\n\nPlease type your request and I'll be happy to help.`
+              "🎤 I received your voice note but couldn't process it. Please try again or type your message."
             );
-            broadcast('hr-chatbot-response-sent', { phoneNumber: data.phoneNumber, type: 'media_acknowledgment' });
+            broadcast('hr-chatbot-response-sent', { phoneNumber: data.phoneNumber, type: 'voice_failed' });
             broadcast('incoming-message', data);
             return;
           }
+        }
 
-          // Process text message through HR chatbot
-          console.log(`🤖 Processing HR message from ${data.phoneNumber} (org: ${hrAdmin?.organizationName || hrAdmin?.organizationId})`);
-          // Use data.from to preserve @lid format for proper message delivery
-          const replyTo = data.from || data.phoneNumber;
-          await hrChatbotService.processHRMessage(data.phoneNumber, data.content, undefined, replyTo);
-          broadcast('hr-chatbot-response-sent', { phoneNumber: data.phoneNumber });
+        if (messageType === 'image' || messageType === 'video' || messageType === 'document') {
+          // For media, acknowledge but can't process
+          console.log(`📎 Media (${messageType}) from HR Admin ${data.phoneNumber} - sending acknowledgment`);
+          await waSession.sendTextMessage(
+            data.from || `${data.phoneNumber}@s.whatsapp.net`,
+            `📎 I received your ${messageType}! However, I can only process text messages at the moment.\n\nPlease type your request and I'll be happy to help.`
+          );
+          broadcast('hr-chatbot-response-sent', { phoneNumber: data.phoneNumber, type: 'media_acknowledgment' });
           broadcast('incoming-message', data);
           return;
         }
 
-        // ========================================
-        // PRIORITY 2: Check if Lead (LIMS chatbot)
-        // ========================================
-
-        // Initialize lead chatbot service
-        const chatbotService = new ChatbotService(storage, whatsAppService);
-
-        // Check if this phone number is already a lead
-        const isAlreadyLead = await withRetry(() => chatbotService.isLead(data.phoneNumber));
-
-        // Check if message contains lead trigger keyword (only flag if not already a lead)
-        if (!isAlreadyLead) {
-          const triggerKeyword = await chatbotService.detectLeadTrigger(data.content);
-          if (triggerKeyword) {
-            console.log(`🎯 Lead trigger detected: "${triggerKeyword}" from ${data.phoneNumber}`);
-            await withRetry(() => chatbotService.flagAsLead(
-              data.phoneNumber,
-              triggerKeyword,
-              undefined,
-              data.from
-            ));
-            // After flagging and sending greeting, skip processing this message through RAG
-            // The greeting is sufficient for first contact
-            broadcast('incoming-message', data);
-            return;
-          }
-        }
-
-        // Check if this phone number is a lead
-        const isLead = await withRetry(() => chatbotService.isLead(data.phoneNumber));
-        console.log(`🔍 Lead check for ${data.phoneNumber}: ${isLead ? 'YES (will process through chatbot)' : 'NO (checking auto-responses)'}`);
-
-        if (isLead) {
-          // Check if chatbot is active for this lead
-          const contact = await withRetry(() => storage.getContact(data.phoneNumber));
-          console.log(`🔍 Chatbot status check for ${data.phoneNumber}: ${contact?.chatbotActive === 'false' ? 'PAUSED ⏸️' : 'ACTIVE ✅'} (value: ${contact?.chatbotActive})`);
-
-          if (contact?.chatbotActive === 'false') {
-            console.log(`⏸️ Chatbot paused for ${data.phoneNumber} - skipping auto-response`);
-            broadcast('incoming-message', data);
-            return;
-          }
-
-          // Process through chatbot for leads
-          console.log(`🤖 Processing lead message from ${data.phoneNumber}`);
-          await chatbotService.processLeadMessage(data.phoneNumber, data.content, data.from);
-          broadcast('chatbot-response-sent', { phoneNumber: data.phoneNumber });
-        } else {
-          // ========================================
-          // PRIORITY 3: Check auto-responses for non-leads
-          // ========================================
-          const responded = await withRetry(() =>
-            autoResponseService.handleIncomingMessage(
-              data.phoneNumber,
-              data.content
-            )
-          );
-
-          if (responded) {
-            console.log(`✅ Auto-response sent to ${data.phoneNumber}`);
-          }
-        }
-
-        // Broadcast to WebSocket clients
+        // Process text message through HR chatbot
+        console.log(`🤖 Processing HR message from ${data.phoneNumber} (org: ${hrAdmin?.organizationName || hrAdmin?.organizationId})`);
+        // Use data.from to preserve @lid format for proper message delivery
+        const replyTo = data.from || data.phoneNumber;
+        await hrChatbotService.processHRMessage(data.phoneNumber, data.content, undefined, replyTo);
+        broadcast('hr-chatbot-response-sent', { phoneNumber: data.phoneNumber });
         broadcast('incoming-message', data);
-      } catch (error) {
-        console.error('❌ Failed to handle incoming message:', error);
-        console.error('Error details:', {
-          phoneNumber: data?.phoneNumber,
-          content: data?.content?.substring(0, 50),
-          errorMessage: error instanceof Error ? error.message : 'Unknown error',
-          stack: error instanceof Error ? error.stack : undefined
-        });
-        // Still broadcast the message even if processing failed
-        broadcast('incoming-message', data);
+        return;
       }
-    }
-  };
 
-  setupWhatsAppEventListeners();
+      // ========================================
+      // PRIORITY 2: Check if Lead (LIMS chatbot)
+      // ========================================
+
+      // Initialize lead chatbot service with the session that received the message
+      const chatbotService = new ChatbotService(storage, waSession);
+
+      // Check if this phone number is already a lead
+      const isAlreadyLead = await withRetry(() => chatbotService.isLead(data.phoneNumber));
+
+      // Check if message contains lead trigger keyword (only flag if not already a lead)
+      if (!isAlreadyLead) {
+        const triggerKeyword = await chatbotService.detectLeadTrigger(data.content);
+        if (triggerKeyword) {
+          console.log(`🎯 Lead trigger detected: "${triggerKeyword}" from ${data.phoneNumber}`);
+          await withRetry(() => chatbotService.flagAsLead(
+            data.phoneNumber,
+            triggerKeyword,
+            undefined,
+            data.from
+          ));
+          // After flagging and sending greeting, skip processing this message through RAG
+          // The greeting is sufficient for first contact
+          broadcast('incoming-message', data);
+          return;
+        }
+      }
+
+      // Check if this phone number is a lead
+      const isLead = await withRetry(() => chatbotService.isLead(data.phoneNumber));
+      console.log(`🔍 Lead check for ${data.phoneNumber}: ${isLead ? 'YES (will process through chatbot)' : 'NO (checking auto-responses)'}`);
+
+      if (isLead) {
+        // Check if chatbot is active for this lead
+        const contact = await withRetry(() => storage.getContact(data.phoneNumber));
+        console.log(`🔍 Chatbot status check for ${data.phoneNumber}: ${contact?.chatbotActive === 'false' ? 'PAUSED ⏸️' : 'ACTIVE ✅'} (value: ${contact?.chatbotActive})`);
+
+        if (contact?.chatbotActive === 'false') {
+          console.log(`⏸️ Chatbot paused for ${data.phoneNumber} - skipping auto-response`);
+          broadcast('incoming-message', data);
+          return;
+        }
+
+        // Process through chatbot for leads
+        console.log(`🤖 Processing lead message from ${data.phoneNumber}`);
+        await chatbotService.processLeadMessage(data.phoneNumber, data.content, data.from);
+        broadcast('chatbot-response-sent', { phoneNumber: data.phoneNumber });
+      } else {
+        // ========================================
+        // PRIORITY 3: Check auto-responses for non-leads
+        // ========================================
+        // Set the WhatsApp session for auto-response service
+        autoResponseService.setWhatsAppService(waSession);
+        const responded = await withRetry(() =>
+          autoResponseService.handleIncomingMessage(
+            data.phoneNumber,
+            data.content
+          )
+        );
+
+        if (responded) {
+          console.log(`✅ Auto-response sent to ${data.phoneNumber}`);
+        }
+      }
+
+      // Broadcast to WebSocket clients
+      broadcast('incoming-message', data);
+    } catch (error) {
+      console.error('❌ Failed to handle incoming message:', error);
+      console.error('Error details:', {
+        phoneNumber: data?.phoneNumber,
+        content: data?.content?.substring(0, 50),
+        errorMessage: error instanceof Error ? error.message : 'Unknown error',
+        stack: error instanceof Error ? error.stack : undefined
+      });
+      // Still broadcast the message even if processing failed
+      broadcast('incoming-message', data);
+    }
+  }
 
   // API Routes
 
@@ -811,6 +824,8 @@ export async function registerRoutes(app: Express): Promise<Server> {
   app.post('/api/send-message', requireAuth, async (req, res) => {
     try {
       const validatedData = sendMessageSchema.parse(req.body);
+      const waSession = await getUserWASession(req);
+      messageService.setWhatsAppService(waSession);
       const message = await messageService.sendTextMessage(
         validatedData.phoneNumber,
         validatedData.content
@@ -837,6 +852,8 @@ export async function registerRoutes(app: Express): Promise<Server> {
       }
 
       const validatedData = sendReportSchema.parse(req.body);
+      const waSession = await getUserWASession(req);
+      messageService.setWhatsAppService(waSession);
 
       // Save uploaded file with persistent storage for deployment
       const fileInfo = process.env.DATABASE_URL
@@ -898,7 +915,9 @@ export async function registerRoutes(app: Express): Promise<Server> {
   // Get system status
   app.get('/api/status', requireAuth, async (req, res) => {
     try {
-      const whatsappStatus = whatsAppService.getStatus();
+      // Get user's session status (or default disconnected)
+      const userSession = await sessionManager.getFirstConnectedSession(req.auth!.userId);
+      const whatsappStatus = userSession ? userSession.getStatus() : { isConnected: false, isAuthenticated: false };
       const messageStats = await messageService.getMessageStats();
       const systemLogs = await storage.getSystemLogs(10);
 
@@ -969,7 +988,9 @@ export async function registerRoutes(app: Express): Promise<Server> {
   app.post('/api/generate-qr', requireAuth, async (req: Request, res: Response) => {
     try {
       log('Generate QR code request received');
-      await whatsAppService.generateQRCode();
+      const sessionName = req.body.sessionName || 'default';
+      const waSession = await sessionManager.getSession(req.auth!.userId, sessionName);
+      await waSession.generateQRCode();
       res.json({ success: true, message: 'QR code generation started' });
     } catch (error: any) {
       log(`Generate QR error: ${error.message}`);
@@ -981,10 +1002,11 @@ export async function registerRoutes(app: Express): Promise<Server> {
   });
 
   // Get current QR code endpoint (fallback for when WebSocket fails)
-  app.get('/api/qr-code', requireAuth, (req: Request, res: Response) => {
+  app.get('/api/qr-code', requireAuth, async (req: Request, res: Response) => {
     try {
-      // Return the last generated QR code
-      const currentQR = whatsAppService.getCurrentQR();
+      // Get user's session (default name)
+      const waSession = sessionManager.getLoadedSession(req.auth!.userId, 'default');
+      const currentQR = waSession?.getCurrentQR();
       if (currentQR) {
         res.json({
           success: true,
@@ -1012,7 +1034,8 @@ export async function registerRoutes(app: Express): Promise<Server> {
   // WhatsApp API endpoints
   app.get('/api/whatsapp/status', requireAuth, async (req, res) => {
     try {
-      const status = whatsAppService.getStatus();
+      const userSession = await sessionManager.getFirstConnectedSession(req.auth!.userId);
+      const status = userSession ? userSession.getStatus() : { isConnected: false, isAuthenticated: false };
       res.json({
         success: true,
         data: status
@@ -1029,10 +1052,9 @@ export async function registerRoutes(app: Express): Promise<Server> {
 
   app.post('/api/whatsapp/connect', requireAuth, async (req, res) => {
     try {
-      // Re-setup event listeners before connecting
-      setupWhatsAppEventListeners();
-
-      const result = await whatsAppService.initialize();
+      const sessionName = req.body.sessionName || 'default';
+      const waSession = await sessionManager.getSession(req.auth!.userId, sessionName);
+      await waSession.initialize();
       res.json({
         success: true,
         message: 'WhatsApp connection initiated'
@@ -1049,7 +1071,8 @@ export async function registerRoutes(app: Express): Promise<Server> {
 
   app.post('/api/whatsapp/disconnect', requireAuth, async (req, res) => {
     try {
-      await whatsAppService.disconnect();
+      const sessionName = req.body.sessionName || 'default';
+      await sessionManager.removeSession(req.auth!.userId, sessionName);
       res.json({
         success: true,
         message: 'WhatsApp disconnected successfully'
@@ -1086,6 +1109,8 @@ export async function registerRoutes(app: Express): Promise<Server> {
   app.post('/api/messages/:id/resend', requireAuth, async (req, res) => {
     try {
       const { id } = req.params;
+      const waSession = await getUserWASession(req);
+      messageService.setWhatsAppService(waSession);
       const message = await messageService.resendMessage(id);
 
       res.json({ success: true, message });
@@ -1447,9 +1472,10 @@ export async function registerRoutes(app: Express): Promise<Server> {
   });
 
   // Get all WhatsApp groups from connected account
-  app.get('/api/whatsapp/groups', requireAuth, async (_req, res) => {
+  app.get('/api/whatsapp/groups', requireAuth, async (req, res) => {
     try {
-      const groups = await whatsAppService.listGroups();
+      const waSession = await getUserWASession(req);
+      const groups = await waSession.listGroups();
       res.json({ success: true, data: groups });
     } catch (error) {
       const errorMessage = error instanceof Error ? error.message : 'Unknown error';
@@ -1461,7 +1487,8 @@ export async function registerRoutes(app: Express): Promise<Server> {
   app.get('/api/whatsapp/groups/:groupId/members', requireAuth, async (req, res) => {
     try {
       const { groupId } = req.params;
-      const members = await whatsAppService.scrapeGroupNumbers(groupId);
+      const waSession = await getUserWASession(req);
+      const members = await waSession.scrapeGroupNumbers(groupId);
       res.json({ success: true, data: members, total: members.length });
     } catch (error) {
       const errorMessage = error instanceof Error ? error.message : 'Unknown error';
@@ -2145,7 +2172,8 @@ export async function registerRoutes(app: Express): Promise<Server> {
         });
       }
 
-      const chatbotService = new ChatbotService(storage, whatsAppService);
+      const waSession = await getUserWASession(req);
+      const chatbotService = new ChatbotService(storage, waSession);
       const result = await chatbotService.testConnection(config);
 
       res.json(result);
@@ -2227,7 +2255,11 @@ export async function registerRoutes(app: Express): Promise<Server> {
         });
       }
 
-      const chatbotService = new ChatbotService(storage, whatsAppService);
+      const connectedSession = sessionManager.getAnyConnectedSession();
+      if (!connectedSession) {
+        return res.status(503).json({ success: false, error: 'No connected WhatsApp session available to send greeting' });
+      }
+      const chatbotService = new ChatbotService(storage, connectedSession.service);
       const contact = await withRetry(() => chatbotService.flagAsLead(
         normalizedPhone,
         triggerKeyword,
@@ -2330,7 +2362,8 @@ export async function registerRoutes(app: Express): Promise<Server> {
       const { phoneNumber, keyword, name } = validation.data;
 
       // Create chatbot service instance
-      const chatbotService = new ChatbotService(storage, whatsAppService);
+      const waSession = await getUserWASession(req);
+      const chatbotService = new ChatbotService(storage, waSession);
 
       // Use chatbot service to flag lead (sends greeting message automatically)
       const contact = await withRetry(() => chatbotService.flagAsLead(
@@ -2458,7 +2491,11 @@ export async function registerRoutes(app: Express): Promise<Server> {
       const jid = `${digits}@s.whatsapp.net`;
 
       log(`📤 demo-reminder-send → ${jid}: ${String(message).substring(0, 60)}...`);
-      await whatsAppService.sendTextMessage(jid, String(message));
+      const connectedSession = sessionManager.getAnyConnectedSession();
+      if (!connectedSession) {
+        return res.status(503).json({ success: false, error: 'No connected WhatsApp session available' });
+      }
+      await connectedSession.service.sendTextMessage(jid, String(message));
 
       res.json({ success: true });
     } catch (error) {
@@ -2555,7 +2592,8 @@ export async function registerRoutes(app: Express): Promise<Server> {
         });
       }
 
-      const hrChatbotService = new HRChatbotService(storage, whatsAppService);
+      const waSession = await getUserWASession(req);
+      const hrChatbotService = new HRChatbotService(storage, waSession);
       const result = await hrChatbotService.testConnection(config);
 
       res.json(result);
@@ -2614,7 +2652,8 @@ export async function registerRoutes(app: Express): Promise<Server> {
 
       // Optionally send welcome message
       try {
-        const hrChatbotService = new HRChatbotService(storage, whatsAppService);
+        const waSession = await getUserWASession(req);
+        const hrChatbotService = new HRChatbotService(storage, waSession);
         await hrChatbotService.sendWelcomeMessage(hrAdmin);
       } catch (welcomeError) {
         console.log(`⚠️ Failed to send welcome message to HR admin: ${welcomeError}`);
@@ -2899,8 +2938,9 @@ export async function registerRoutes(app: Express): Promise<Server> {
         ? `*${title}*\n\n${message}`
         : message;
 
-      // Send via WhatsApp (use sendTextMessage - the correct method name)
-      await whatsAppService.sendTextMessage(normalizedPhone, formattedMessage);
+      // Send via WhatsApp using user's connected session
+      const waSession = await getUserWASession(req);
+      await waSession.sendTextMessage(normalizedPhone, formattedMessage);
 
       log(`✅ Notification sent successfully (id: ${notificationId || 'N/A'})`);
 
@@ -2932,6 +2972,11 @@ export async function registerRoutes(app: Express): Promise<Server> {
       }
 
       log(`📤 Processing batch of ${notifications.length} notifications`);
+
+      const connectedSession = sessionManager.getAnyConnectedSession();
+      if (!connectedSession) {
+        return res.status(503).json({ success: false, error: 'No connected WhatsApp session available' });
+      }
 
       const results = {
         sent: 0,
@@ -2969,7 +3014,7 @@ export async function registerRoutes(app: Express): Promise<Server> {
             ? `*${title}*\n\n${message}`
             : message;
 
-          await whatsAppService.sendTextMessage(normalizedPhone, formattedMessage);
+          await connectedSession.service.sendTextMessage(normalizedPhone, formattedMessage);
           results.sent++;
 
           // Small delay between messages to avoid rate limiting
@@ -3096,10 +3141,18 @@ export async function registerRoutes(app: Express): Promise<Server> {
           const minsLeft = (demoAt.getTime() - now.getTime()) / 60000;
           const jid = String(s.phone_number).replace(/\D/g, "") + "@s.whatsapp.net";
 
+          // Get any connected session for sending reminders
+          const connectedSession = sessionManager.getAnyConnectedSession();
+          if (!connectedSession) {
+            log('⚠️ Demo reminder: No connected WhatsApp session available, skipping');
+            break;
+          }
+          const waService = connectedSession.service;
+
           // 30-min reminder window: 25–35 mins remaining
           if (!s.remind_30_sent_at && minsLeft >= 25 && minsLeft <= 35) {
             try {
-              await whatsAppService.sendTextMessage(jid, buildMessage("30min", s.meeting_link, s.contact_name));
+              await waService.sendTextMessage(jid, buildMessage("30min", s.meeting_link, s.contact_name));
               await db.execute(drizzleSql`UPDATE demo_schedules SET remind_30_sent_at = NOW() WHERE id = ${s.id}`);
               log(`✅ Demo 30-min reminder → ${s.phone_number}`);
             } catch (e: any) { log(`⚠️ 30-min reminder failed for ${s.phone_number}: ${e.message}`); }
@@ -3108,7 +3161,7 @@ export async function registerRoutes(app: Express): Promise<Server> {
           // 15-min reminder window: 10–20 mins remaining
           if (!s.remind_15_sent_at && minsLeft >= 10 && minsLeft <= 20) {
             try {
-              await whatsAppService.sendTextMessage(jid, buildMessage("15min", s.meeting_link, s.contact_name));
+              await waService.sendTextMessage(jid, buildMessage("15min", s.meeting_link, s.contact_name));
               await db.execute(drizzleSql`UPDATE demo_schedules SET remind_15_sent_at = NOW() WHERE id = ${s.id}`);
               log(`✅ Demo 15-min reminder → ${s.phone_number}`);
             } catch (e: any) { log(`⚠️ 15-min reminder failed for ${s.phone_number}: ${e.message}`); }
@@ -3117,7 +3170,7 @@ export async function registerRoutes(app: Express): Promise<Server> {
           // 5-min reminder window: 0–10 mins remaining
           if (!s.remind_5_sent_at && minsLeft >= 0 && minsLeft <= 10) {
             try {
-              await whatsAppService.sendTextMessage(jid, buildMessage("5min", s.meeting_link, s.contact_name));
+              await waService.sendTextMessage(jid, buildMessage("5min", s.meeting_link, s.contact_name));
               await db.execute(drizzleSql`UPDATE demo_schedules SET remind_5_sent_at = NOW() WHERE id = ${s.id}`);
               log(`✅ Demo 5-min reminder → ${s.phone_number}`);
             } catch (e: any) { log(`⚠️ 5-min reminder failed for ${s.phone_number}: ${e.message}`); }

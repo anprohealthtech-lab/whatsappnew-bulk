@@ -1,7 +1,8 @@
 import { db } from '../db';
 import { campaigns, campaignRecipients, messageVariations, campaignSchedules } from '@shared/schema';
 import { eq, and, desc, lte } from 'drizzle-orm';
-import { whatsAppService } from './WhatsAppService';
+import { sessionManager } from './WhatsAppSessionManager';
+import type { WhatsAppService } from './WhatsAppService';
 import { messageService } from './MessageService';
 import { variationService } from './VariationService';
 import { storage } from '../storage';
@@ -388,6 +389,15 @@ export class CampaignService {
       throw new Error('No contacts found for this campaign');
     }
 
+    // Get user's connected WhatsApp session
+    const normalizedTenant = this.normalizeTenant(tenant);
+    const userSessions = await sessionManager.listSessions(normalizedTenant.userId);
+    const connectedSession = userSessions.find(s => s.status === 'connected');
+    if (!connectedSession) {
+      throw new Error('No connected WhatsApp session. Please connect a session first.');
+    }
+    const waService = await sessionManager.getSession(normalizedTenant.userId, connectedSession.sessionName);
+
     log(`🚀 Starting bulk send for campaign ${campaignId} - ${contacts.length} contacts`);
     const baseMessage = variationMessage || campaign.originalMessage;
     log(`📝 Base message: ${baseMessage}`);
@@ -504,14 +514,14 @@ export class CampaignService {
         // Send message (with attachment if present)
         if (campaign.attachmentPath) {
           log(`  📎 Sending with attachment: ${campaign.attachmentPath}`);
-          await whatsAppService.sendMediaMessage(
+          await waService.sendMediaMessage(
             contact.phone,
             campaign.attachmentPath,
             fullMessage.trim()
           );
         } else {
           // Send text message (already includes buttons formatted as text)
-          await whatsAppService.sendTextMessage(contact.phone, fullMessage.trim());
+          await waService.sendTextMessage(contact.phone, fullMessage.trim());
         }
 
         // Update recipient status

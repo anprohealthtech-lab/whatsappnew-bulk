@@ -1,13 +1,25 @@
 import { storage } from '../storage';
-import { whatsAppService } from './WhatsAppService';
+import type { WhatsAppService } from './WhatsAppService';
 import { log } from '../utils';
 
 export class AutoResponseService {
+  private whatsAppService: WhatsAppService | null = null;
+
+  /** Set the WhatsApp service instance for sending responses */
+  setWhatsAppService(service: WhatsAppService) {
+    this.whatsAppService = service;
+  }
+
   /**
    * Check if incoming message matches any keywords and send auto-response
    */
   async handleIncomingMessage(phoneNumber: string, messageText: string): Promise<boolean> {
     try {
+      if (!this.whatsAppService) {
+        log('AutoResponseService: No WhatsApp service set, skipping auto-response');
+        return false;
+      }
+
       const autoResponses = await storage.getAutoResponses();
       
       for (const response of autoResponses) {
@@ -19,7 +31,7 @@ export class AutoResponseService {
           log(`🤖 Auto-responding to keyword "${keyword}" from ${phoneNumber}`);
           
           // Send auto-response
-          await whatsAppService.sendTextMessage(phoneNumber, response.response);
+          await this.whatsAppService.sendTextMessage(phoneNumber, response.response);
           
           // Save auto-response to database
           await storage.createMessage({

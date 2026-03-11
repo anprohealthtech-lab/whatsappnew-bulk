@@ -1,5 +1,5 @@
 import { storage } from '../storage';
-import { whatsAppService } from './WhatsAppService';
+import type { WhatsAppService } from './WhatsAppService';
 import { type Message, type InsertMessage } from '@shared/schema';
 
 export interface MessageStats {
@@ -11,6 +11,20 @@ export interface MessageStats {
 }
 
 export class MessageService {
+  private whatsAppService: WhatsAppService | null = null;
+
+  /** Set the WhatsApp service instance (call before sending messages) */
+  setWhatsAppService(service: WhatsAppService) {
+    this.whatsAppService = service;
+  }
+
+  private getWA(): WhatsAppService {
+    if (!this.whatsAppService) {
+      throw new Error('WhatsApp service not set. Call setWhatsAppService() first or use a per-user session.');
+    }
+    return this.whatsAppService;
+  }
+
   async sendTextMessage(phoneNumber: string, content: string): Promise<Message> {
     // Create message record in storage
     const messageData: InsertMessage = {
@@ -29,7 +43,7 @@ export class MessageService {
 
     try {
       // Send via WhatsApp
-      const whatsappResponse = await whatsAppService.sendTextMessage(phoneNumber, content);
+      const whatsappResponse = await this.getWA().sendTextMessage(phoneNumber, content);
       
       // Update message status
       await storage.updateMessage(message.id, {
@@ -83,7 +97,7 @@ export class MessageService {
 
     try {
       // Send via WhatsApp
-      const whatsappResponse = await whatsAppService.sendMediaMessage(phoneNumber, filePath, messageContent);
+      const whatsappResponse = await this.getWA().sendMediaMessage(phoneNumber, filePath, messageContent);
       
       // Update message status
       await storage.updateMessage(message.id, {
