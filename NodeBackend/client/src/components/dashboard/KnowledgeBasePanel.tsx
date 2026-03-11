@@ -14,6 +14,7 @@ import {
   Clock,
   Database,
   Send,
+  RotateCw,
 } from "lucide-react";
 
 interface KnowledgeFile {
@@ -107,6 +108,19 @@ export function KnowledgeBasePanel() {
     },
     onError: (err: any) =>
       toast({ title: "Delete failed", description: err.message, variant: "destructive" }),
+  });
+
+  const retryMutation = useMutation({
+    mutationFn: async (fileId: string) => {
+      const res = await apiRequest("POST", `/api/knowledge/files/${fileId}/retry`);
+      return res.json();
+    },
+    onSuccess: () => {
+      toast({ title: "Retry started", description: "File is being reprocessed." });
+      queryClient.invalidateQueries({ queryKey: ["/api/knowledge/files"] });
+    },
+    onError: (err: any) =>
+      toast({ title: "Retry failed", description: err.message, variant: "destructive" }),
   });
 
   const testChatMutation = useMutation({
@@ -213,6 +227,17 @@ export function KnowledgeBasePanel() {
                   </div>
                   <div className="flex items-center gap-2 shrink-0">
                     <StatusBadge status={file.status} />
+                    {file.status === "failed" && (
+                      <Button
+                        variant="ghost"
+                        size="sm"
+                        onClick={() => retryMutation.mutate(file.id)}
+                        disabled={retryMutation.isPending}
+                        title="Retry processing"
+                      >
+                        <RotateCw className="w-4 h-4 text-blue-500" />
+                      </Button>
+                    )}
                     <Button
                       variant="ghost"
                       size="sm"

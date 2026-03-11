@@ -9,6 +9,7 @@ CREATE TABLE IF NOT EXISTS knowledge_files (
   file_name TEXT NOT NULL,
   file_size INTEGER NOT NULL DEFAULT 0,
   mime_type TEXT,
+  storage_path TEXT, -- path in Supabase Storage bucket: {org_id}/{user_id}/{file_id}/{filename}
   chunk_count INTEGER NOT NULL DEFAULT 0,
   status TEXT NOT NULL DEFAULT 'processing', -- 'processing' | 'ready' | 'failed'
   error_message TEXT,
@@ -83,3 +84,20 @@ CREATE POLICY "Service role full access on knowledge_chunks"
   ON knowledge_chunks FOR ALL
   USING (true)
   WITH CHECK (true);
+
+-- Storage bucket for knowledge files (allows retry on failed processing)
+-- Run this in SQL editor; storage.buckets is managed by Supabase
+INSERT INTO storage.buckets (id, name, public, file_size_limit, allowed_mime_types)
+VALUES (
+  'knowledge-files',
+  'knowledge-files',
+  false,
+  10485760, -- 10MB limit
+  ARRAY['text/plain', 'text/csv', 'text/markdown', 'application/pdf', 'application/vnd.openxmlformats-officedocument.wordprocessingml.document']
+) ON CONFLICT (id) DO NOTHING;
+
+-- Storage policy: only service role can access (no public access)
+CREATE POLICY "Service role access on knowledge-files"
+  ON storage.objects FOR ALL
+  USING (bucket_id = 'knowledge-files')
+  WITH CHECK (bucket_id = 'knowledge-files');

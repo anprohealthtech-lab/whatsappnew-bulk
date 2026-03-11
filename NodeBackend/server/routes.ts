@@ -1391,9 +1391,31 @@ export async function registerRoutes(app: Express): Promise<Server> {
         return res.status(400).json({ success: false, error: 'Unsupported file type. Upload TXT, CSV, MD, PDF, or DOCX files.' });
       }
 
-      const fileBase64 = req.file.buffer.toString('base64');
+      // Generate a unique file ID for storage path
+      const fileId = crypto.randomUUID();
+      const storagePath = `${tenant.organizationId}/${tenant.userId}/${fileId}/${req.file.originalname}`;
 
-      // Create file record in Supabase
+      // Upload to Supabase Storage bucket
+      const storageRes = await fetch(
+        `${SUPABASE_URL}/storage/v1/object/knowledge-files/${encodeURIComponent(storagePath)}`,
+        {
+          method: 'POST',
+          headers: {
+            'Authorization': `Bearer ${SUPABASE_SERVICE_KEY}`,
+            'Content-Type': req.file.mimetype,
+          },
+          body: req.file.buffer,
+        }
+      );
+
+      if (!storageRes.ok) {
+        const err = await storageRes.text();
+        throw new Error(`Failed to upload file to storage: ${err}`);
+      }
+
+      log(`Knowledge file stored: ${storagePath}`);
+
+      // Create file record in Supabase with storage_path
       const createRes = await fetch(`${SUPABASE_URL}/rest/v1/knowledge_files`, {
         method: 'POST',
         headers: {
@@ -1403,11 +1425,13 @@ export async function registerRoutes(app: Express): Promise<Server> {
           'Prefer': 'return=representation',
         },
         body: JSON.stringify({
+          id: fileId,
           organization_id: tenant.organizationId,
           user_id: tenant.userId,
           file_name: req.file.originalname,
           file_size: req.file.size,
           mime_type: req.file.mimetype,
+          storage_path: storagePath,
           status: 'processing',
         }),
       });
@@ -1418,7 +1442,7 @@ export async function registerRoutes(app: Express): Promise<Server> {
       }
 
       const [fileRecord] = await createRes.json();
-      log(`Knowledge file created: ${fileRecord.id} (${req.file.originalname})`);
+      log(`Knowledge file record created: ${fileRecord.id} (${req.file.originalname})`);
 
       // Call edge function to process (chunk + embed) — fire and don't wait
       fetch(`${SUPABASE_URL}/functions/v1/process-knowledge-file`, {
@@ -1431,7 +1455,7 @@ export async function registerRoutes(app: Express): Promise<Server> {
           file_id: fileRecord.id,
           organization_id: tenant.organizationId,
           user_id: tenant.userId,
-          file_content: fileBase64,
+          storage_path: storagePath,
           file_name: req.file.originalname,
           mime_type: req.file.mimetype,
         }),
@@ -1497,9 +1521,9 @@ export async function registerRoutes(app: Express): Promise<Server> {
         return res.status(500).json({ success: false, error: 'Supabase not configured' });
       }
 
-      // Verify ownership
+      // Verify ownership and get storage_path
       const checkRes = await fetch(
-        `${SUPABASE_URL}/rest/v1/knowledge_files?id=eq.${encodeURIComponent(fileId)}&organization_id=eq.${encodeURIComponent(tenant.organizationId)}&user_id=eq.${encodeURIComponent(tenant.userId)}`,
+        `${SUPABASE_URL}/rest/v1/knowledge_files?id=eq.${encodeURIComponent(fileId)}&organization_id=eq.${encodeURIComponent(tenant.organizationId)}&user_id=eq.${encodeURIComponent(tenant.userId)}&select=id,storage_path`,
         {
           headers: {
             'Authorization': `Bearer ${SUPABASE_SERVICE_KEY}`,
@@ -1513,7 +1537,18 @@ export async function registerRoutes(app: Express): Promise<Server> {
         return res.status(404).json({ success: false, error: 'File not found' });
       }
 
-      // Delete (CASCADE will remove chunks too)
+      // Delete from storage bucket if path exists
+      if (existing[0].storage_path) {
+        await fetch(
+          `${SUPABASE_URL}/storage/v1/object/knowledge-files/${encodeURIComponent(existing[0].storage_path)}`,
+          {
+            method: 'DELETE',
+            headers: { 'Authorization': `Bearer ${SUPABASE_SERVICE_KEY}` },
+          }
+        ).catch((err: any) => log(`Storage delete warning: ${err.message}`));
+      }
+
+      // Delete DB record (CASCADE will remove chunks too)
       const delRes = await fetch(
         `${SUPABASE_URL}/rest/v1/knowledge_files?id=eq.${encodeURIComponent(fileId)}`,
         {
@@ -1531,6 +1566,91 @@ export async function registerRoutes(app: Express): Promise<Server> {
 
       log(`Knowledge file deleted: ${fileId}`);
       res.json({ success: true });
+    } catch (error) {
+      const errorMessage = error instanceof Error ? error.message : 'Unknown error';
+      res.status(500).json({ success: false, error: errorMessage });
+    }
+  });
+
+  // Retry processing a failed knowledge file (re-reads from storage)
+  app.post('/api/knowledge/files/:fileId/retry', requireAuth, async (req, res) => {
+    try {
+      const tenant = getTenantFromRequest(req);
+      const { fileId } = req.params;
+
+      if (!SUPABASE_URL || !SUPABASE_SERVICE_KEY) {
+        return res.status(500).json({ success: false, error: 'Supabase not configured' });
+      }
+
+      // Verify ownership and get file info
+      const checkRes = await fetch(
+        `${SUPABASE_URL}/rest/v1/knowledge_files?id=eq.${encodeURIComponent(fileId)}&organization_id=eq.${encodeURIComponent(tenant.organizationId)}&user_id=eq.${encodeURIComponent(tenant.userId)}`,
+        {
+          headers: {
+            'Authorization': `Bearer ${SUPABASE_SERVICE_KEY}`,
+            'apikey': SUPABASE_SERVICE_KEY,
+          },
+        }
+      );
+
+      const existing = await checkRes.json();
+      if (!existing || existing.length === 0) {
+        return res.status(404).json({ success: false, error: 'File not found' });
+      }
+
+      const file = existing[0];
+      if (!file.storage_path) {
+        return res.status(400).json({ success: false, error: 'File has no storage path — please re-upload' });
+      }
+
+      // Delete any existing chunks from previous failed attempt
+      await fetch(
+        `${SUPABASE_URL}/rest/v1/knowledge_chunks?file_id=eq.${encodeURIComponent(fileId)}`,
+        {
+          method: 'DELETE',
+          headers: {
+            'Authorization': `Bearer ${SUPABASE_SERVICE_KEY}`,
+            'apikey': SUPABASE_SERVICE_KEY,
+          },
+        }
+      );
+
+      // Reset status to processing
+      await fetch(
+        `${SUPABASE_URL}/rest/v1/knowledge_files?id=eq.${encodeURIComponent(fileId)}`,
+        {
+          method: 'PATCH',
+          headers: {
+            'Content-Type': 'application/json',
+            'Authorization': `Bearer ${SUPABASE_SERVICE_KEY}`,
+            'apikey': SUPABASE_SERVICE_KEY,
+          },
+          body: JSON.stringify({ status: 'processing', error_message: null, chunk_count: 0 }),
+        }
+      );
+
+      // Re-trigger edge function — it will fetch file from storage
+      fetch(`${SUPABASE_URL}/functions/v1/process-knowledge-file`, {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          'Authorization': `Bearer ${SUPABASE_SERVICE_KEY}`,
+        },
+        body: JSON.stringify({
+          file_id: fileId,
+          organization_id: tenant.organizationId,
+          user_id: tenant.userId,
+          storage_path: file.storage_path,
+          file_name: file.file_name,
+          mime_type: file.mime_type,
+        }),
+      }).then(async (r) => {
+        if (!r.ok) log(`Knowledge file retry processing failed: ${await r.text()}`);
+        else log(`Knowledge file retry processed: ${fileId}`);
+      }).catch((err) => log(`Knowledge file retry error: ${err.message}`));
+
+      log(`Knowledge file retry initiated: ${fileId}`);
+      res.json({ success: true, data: { id: fileId, status: 'processing' } });
     } catch (error) {
       const errorMessage = error instanceof Error ? error.message : 'Unknown error';
       res.status(500).json({ success: false, error: errorMessage });

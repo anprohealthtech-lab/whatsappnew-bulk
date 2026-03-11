@@ -16,7 +16,7 @@ interface ProcessRequest {
   file_id: string;
   organization_id: string;
   user_id: string;
-  file_content: string; // base64 encoded file content
+  storage_path: string; // path in Supabase Storage bucket
   file_name: string;
   mime_type: string;
 }
@@ -65,8 +65,7 @@ function chunkText(text: string, chunkSize: number = CHUNK_SIZE, overlap: number
   return finalChunks.filter(c => c.length > 20); // Skip tiny chunks
 }
 
-function extractTextFromContent(base64Content: string, mimeType: string): string {
-  const bytes = Uint8Array.from(atob(base64Content), c => c.charCodeAt(0));
+function extractTextFromBytes(bytes: Uint8Array, mimeType: string): string {
   const decoder = new TextDecoder("utf-8", { fatal: false });
 
   if (mimeType === "text/plain" || mimeType === "text/csv" || mimeType === "text/markdown") {
@@ -119,22 +118,42 @@ serve(async (req: Request) => {
     const supabase = createClient(supabaseUrl, supabaseKey);
 
     const body: ProcessRequest = await req.json();
-    const { file_id, organization_id, user_id, file_content, file_name, mime_type } = body;
+    const { file_id, organization_id, user_id, storage_path, file_name, mime_type } = body;
 
-    if (!file_id || !organization_id || !user_id || !file_content) {
+    if (!file_id || !organization_id || !user_id || !storage_path) {
       return new Response(
-        JSON.stringify({ error: "Missing required fields: file_id, organization_id, user_id, file_content" }),
+        JSON.stringify({ error: "Missing required fields: file_id, organization_id, user_id, storage_path" }),
         { status: 400, headers: { ...corsHeaders, "Content-Type": "application/json" } }
       );
     }
 
     log(`Processing file: ${file_name} (${mime_type}) for user ${user_id}`);
+    log(`Reading from storage: ${storage_path}`);
 
     // Update status to processing
     await supabase.from("knowledge_files").update({ status: "processing" }).eq("id", file_id);
 
-    // Extract text from file content
-    const text = extractTextFromContent(file_content, mime_type || "text/plain");
+    // Download file from Supabase Storage
+    const { data: fileData, error: downloadError } = await supabase.storage
+      .from("knowledge-files")
+      .download(storage_path);
+
+    if (downloadError || !fileData) {
+      const errMsg = downloadError?.message || "Failed to download file from storage";
+      log(`Download error: ${errMsg}`);
+      await supabase.from("knowledge_files").update({
+        status: "failed",
+        error_message: errMsg,
+      }).eq("id", file_id);
+      return new Response(
+        JSON.stringify({ error: errMsg }),
+        { status: 500, headers: { ...corsHeaders, "Content-Type": "application/json" } }
+      );
+    }
+
+    // Extract text from downloaded bytes
+    const bytes = new Uint8Array(await fileData.arrayBuffer());
+    const text = extractTextFromBytes(bytes, mime_type || "text/plain");
     if (text.trim().length < 20) {
       await supabase.from("knowledge_files").update({
         status: "failed",
