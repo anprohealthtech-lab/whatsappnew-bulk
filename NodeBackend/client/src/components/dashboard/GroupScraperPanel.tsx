@@ -24,6 +24,7 @@ interface Group {
 interface GroupMember {
   id: string;
   phone: string;
+  name: string;
   isAdmin: boolean;
 }
 
@@ -68,7 +69,7 @@ export function GroupScraperPanel() {
       if (!importCampaign || members.length === 0) throw new Error("Select a campaign and scrape members first");
       // Build Excel-compatible contact format
       const contacts = members.map((m) => ({
-        name: m.phone,
+        name: m.name || m.phone,
         phone: m.phone,
       }));
 
@@ -93,7 +94,7 @@ export function GroupScraperPanel() {
   });
 
   function downloadCSV() {
-    const csvContent = "name,phone\n" + members.map((m) => `${m.phone},${m.phone}`).join("\n");
+    const csvContent = "name,phone\n" + members.map((m) => `${(m.name || m.phone).replace(/,/g, ' ')},${m.phone}`).join("\n");
     const blob = new Blob([csvContent], { type: "text/csv" });
     const url = URL.createObjectURL(blob);
     const a = document.createElement("a");
@@ -198,6 +199,7 @@ export function GroupScraperPanel() {
                   <thead className="bg-accent/30 sticky top-0">
                     <tr>
                       <th className="text-left p-2">#</th>
+                      <th className="text-left p-2">Name</th>
                       <th className="text-left p-2">Phone</th>
                       <th className="text-left p-2">Role</th>
                     </tr>
@@ -206,6 +208,7 @@ export function GroupScraperPanel() {
                     {members.slice(0, 100).map((m, i) => (
                       <tr key={m.id || i} className="border-t">
                         <td className="p-2 text-muted-foreground">{i + 1}</td>
+                        <td className="p-2 text-sm">{m.name || '—'}</td>
                         <td className="p-2 font-mono text-xs">{m.phone}</td>
                         <td className="p-2">
                           {m.isAdmin && <Badge variant="secondary" className="text-xs">Admin</Badge>}

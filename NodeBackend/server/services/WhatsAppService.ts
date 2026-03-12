@@ -425,7 +425,7 @@ export class WhatsAppService extends EventEmitter {
     }));
   }
 
-  async scrapeGroupNumbers(groupId: string): Promise<Array<{ phone: string; jid: string }>> {
+  async scrapeGroupNumbers(groupId: string): Promise<Array<{ phone: string; jid: string; name: string }>> {
     if (!this.socket || !this.status.isConnected) {
       throw new Error('WhatsApp not connected');
     }
@@ -449,6 +449,8 @@ export class WhatsAppService extends EventEmitter {
 
       const phone = pnDigits || idDigits;
       const bestJid = pnJid || rawId;
+      // Push name (notify) or verifiedName from the participant metadata
+      const name = participant.notify || participant.verifiedName || participant.name || '';
 
       // Cache the LID → phone mapping for outbound message resolution
       if (phone && lidJid) {
@@ -459,7 +461,7 @@ export class WhatsAppService extends EventEmitter {
         this.cacheJid(phone, pnJid);
       }
 
-      return { phone, jid: bestJid };
+      return { phone, jid: bestJid, name };
     }).filter((item) => item.phone.length > 0);
   }
 
