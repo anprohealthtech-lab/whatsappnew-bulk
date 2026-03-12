@@ -1105,6 +1105,24 @@ export async function registerRoutes(app: Express): Promise<Server> {
     }
   });
 
+  // Clear stale Signal protocol sessions (fixes "waiting for this message")
+  // Preserves QR auth — no re-scan needed
+  app.post('/api/whatsapp/clear-sessions', requireAuth, async (req, res) => {
+    try {
+      const waSession = await getUserWASession(req);
+      const result = await waSession.clearSignalSessions();
+      res.json({
+        success: true,
+        message: `Cleared ${result.cleared} stale session files, kept ${result.kept} auth files. Connection re-initializing...`,
+        ...result,
+      });
+    } catch (error) {
+      const errorMessage = error instanceof Error ? error.message : 'Unknown error';
+      log(`Clear signal sessions error: ${errorMessage}`);
+      res.status(400).json({ success: false, error: errorMessage });
+    }
+  });
+
   app.get('/api/whatsapp/qr', requireAuth, async (req, res) => {
     try {
       // For now, return a placeholder since qrCode isn't in the status type

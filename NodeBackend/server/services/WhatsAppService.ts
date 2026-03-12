@@ -796,6 +796,59 @@ export class WhatsAppService extends EventEmitter {
       console.error('⚠️ Failed to clear auth state:', error);
     }
   }
+
+  /**
+   * Clear stale Signal protocol sessions while preserving QR auth credentials.
+   * Fixes "waiting for this message" caused by corrupted/stale encryption sessions.
+   * After clearing, the connection is re-initialized to rebuild fresh sessions.
+   */
+  async clearSignalSessions(): Promise<{ cleared: number; kept: number }> {
+    let cleared = 0;
+    let kept = 0;
+
+    try {
+      if (!fs.existsSync(this.authPath)) {
+        return { cleared: 0, kept: 0 };
+      }
+
+      const files = fs.readdirSync(this.authPath);
+      // Keep: creds.json (QR auth), app-state-sync-key-* (app state), lid-cache.json (our cache)
+      // Clear: session-* (Signal sessions), pre-key-* (pre-keys), sender-key-* (group keys)
+      const keepPatterns = ['creds.json', 'app-state-sync-key', 'lid-cache.json'];
+
+      for (const file of files) {
+        const shouldKeep = keepPatterns.some(p => file.startsWith(p) || file === p);
+        if (shouldKeep) {
+          kept++;
+        } else {
+          fs.unlinkSync(path.join(this.authPath, file));
+          cleared++;
+        }
+      }
+
+      console.log(`🧹 Signal session cleanup: cleared ${cleared} files, kept ${kept} files`);
+
+      // Also clear in-memory caches
+      this.sentMsgCache.clear();
+      this.lidJidCache.clear();
+
+      // Disconnect and re-initialize to rebuild fresh sessions
+      if (this.socket) {
+        this.socket.end(undefined);
+        this.socket = null;
+      }
+      this.status.isConnected = false;
+      this.status.isAuthenticated = false;
+
+      // Re-initialize with clean sessions
+      await this.initialize();
+
+    } catch (error) {
+      console.error('⚠️ Failed to clear signal sessions:', error);
+    }
+
+    return { cleared, kept };
+  }
 }
 
 export const whatsAppService = new WhatsAppService();

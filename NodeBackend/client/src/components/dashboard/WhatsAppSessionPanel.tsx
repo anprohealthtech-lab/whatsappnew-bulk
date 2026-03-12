@@ -15,6 +15,7 @@ import {
   Trash2,
   RefreshCw,
   Loader2,
+  ShieldAlert,
 } from "lucide-react";
 
 interface Session {
@@ -55,6 +56,18 @@ export function WhatsAppSessionPanel() {
     onSuccess: () => {
       toast({ title: "Disconnected" });
       setActiveQR({ sessionName: "", qr: null });
+      queryClient.invalidateQueries({ queryKey: ["/api/whatsapp/sessions"] });
+    },
+    onError: (err: any) => toast({ title: "Error", description: err.message, variant: "destructive" }),
+  });
+
+  const clearSessionsMutation = useMutation({
+    mutationFn: async () => {
+      const res = await apiRequest("POST", "/api/whatsapp/clear-sessions");
+      return res.json();
+    },
+    onSuccess: (data) => {
+      toast({ title: "Signal Sessions Cleared", description: data.message || `Cleared ${data.cleared} files. Reconnecting...` });
       queryClient.invalidateQueries({ queryKey: ["/api/whatsapp/sessions"] });
     },
     onError: (err: any) => toast({ title: "Error", description: err.message, variant: "destructive" }),
@@ -117,6 +130,20 @@ export function WhatsAppSessionPanel() {
           <p className="text-xs text-muted-foreground">
             {sessions.length}/3 sessions used. Each session connects a different WhatsApp number.
           </p>
+
+          {/* Fix "waiting for this message" */}
+          {sessions.some(s => s.status === "connected") && (
+            <Button
+              variant="outline"
+              size="sm"
+              onClick={() => clearSessionsMutation.mutate()}
+              disabled={clearSessionsMutation.isPending}
+              className="text-orange-600 border-orange-300 hover:bg-orange-50"
+            >
+              {clearSessionsMutation.isPending ? <Loader2 className="w-4 h-4 animate-spin mr-2" /> : <ShieldAlert className="w-4 h-4 mr-2" />}
+              Fix "Waiting for Message"
+            </Button>
+          )}
 
           {/* QR Code Display */}
           {activeQR.qr && (
