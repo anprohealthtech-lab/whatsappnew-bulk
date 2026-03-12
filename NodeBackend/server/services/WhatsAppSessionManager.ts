@@ -45,7 +45,7 @@ export class WhatsAppSessionManager {
 
     // Create new WhatsApp service with unique session dir
     const sessionDir = `server/sessions/user_${userId}/${sessionName}`;
-    const service = new WhatsAppService(sessionDir);
+    const service = new WhatsAppService(sessionDir, userId);
 
     // Wire up status persistence
     service.on('whatsapp-authenticated', async () => {

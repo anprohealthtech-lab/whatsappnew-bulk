@@ -1,12 +1,14 @@
 import makeWASocket, {
   useMultiFileAuthState,
   fetchLatestBaileysVersion,
+  makeCacheableSignalKeyStore,
   DisconnectReason,
   WASocket,
   downloadMediaMessage,
   proto,
   WAMessageKey,
 } from '@whiskeysockets/baileys';
+import pino from 'pino';
 import { Boom } from '@hapi/boom';
 import { EventEmitter } from 'events';
 import fs from 'fs';
@@ -32,6 +34,7 @@ export class WhatsAppService extends EventEmitter {
   private currentQR: string | null = null;
   private badSessionRetryCount: number = 0;
   private static readonly MAX_BAD_SESSION_RETRIES = 3;
+  private userId: string;
 
   /**
    * LID JID Cache: maps phone digits → actual JID (preferring @lid over @s.whatsapp.net).
@@ -51,8 +54,9 @@ export class WhatsAppService extends EventEmitter {
     return path.join(this.authPath, 'lid-cache.json');
   }
 
-  constructor(sessionDir?: string) {
+  constructor(sessionDir?: string, userId?: string) {
     super();
+    this.userId = userId || 'default';
     this.authPath = sessionDir
       ? path.join(process.cwd(), sessionDir, 'baileys_auth')
       : path.join(process.cwd(), 'server/sessions/baileys_auth');
@@ -77,11 +81,22 @@ export class WhatsAppService extends EventEmitter {
       // Load persisted LID cache from disk
       this.loadLidCache();
 
+      // Wrap signal keys with in-memory cache for faster encryption key lookups
+      // This prevents "waiting for this message" caused by missing/slow signal keys
+      const logger = pino({ level: 'silent' });
+
       this.socket = makeWASocket({
         version,
-        auth: state,
+        auth: {
+          creds: state.creds,
+          keys: makeCacheableSignalKeyStore(state.keys, logger),
+        },
+        logger,
         printQRInTerminal: false,
-        browser: ['LIMS System', 'Chrome', '1.0.0'],
+        // Unique browser fingerprint per user to avoid session conflicts
+        browser: [`WhatsApp-${this.userId}`, 'Chrome', '10.0'],
+        markOnlineOnConnect: true,
+        syncFullHistory: false,
         connectTimeoutMs: 30000,
         defaultQueryTimeoutMs: 60000,
         keepAliveIntervalMs: 30000,
