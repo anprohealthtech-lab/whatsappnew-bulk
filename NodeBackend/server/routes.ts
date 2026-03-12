@@ -2334,13 +2334,14 @@ export async function registerRoutes(app: Express): Promise<Server> {
     }
   });
 
-  // Get all leads
+  // Get all leads (tenant-scoped)
   app.get('/api/leads', requireAuth, async (req, res) => {
     try {
+      const tenant = getTenantFromRequest(req);
       const limit = parseInt(req.query.limit as string) || 50;
       const offset = parseInt(req.query.offset as string) || 0;
 
-      const leads = await withRetry(() => storage.getLeads({ limit, offset }));
+      const leads = await withRetry(() => storage.getLeadsByTenant(tenant, { limit, offset }));
 
       res.json({
         success: true,
@@ -2354,14 +2355,15 @@ export async function registerRoutes(app: Express): Promise<Server> {
     }
   });
 
-  // Get lead details with conversation
+  // Get lead details with conversation (tenant-scoped)
   app.get('/api/leads/:phoneNumber/conversation', requireAuth, async (req, res) => {
     try {
+      const tenant = getTenantFromRequest(req);
       const { phoneNumber } = req.params;
       const limit = parseInt(req.query.limit as string) || 20;
 
-      const contact = await withRetry(() => storage.getContact(phoneNumber));
-      const conversation = await withRetry(() => storage.getConversationHistory(phoneNumber, limit));
+      const contact = await withRetry(() => storage.getContactByTenant(tenant, phoneNumber));
+      const conversation = await withRetry(() => storage.getConversationHistoryByTenant(tenant, phoneNumber, limit));
 
       res.json({
         success: true,
@@ -2411,13 +2413,14 @@ export async function registerRoutes(app: Express): Promise<Server> {
     }
   });
 
-  // Delete/unflag lead
+  // Delete/unflag lead (tenant-scoped)
   app.delete('/api/leads/:phoneNumber', requireAuth, async (req, res) => {
     try {
+      const tenant = getTenantFromRequest(req);
       const { phoneNumber } = req.params;
 
       // Unflag the contact (set isLead to false)
-      await withRetry(() => storage.updateContact(phoneNumber, {
+      await withRetry(() => storage.updateContactByTenant(tenant, phoneNumber, {
         isLead: 'false',
         leadTriggerKeyword: null,
       }));
@@ -2433,9 +2436,10 @@ export async function registerRoutes(app: Express): Promise<Server> {
     }
   });
 
-  // Toggle chatbot active status for a lead
+  // Toggle chatbot active status for a lead (tenant-scoped)
   app.patch('/api/leads/:phoneNumber/chatbot-status', requireAuth, async (req, res) => {
     try {
+      const tenant = getTenantFromRequest(req);
       const { phoneNumber } = req.params;
       const { active } = req.body;
 
@@ -2446,7 +2450,7 @@ export async function registerRoutes(app: Express): Promise<Server> {
         });
       }
 
-      await withRetry(() => storage.updateContact(phoneNumber, {
+      await withRetry(() => storage.updateContactByTenant(tenant, phoneNumber, {
         chatbotActive: active ? 'true' : 'false',
       }));
 

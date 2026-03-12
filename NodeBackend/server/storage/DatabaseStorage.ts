@@ -829,4 +829,52 @@ export class DatabaseStorage implements IStorage {
       return result[0];
     }
   }
+
+  async getContactByTenant(tenant: TenantFilter, phoneNumber: string): Promise<Contact | undefined> {
+    const variants = this.getPhoneVariants(phoneNumber);
+    for (const variant of variants) {
+      const result = await db.select().from(contacts)
+        .where(and(
+          eq(contacts.organizationId, tenant.organizationId),
+          eq(contacts.userId, tenant.userId),
+          eq(contacts.phoneNumber, variant),
+        )).limit(1);
+      if (result[0]) return result[0];
+    }
+    // Fuzzy match scoped to tenant
+    const cleaned = this.normalizeHRPhone(phoneNumber);
+    if (cleaned.length >= 10) {
+      const tenantContacts = await db.select().from(contacts).where(and(
+        eq(contacts.organizationId, tenant.organizationId),
+        eq(contacts.userId, tenant.userId),
+      ));
+      for (const contact of tenantContacts) {
+        const storedCleaned = this.normalizeHRPhone(contact.phoneNumber);
+        if (storedCleaned.slice(-10) === cleaned.slice(-10)) return contact;
+      }
+    }
+    return undefined;
+  }
+
+  async updateContactByTenant(tenant: TenantFilter, phoneNumber: string, updates: Partial<Contact>): Promise<Contact | undefined> {
+    const existing = await this.getContactByTenant(tenant, phoneNumber);
+    if (!existing) return undefined;
+    const result = await db.update(contacts).set({
+      ...updates,
+      updatedAt: new Date(),
+    }).where(eq(contacts.id, existing.id)).returning();
+    return result[0];
+  }
+
+  async getConversationHistoryByTenant(tenant: TenantFilter, phoneNumber: string, limit: number = 10): Promise<Message[]> {
+    return await db.select().from(messages)
+      .where(and(
+        eq(messages.organizationId, tenant.organizationId),
+        eq(messages.userId, tenant.userId),
+        eq(messages.phoneNumber, phoneNumber),
+        or(eq(messages.type, 'incoming'), eq(messages.type, 'text'))
+      ))
+      .orderBy(desc(messages.createdAt))
+      .limit(limit);
+  }
 }
