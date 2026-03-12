@@ -43,13 +43,6 @@ export class WhatsAppService extends EventEmitter {
    */
   private lidJidCache = new Map<string, string>();
 
-  /**
-   * Sent Message Cache: stores recent outgoing messages by ID so Baileys
-   * can re-send them when the recipient requests a retry (fixes "waiting for this message").
-   */
-  private sentMsgCache = new Map<string, proto.IMessage>();
-  private static readonly MAX_SENT_CACHE = 500;
-
   private get lidCachePath(): string {
     return path.join(this.authPath, 'lid-cache.json');
   }
@@ -103,14 +96,10 @@ export class WhatsAppService extends EventEmitter {
         // Add retry configuration
         retryRequestDelayMs: 250,
         maxMsgRetryCount: 5,
-        // Critical: provide sent messages for retry so recipients can decrypt
-        getMessage: async (key: WAMessageKey): Promise<proto.IMessage | undefined> => {
-          const id = key.id;
-          if (id && this.sentMsgCache.has(id)) {
-            console.log(`🔑 getMessage: returning cached message for retry (${id})`);
-            return this.sentMsgCache.get(id);
-          }
-          console.log(`⚠️ getMessage: no cached message for ${id} — retry may show 'waiting for message'`);
+        // Return undefined so Baileys skips the retry-encrypt path.
+        // Returning cached message data causes Baileys to re-encrypt for every
+        // linked device, triggering "Closing stale open session" loops.
+        getMessage: async (_key: WAMessageKey): Promise<proto.IMessage | undefined> => {
           return undefined;
         },
       });
@@ -407,11 +396,6 @@ export class WhatsAppService extends EventEmitter {
     const jid = this.resolveOutgoingJid(phoneNumber);
     const result = await this.socket.sendMessage(jid, { text: message });
 
-    // Cache sent message for retry support
-    if (result?.key?.id && result.message) {
-      this.cacheSentMessage(result.key.id, result.message);
-    }
-
     this.status.lastSeen = new Date();
     this.emit('message-sent', {
       messageId: result?.key?.id,
@@ -555,11 +539,6 @@ export class WhatsAppService extends EventEmitter {
 
     const result = await this.socket.sendMessage(jid, messageContent);
 
-    // Cache sent message for retry support
-    if (result?.key?.id && result.message) {
-      this.cacheSentMessage(result.key.id, result.message);
-    }
-
     this.status.lastSeen = new Date();
     this.emit('message-sent', {
       messageId: result?.key?.id,
@@ -640,22 +619,19 @@ export class WhatsAppService extends EventEmitter {
    * Checks the LID cache first; falls back to @s.whatsapp.net for unknown contacts.
    */
   private resolveOutgoingJid(phoneNumber: string): string {
-    // Already a full JID — return as-is
+    // Already a full JID — return as-is (but force @s.whatsapp.net for @lid JIDs)
     if (phoneNumber.includes('@')) {
+      if (phoneNumber.endsWith('@lid')) {
+        // LID JIDs cause Signal session mismatches on outgoing — strip and use @s.whatsapp.net
+        const digits = phoneNumber.replace(/@lid$/i, '').replace(/\D/g, '');
+        return `${digits}@s.whatsapp.net`;
+      }
       return phoneNumber;
     }
 
     const digits = this.formatPhoneNumber(phoneNumber);
-
-    // Check the LID cache
-    const cached = this.lidJidCache.get(digits);
-    if (cached) {
-      console.log(`[LID] ✅ Cache hit for ${digits} → ${cached}`);
-      return cached;
-    }
-
-    // Fallback to @s.whatsapp.net for contacts that have never messaged us
-    console.log(`[LID] ⚠️ No cache for ${digits}, using @s.whatsapp.net fallback`);
+    // Always use @s.whatsapp.net — the LID cache fights against Baileys'
+    // internal session routing and causes "Closing stale open session" loops.
     return `${digits}@s.whatsapp.net`;
   }
 
@@ -684,16 +660,6 @@ export class WhatsAppService extends EventEmitter {
    */
   registerJid(phoneDigits: string, jid: string): void {
     this.cacheJid(phoneDigits, jid);
-  }
-
-  /** Cache a sent message so getMessage can return it for retry */
-  private cacheSentMessage(id: string, message: proto.IMessage): void {
-    this.sentMsgCache.set(id, message);
-    // Evict oldest entries if cache is too large
-    if (this.sentMsgCache.size > WhatsAppService.MAX_SENT_CACHE) {
-      const firstKey = this.sentMsgCache.keys().next().value;
-      if (firstKey) this.sentMsgCache.delete(firstKey);
-    }
   }
 
   /** Persist LID cache to disk so it survives server restarts */
@@ -828,8 +794,7 @@ export class WhatsAppService extends EventEmitter {
 
       console.log(`🧹 Signal session cleanup: cleared ${cleared} files, kept ${kept} files`);
 
-      // Also clear in-memory caches
-      this.sentMsgCache.clear();
+      // Also clear in-memory LID cache
       this.lidJidCache.clear();
 
       // Disconnect and re-initialize to rebuild fresh sessions
