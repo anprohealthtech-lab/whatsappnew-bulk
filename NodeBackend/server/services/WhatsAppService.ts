@@ -3,7 +3,9 @@ import makeWASocket, {
   fetchLatestBaileysVersion,
   DisconnectReason,
   WASocket,
-  downloadMediaMessage
+  downloadMediaMessage,
+  proto,
+  WAMessageKey,
 } from '@whiskeysockets/baileys';
 import { Boom } from '@hapi/boom';
 import { EventEmitter } from 'events';
@@ -34,8 +36,20 @@ export class WhatsAppService extends EventEmitter {
   /**
    * LID JID Cache: maps phone digits → actual JID (preferring @lid over @s.whatsapp.net).
    * Populated from every incoming message so outbound messages use the correct encryption session.
+   * Persisted to disk alongside auth state to survive restarts.
    */
   private lidJidCache = new Map<string, string>();
+
+  /**
+   * Sent Message Cache: stores recent outgoing messages by ID so Baileys
+   * can re-send them when the recipient requests a retry (fixes "waiting for this message").
+   */
+  private sentMsgCache = new Map<string, proto.IMessage>();
+  private static readonly MAX_SENT_CACHE = 500;
+
+  private get lidCachePath(): string {
+    return path.join(this.authPath, 'lid-cache.json');
+  }
 
   constructor(sessionDir?: string) {
     super();
@@ -60,6 +74,9 @@ export class WhatsAppService extends EventEmitter {
       const { state, saveCreds } = await useMultiFileAuthState(this.authPath);
       const { version } = await fetchLatestBaileysVersion();
 
+      // Load persisted LID cache from disk
+      this.loadLidCache();
+
       this.socket = makeWASocket({
         version,
         auth: state,
@@ -70,7 +87,17 @@ export class WhatsAppService extends EventEmitter {
         keepAliveIntervalMs: 30000,
         // Add retry configuration
         retryRequestDelayMs: 250,
-        maxMsgRetryCount: 5
+        maxMsgRetryCount: 5,
+        // Critical: provide sent messages for retry so recipients can decrypt
+        getMessage: async (key: WAMessageKey): Promise<proto.IMessage | undefined> => {
+          const id = key.id;
+          if (id && this.sentMsgCache.has(id)) {
+            console.log(`🔑 getMessage: returning cached message for retry (${id})`);
+            return this.sentMsgCache.get(id);
+          }
+          console.log(`⚠️ getMessage: no cached message for ${id} — retry may show 'waiting for message'`);
+          return undefined;
+        },
       });
 
       this.socket.ev.on('creds.update', saveCreds);
@@ -325,6 +352,11 @@ export class WhatsAppService extends EventEmitter {
     const jid = this.resolveOutgoingJid(phoneNumber);
     const result = await this.socket.sendMessage(jid, { text: message });
 
+    // Cache sent message for retry support
+    if (result?.key?.id && result.message) {
+      this.cacheSentMessage(result.key.id, result.message);
+    }
+
     this.status.lastSeen = new Date();
     this.emit('message-sent', {
       messageId: result?.key?.id,
@@ -466,6 +498,11 @@ export class WhatsAppService extends EventEmitter {
 
     const result = await this.socket.sendMessage(jid, messageContent);
 
+    // Cache sent message for retry support
+    if (result?.key?.id && result.message) {
+      this.cacheSentMessage(result.key.id, result.message);
+    }
+
     this.status.lastSeen = new Date();
     this.emit('message-sent', {
       messageId: result?.key?.id,
@@ -556,10 +593,12 @@ export class WhatsAppService extends EventEmitter {
     // Check the LID cache
     const cached = this.lidJidCache.get(digits);
     if (cached) {
+      console.log(`[LID] ✅ Cache hit for ${digits} → ${cached}`);
       return cached;
     }
 
     // Fallback to @s.whatsapp.net for contacts that have never messaged us
+    console.log(`[LID] ⚠️ No cache for ${digits}, using @s.whatsapp.net fallback`);
     return `${digits}@s.whatsapp.net`;
   }
 
@@ -572,7 +611,11 @@ export class WhatsAppService extends EventEmitter {
 
     // Prefer @lid JIDs over @s.whatsapp.net
     if (!existing || jid.endsWith('@lid')) {
+      if (!existing || existing !== jid) {
+        console.log(`[LID] 📥 Cached ${digits} → ${jid}${existing ? ` (was: ${existing})` : ''}`);
+      }
       this.lidJidCache.set(digits, jid);
+      this.saveLidCache();
     }
   }
 
@@ -581,6 +624,39 @@ export class WhatsAppService extends EventEmitter {
    */
   registerJid(phoneDigits: string, jid: string): void {
     this.cacheJid(phoneDigits, jid);
+  }
+
+  /** Cache a sent message so getMessage can return it for retry */
+  private cacheSentMessage(id: string, message: proto.IMessage): void {
+    this.sentMsgCache.set(id, message);
+    // Evict oldest entries if cache is too large
+    if (this.sentMsgCache.size > WhatsAppService.MAX_SENT_CACHE) {
+      const firstKey = this.sentMsgCache.keys().next().value;
+      if (firstKey) this.sentMsgCache.delete(firstKey);
+    }
+  }
+
+  /** Persist LID cache to disk so it survives server restarts */
+  private saveLidCache(): void {
+    try {
+      const data = Object.fromEntries(this.lidJidCache);
+      fs.writeFileSync(this.lidCachePath, JSON.stringify(data), 'utf-8');
+    } catch { /* non-fatal */ }
+  }
+
+  /** Load persisted LID cache from disk */
+  private loadLidCache(): void {
+    try {
+      if (fs.existsSync(this.lidCachePath)) {
+        const data = JSON.parse(fs.readFileSync(this.lidCachePath, 'utf-8'));
+        for (const [k, v] of Object.entries(data)) {
+          this.lidJidCache.set(k, v as string);
+        }
+        console.log(`[LID] 📂 Loaded ${this.lidJidCache.size} cached JID mappings from disk`);
+      }
+    } catch (err) {
+      console.warn('[LID] ⚠️ Could not load LID cache:', err);
+    }
   }
 
   private resolveIncomingPhoneNumber(from?: string | null, senderPn?: string | null): string {
