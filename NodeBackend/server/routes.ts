@@ -707,7 +707,7 @@ export async function registerRoutes(app: Express): Promise<Server> {
             // No audio data available (download failed)
             console.log(`🎤 Voice note from HR Admin ${data.phoneNumber} - no audio data, sending acknowledgment`);
             await waSession.sendTextMessage(
-              data.from || `${data.phoneNumber}@s.whatsapp.net`,
+              data.from || data.phoneNumber,
               "🎤 I received your voice note but couldn't process it. Please try again or type your message."
             );
             broadcast('hr-chatbot-response-sent', { phoneNumber: data.phoneNumber, type: 'voice_failed' });
@@ -720,7 +720,7 @@ export async function registerRoutes(app: Express): Promise<Server> {
           // For media, acknowledge but can't process
           console.log(`📎 Media (${messageType}) from HR Admin ${data.phoneNumber} - sending acknowledgment`);
           await waSession.sendTextMessage(
-            data.from || `${data.phoneNumber}@s.whatsapp.net`,
+            data.from || data.phoneNumber,
             `📎 I received your ${messageType}! However, I can only process text messages at the moment.\n\nPlease type your request and I'll be happy to help.`
           );
           broadcast('hr-chatbot-response-sent', { phoneNumber: data.phoneNumber, type: 'media_acknowledgment' });
@@ -742,8 +742,19 @@ export async function registerRoutes(app: Express): Promise<Server> {
       // PRIORITY 2: Check if Lead (LIMS chatbot)
       // ========================================
 
+      // Resolve the session owner's tenant context for per-user config
+      let tenantContext: TenantContext | undefined;
+      try {
+        const ownerUser = await db.select().from(users).where(eq(users.id, ownerUserId)).limit(1);
+        if (ownerUser[0]) {
+          tenantContext = { organizationId: ownerUser[0].organizationId, userId: ownerUser[0].id };
+        }
+      } catch (e) {
+        console.error('⚠️ Failed to resolve tenant context for incoming message:', e);
+      }
+
       // Initialize lead chatbot service with the session that received the message
-      const chatbotService = new ChatbotService(storage, waSession);
+      const chatbotService = new ChatbotService(storage, waSession, tenantContext);
 
       // Check if this phone number is already a lead
       const isAlreadyLead = await withRetry(() => chatbotService.isLead(data.phoneNumber));
@@ -781,9 +792,16 @@ export async function registerRoutes(app: Express): Promise<Server> {
           return;
         }
 
-        // Process through chatbot for leads
-        console.log(`🤖 Processing lead message from ${data.phoneNumber}`);
-        await chatbotService.processLeadMessage(data.phoneNumber, data.content, data.from);
+        // Process through chatbot for leads (with voice note support)
+        const messageType = data.messageType || 'text';
+        if ((messageType === 'voice_note' || messageType === 'audio') && data.audioData) {
+          console.log(`🎤 Processing lead voice note from ${data.phoneNumber}`);
+          const audioPayload = { base64: data.audioData, mimetype: data.mediaInfo?.mimetype || 'audio/ogg' };
+          await chatbotService.processLeadMessage(data.phoneNumber, '[Voice Note]', data.from, audioPayload);
+        } else {
+          console.log(`🤖 Processing lead message from ${data.phoneNumber}`);
+          await chatbotService.processLeadMessage(data.phoneNumber, data.content, data.from);
+        }
         broadcast('chatbot-response-sent', { phoneNumber: data.phoneNumber });
       } else {
         // ========================================
@@ -1514,6 +1532,11 @@ export async function registerRoutes(app: Express): Promise<Server> {
           ragBaseUrl: validated.ragBaseUrl,
           ragAccessKey: validated.ragAccessKey,
           systemPrompt: validated.systemPrompt || null,
+          triggerKeywords: validated.triggerKeywords || null,
+          greetingMessage: validated.greetingMessage || null,
+          contextMessageCount: validated.contextMessageCount ?? null,
+          replyCooldownSeconds: validated.replyCooldownSeconds ?? null,
+          typingDelayMs: validated.typingDelayMs ?? null,
           isActive: validated.isActive === false ? 'false' : 'true',
           updatedAt: new Date(),
         }).where(eq(userRagAgents.id, existing[0].id)).returning();
@@ -1526,6 +1549,11 @@ export async function registerRoutes(app: Express): Promise<Server> {
           ragBaseUrl: validated.ragBaseUrl,
           ragAccessKey: validated.ragAccessKey,
           systemPrompt: validated.systemPrompt || null,
+          triggerKeywords: validated.triggerKeywords || null,
+          greetingMessage: validated.greetingMessage || null,
+          contextMessageCount: validated.contextMessageCount ?? null,
+          replyCooldownSeconds: validated.replyCooldownSeconds ?? null,
+          typingDelayMs: validated.typingDelayMs ?? null,
           isActive: validated.isActive === false ? 'false' : 'true',
         }).returning();
         data = created;
@@ -2471,7 +2499,7 @@ export async function registerRoutes(app: Express): Promise<Server> {
   // Send a plain WhatsApp text message — called by the CRM demo-reminder scheduler.
   // Protected by NOTIFICATION_API_KEY.  Does NOT require HR admin org lookup.
   // Body: { phoneNumber: string, message: string }
-  // phoneNumber: 91XXXXXXXXXX digits-only; this endpoint appends @s.whatsapp.net.
+  // phoneNumber: 91XXXXXXXXXX digits-only; WhatsAppService resolves @lid or @s.whatsapp.net.
   app.post('/api/demo-reminder-send', async (req, res) => {
     try {
       const apiKey = req.headers['x-api-key'] || req.headers['authorization']?.replace('Bearer ', '');
@@ -2485,17 +2513,16 @@ export async function registerRoutes(app: Express): Promise<Server> {
         return res.status(400).json({ success: false, error: 'phoneNumber and message are required' });
       }
 
-      // Normalise to full WhatsApp JID
+      // Normalise to digits (WhatsAppService.resolveOutgoingJid will handle LID vs @s.whatsapp.net)
       let digits = String(phoneNumber).replace(/\D/g, '');
       if (digits.length === 10) digits = `91${digits}`;
-      const jid = `${digits}@s.whatsapp.net`;
 
-      log(`📤 demo-reminder-send → ${jid}: ${String(message).substring(0, 60)}...`);
+      log(`📤 demo-reminder-send → ${digits}: ${String(message).substring(0, 60)}...`);
       const connectedSession = sessionManager.getAnyConnectedSession();
       if (!connectedSession) {
         return res.status(503).json({ success: false, error: 'No connected WhatsApp session available' });
       }
-      await connectedSession.service.sendTextMessage(jid, String(message));
+      await connectedSession.service.sendTextMessage(digits, String(message));
 
       res.json({ success: true });
     } catch (error) {
@@ -2914,21 +2941,19 @@ export async function registerRoutes(app: Express): Promise<Server> {
       log(`✅ Org ${organizationId} verified - ${orgAdmins.length} HR admin(s) registered`);
 
       // Smart phone number normalization - handles both regular and LID formats
+      // Let WhatsAppService.resolveOutgoingJid handle @lid vs @s.whatsapp.net resolution
       let normalizedPhone = phoneNumber;
 
       // Check if it's already a full JID (contains @)
       if (phoneNumber.includes('@')) {
         normalizedPhone = phoneNumber; // Already formatted
-      } else if (phoneNumber.length > 15) {
-        // Long numbers are likely LID format
-        normalizedPhone = `${phoneNumber.replace(/[^0-9]/g, '')}@lid`;
       } else {
-        // Regular phone number
+        // Regular phone number - just normalize digits, let service resolve the JID
         let cleaned = phoneNumber.replace(/[^0-9]/g, '');
         if (cleaned.length === 10 && !cleaned.startsWith('91')) {
           cleaned = '91' + cleaned;
         }
-        normalizedPhone = `${cleaned}@s.whatsapp.net`;
+        normalizedPhone = cleaned;
       }
 
       log(`📤 Sending notification to ${normalizedPhone}: ${message.substring(0, 50)}...`);
@@ -2995,19 +3020,17 @@ export async function registerRoutes(app: Express): Promise<Server> {
           }
 
           // Smart phone number normalization - handles both regular and LID formats
+          // Let WhatsAppService.resolveOutgoingJid handle @lid vs @s.whatsapp.net resolution
           let normalizedPhone = phoneNumber;
           if (phoneNumber.includes('@')) {
             normalizedPhone = phoneNumber; // Already formatted
-          } else if (phoneNumber.length > 15) {
-            // Long numbers are likely LID format
-            normalizedPhone = `${phoneNumber.replace(/[^0-9]/g, '')}@lid`;
           } else {
-            // Regular phone number
+            // Regular phone number - just normalize digits, let service resolve the JID
             let cleaned = phoneNumber.replace(/[^0-9]/g, '');
             if (cleaned.length === 10 && !cleaned.startsWith('91')) {
               cleaned = '91' + cleaned;
             }
-            normalizedPhone = `${cleaned}@s.whatsapp.net`;
+            normalizedPhone = cleaned;
           }
 
           const formattedMessage = title
@@ -3139,7 +3162,8 @@ export async function registerRoutes(app: Express): Promise<Server> {
         for (const s of rows) {
           const demoAt = new Date(s.demo_at);
           const minsLeft = (demoAt.getTime() - now.getTime()) / 60000;
-          const jid = String(s.phone_number).replace(/\D/g, "") + "@s.whatsapp.net";
+          // Pass digits only — WhatsAppService.resolveOutgoingJid handles LID resolution
+          const phoneDigits = String(s.phone_number).replace(/\D/g, "");
 
           // Get any connected session for sending reminders
           const connectedSession = sessionManager.getAnyConnectedSession();
@@ -3152,7 +3176,7 @@ export async function registerRoutes(app: Express): Promise<Server> {
           // 30-min reminder window: 25–35 mins remaining
           if (!s.remind_30_sent_at && minsLeft >= 25 && minsLeft <= 35) {
             try {
-              await waService.sendTextMessage(jid, buildMessage("30min", s.meeting_link, s.contact_name));
+              await waService.sendTextMessage(phoneDigits, buildMessage("30min", s.meeting_link, s.contact_name));
               await db.execute(drizzleSql`UPDATE demo_schedules SET remind_30_sent_at = NOW() WHERE id = ${s.id}`);
               log(`✅ Demo 30-min reminder → ${s.phone_number}`);
             } catch (e: any) { log(`⚠️ 30-min reminder failed for ${s.phone_number}: ${e.message}`); }
@@ -3161,7 +3185,7 @@ export async function registerRoutes(app: Express): Promise<Server> {
           // 15-min reminder window: 10–20 mins remaining
           if (!s.remind_15_sent_at && minsLeft >= 10 && minsLeft <= 20) {
             try {
-              await waService.sendTextMessage(jid, buildMessage("15min", s.meeting_link, s.contact_name));
+              await waService.sendTextMessage(phoneDigits, buildMessage("15min", s.meeting_link, s.contact_name));
               await db.execute(drizzleSql`UPDATE demo_schedules SET remind_15_sent_at = NOW() WHERE id = ${s.id}`);
               log(`✅ Demo 15-min reminder → ${s.phone_number}`);
             } catch (e: any) { log(`⚠️ 15-min reminder failed for ${s.phone_number}: ${e.message}`); }
@@ -3170,7 +3194,7 @@ export async function registerRoutes(app: Express): Promise<Server> {
           // 5-min reminder window: 0–10 mins remaining
           if (!s.remind_5_sent_at && minsLeft >= 0 && minsLeft <= 10) {
             try {
-              await waService.sendTextMessage(jid, buildMessage("5min", s.meeting_link, s.contact_name));
+              await waService.sendTextMessage(phoneDigits, buildMessage("5min", s.meeting_link, s.contact_name));
               await db.execute(drizzleSql`UPDATE demo_schedules SET remind_5_sent_at = NOW() WHERE id = ${s.id}`);
               log(`✅ Demo 5-min reminder → ${s.phone_number}`);
             } catch (e: any) { log(`⚠️ 5-min reminder failed for ${s.phone_number}: ${e.message}`); }

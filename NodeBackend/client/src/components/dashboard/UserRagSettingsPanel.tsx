@@ -16,6 +16,10 @@ import {
   CheckCircle,
   AlertCircle,
   Database,
+  MessageSquare,
+  Clock,
+  Hash,
+  X,
 } from "lucide-react";
 
 interface RagConfig {
@@ -25,6 +29,11 @@ interface RagConfig {
   ragAccessKey: string;
   systemPrompt?: string;
   isActive: string;
+  triggerKeywords?: string[];
+  greetingMessage?: string;
+  contextMessageCount?: number;
+  replyCooldownSeconds?: number;
+  typingDelayMs?: number;
 }
 
 export function UserRagSettingsPanel() {
@@ -34,6 +43,12 @@ export function UserRagSettingsPanel() {
   const [systemPrompt, setSystemPrompt] = useState("");
   const [isActive, setIsActive] = useState(true);
   const [useBuiltInRag, setUseBuiltInRag] = useState(false);
+  const [triggerKeywords, setTriggerKeywords] = useState<string[]>([]);
+  const [keywordInput, setKeywordInput] = useState("");
+  const [greetingMessage, setGreetingMessage] = useState("");
+  const [contextMessageCount, setContextMessageCount] = useState<number | "">(5);
+  const [replyCooldownSeconds, setReplyCooldownSeconds] = useState<number | "">(10);
+  const [typingDelayMs, setTypingDelayMs] = useState<number | "">(2000);
   const { toast } = useToast();
   const queryClient = useQueryClient();
 
@@ -52,6 +67,11 @@ export function UserRagSettingsPanel() {
       if (!ragAccessKey) setRagAccessKey("");
       setSystemPrompt(config.systemPrompt || "");
       setIsActive(config.isActive !== "false");
+      setTriggerKeywords(config.triggerKeywords || []);
+      setGreetingMessage(config.greetingMessage || "");
+      setContextMessageCount(config.contextMessageCount ?? 5);
+      setReplyCooldownSeconds(config.replyCooldownSeconds ?? 10);
+      setTypingDelayMs(config.typingDelayMs ?? 2000);
     }
   }, [config]);
 
@@ -73,6 +93,11 @@ export function UserRagSettingsPanel() {
         body.ragAccessKey = ragAccessKey;
       }
       if (systemPrompt) body.systemPrompt = systemPrompt;
+      if (triggerKeywords.length > 0) body.triggerKeywords = triggerKeywords;
+      if (greetingMessage) body.greetingMessage = greetingMessage;
+      if (contextMessageCount !== "") body.contextMessageCount = contextMessageCount;
+      if (replyCooldownSeconds !== "") body.replyCooldownSeconds = replyCooldownSeconds;
+      if (typingDelayMs !== "") body.typingDelayMs = typingDelayMs;
 
       const res = await apiRequest("POST", "/api/user-rag-agent", body);
       return res.json();
@@ -182,6 +207,115 @@ export function UserRagSettingsPanel() {
             <p className="text-xs text-muted-foreground mt-1">
               Leave empty to use the default system prompt.
             </p>
+          </div>
+
+          {/* Lead Chatbot Behaviour Section */}
+          <div className="border-t pt-4 mt-4">
+            <h3 className="text-sm font-semibold flex items-center gap-2 mb-3">
+              <MessageSquare className="w-4 h-4 text-primary" />
+              Lead Chatbot Behaviour
+            </h3>
+
+            {/* Trigger Keywords */}
+            <div className="mb-3">
+              <Label>Trigger Keywords</Label>
+              <p className="text-xs text-muted-foreground mb-1">
+                Words that mark a contact as a lead. Leave empty to use global keywords.
+              </p>
+              <div className="flex flex-wrap gap-1 mb-1">
+                {triggerKeywords.map((kw, i) => (
+                  <span key={i} className="inline-flex items-center gap-1 px-2 py-0.5 rounded-full bg-primary/10 text-primary text-xs">
+                    {kw}
+                    <X className="w-3 h-3 cursor-pointer" onClick={() => setTriggerKeywords(triggerKeywords.filter((_, j) => j !== i))} />
+                  </span>
+                ))}
+              </div>
+              <div className="flex gap-1">
+                <Input
+                  value={keywordInput}
+                  onChange={(e) => setKeywordInput(e.target.value)}
+                  onKeyDown={(e) => {
+                    if ((e.key === "Enter" || e.key === ",") && keywordInput.trim()) {
+                      e.preventDefault();
+                      setTriggerKeywords([...triggerKeywords, keywordInput.trim()]);
+                      setKeywordInput("");
+                    }
+                  }}
+                  placeholder="Type keyword, press Enter"
+                  className="flex-1"
+                />
+                <Button
+                  type="button"
+                  variant="secondary"
+                  size="sm"
+                  disabled={!keywordInput.trim()}
+                  onClick={() => {
+                    setTriggerKeywords([...triggerKeywords, keywordInput.trim()]);
+                    setKeywordInput("");
+                  }}
+                >
+                  Add
+                </Button>
+              </div>
+            </div>
+
+            {/* Greeting Message */}
+            <div className="mb-3">
+              <Label>Greeting Message</Label>
+              <Textarea
+                value={greetingMessage}
+                onChange={(e) => setGreetingMessage(e.target.value)}
+                placeholder="e.g., Hi! Thanks for reaching out. How can I help you today?"
+                rows={3}
+              />
+              <p className="text-xs text-muted-foreground mt-1">
+                Sent when a new lead is first detected. Leave empty for global greeting.
+              </p>
+            </div>
+
+            {/* Numeric Config Row */}
+            <div className="grid grid-cols-3 gap-3">
+              <div>
+                <Label className="flex items-center gap-1">
+                  <Hash className="w-3 h-3" /> Context Messages
+                </Label>
+                <Input
+                  type="number"
+                  min={1}
+                  max={50}
+                  value={contextMessageCount}
+                  onChange={(e) => setContextMessageCount(e.target.value ? Number(e.target.value) : "")}
+                />
+                <p className="text-xs text-muted-foreground mt-0.5">History sent to RAG</p>
+              </div>
+              <div>
+                <Label className="flex items-center gap-1">
+                  <Clock className="w-3 h-3" /> Cooldown (s)
+                </Label>
+                <Input
+                  type="number"
+                  min={0}
+                  max={600}
+                  value={replyCooldownSeconds}
+                  onChange={(e) => setReplyCooldownSeconds(e.target.value ? Number(e.target.value) : "")}
+                />
+                <p className="text-xs text-muted-foreground mt-0.5">Min seconds between replies</p>
+              </div>
+              <div>
+                <Label className="flex items-center gap-1">
+                  <Clock className="w-3 h-3" /> Typing Delay (ms)
+                </Label>
+                <Input
+                  type="number"
+                  min={0}
+                  max={10000}
+                  step={500}
+                  value={typingDelayMs}
+                  onChange={(e) => setTypingDelayMs(e.target.value ? Number(e.target.value) : "")}
+                />
+                <p className="text-xs text-muted-foreground mt-0.5">Simulated typing time</p>
+              </div>
+            </div>
           </div>
 
           <div className="flex gap-2">

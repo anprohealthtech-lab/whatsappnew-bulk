@@ -273,6 +273,13 @@ export async function runMigrations(): Promise<void> {
       CREATE INDEX IF NOT EXISTS idx_blocked_numbers_tenant ON blocked_numbers(organization_id, user_id);
       CREATE INDEX IF NOT EXISTS idx_whatsapp_sessions_user ON whatsapp_sessions(user_id, session_name);
 
+      -- Per-user chatbot config columns on user_rag_agents (0004)
+      ALTER TABLE "user_rag_agents" ADD COLUMN IF NOT EXISTS "trigger_keywords" jsonb;
+      ALTER TABLE "user_rag_agents" ADD COLUMN IF NOT EXISTS "greeting_message" text;
+      ALTER TABLE "user_rag_agents" ADD COLUMN IF NOT EXISTS "context_message_count" integer;
+      ALTER TABLE "user_rag_agents" ADD COLUMN IF NOT EXISTS "reply_cooldown_seconds" integer;
+      ALTER TABLE "user_rag_agents" ADD COLUMN IF NOT EXISTS "typing_delay_ms" integer;
+
       -- Add FK constraints (safe with IF NOT EXISTS pattern via DO blocks)
       DO $$ BEGIN
         IF NOT EXISTS (

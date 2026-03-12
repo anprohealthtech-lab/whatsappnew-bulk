@@ -97,6 +97,11 @@ export const userRagAgents = pgTable("user_rag_agents", {
   ragBaseUrl: text("rag_base_url").notNull(),
   ragAccessKey: text("rag_access_key").notNull(),
   systemPrompt: text("system_prompt"),
+  triggerKeywords: jsonb("trigger_keywords"), // per-user override: array of strings
+  greetingMessage: text("greeting_message"), // per-user override: custom greeting for new leads
+  contextMessageCount: integer("context_message_count"),
+  replyCooldownSeconds: integer("reply_cooldown_seconds"),
+  typingDelayMs: integer("typing_delay_ms"),
   isActive: text("is_active").default("true").notNull(),
   createdAt: timestamp("created_at").defaultNow(),
   updatedAt: timestamp("updated_at").defaultNow(),
@@ -311,6 +316,11 @@ export const userRagAgentSchema = z.object({
   ),
   ragAccessKey: z.string().min(1, "RAG access key is required"),
   systemPrompt: z.string().optional(),
+  triggerKeywords: z.array(z.string()).optional(),
+  greetingMessage: z.string().optional(),
+  contextMessageCount: z.number().int().min(1).max(20).optional(),
+  replyCooldownSeconds: z.number().int().min(0).max(60).optional(),
+  typingDelayMs: z.number().int().min(0).max(10000).optional(),
   isActive: z.boolean().optional(),
 });
 

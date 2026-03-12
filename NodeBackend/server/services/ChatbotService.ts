@@ -18,6 +18,7 @@ import type { ChatbotConfig, Contact, Message, UserRagAgent } from "@shared/sche
 import { userRagAgents } from "@shared/schema";
 import { db } from "../db";
 import { eq, and, desc } from "drizzle-orm";
+import Anthropic from "@anthropic-ai/sdk";
 import * as fs from 'fs';
 import * as path from 'path';
 import * as https from 'https';
@@ -274,7 +275,11 @@ export class ChatbotService {
       return null;
     }
 
-    const keywords = (config.triggerKeywords as string[]) || [];
+    // Per-user keywords override global keywords if configured
+    const userRagConfig = await this.getUserRagConfig();
+    const userKeywords = (userRagConfig?.triggerKeywords as string[] | null);
+    const globalKeywords = (config.triggerKeywords as string[]) || [];
+    const keywords = (userKeywords && userKeywords.length > 0) ? userKeywords : globalKeywords;
     const fallbackKeywords = [
       'Hello! Can I get more info on this?',
     ];
@@ -322,7 +327,9 @@ export class ChatbotService {
     // Supports multiple messages separated by ===NEXT_MESSAGE===
     try {
       const config = await this.storage.getChatbotConfig();
-      const greetingRaw = (config as any)?.greetingMessage || DEFAULT_GREETING;
+      // Per-user greeting overrides global greeting
+      const userRagConfig = await this.getUserRagConfig();
+      const greetingRaw = userRagConfig?.greetingMessage || (config as any)?.greetingMessage || DEFAULT_GREETING;
       const greetingParts = this.parseGreetingItems(greetingRaw);
 
       // Check WhatsApp connection before attempting to send
@@ -664,7 +671,7 @@ export class ChatbotService {
   /**
    * Process a lead message: check cooldown, get context, call RAG with system prompt, send reply
    */
-  async processLeadMessage(phoneNumber: string, messageText: string, replyToJid?: string): Promise<void> {
+  async processLeadMessage(phoneNumber: string, messageText: string, replyToJid?: string, audioData?: { base64: string; mimetype: string }): Promise<void> {
     const log = (msg: string) => console.log(`[ChatbotService] ${msg}`);
 
     try {
@@ -678,8 +685,10 @@ export class ChatbotService {
         return;
       }
 
-      const cooldownSeconds = (config as any).replyCooldownSeconds || 8;
-      const typingDelayMs = (config as any).typingDelayMs || 2000;
+      // Per-user overrides for cooldown and typing delay
+      const userRagConfig = await this.getUserRagConfig();
+      const cooldownSeconds = userRagConfig?.replyCooldownSeconds ?? (config as any).replyCooldownSeconds ?? 8;
+      const typingDelayMs = userRagConfig?.typingDelayMs ?? (config as any).typingDelayMs ?? 2000;
 
       // Check reply cooldown
       if (this.isOnCooldown(phoneNumber, cooldownSeconds)) {
@@ -691,7 +700,26 @@ export class ChatbotService {
 
       // Get and update conversation state
       const state = await this.getConversationState(phoneNumber);
-      const userIntent = this.detectUserIntent(messageText, state.userIntent);
+
+      // Handle voice note transcription if audio data is provided
+      let effectiveMessageText = messageText;
+      if (audioData) {
+        log(`🎤 Transcribing voice note from lead ${phoneNumber}`);
+        const transcription = await this.transcribeVoiceNote(audioData);
+        if (transcription) {
+          effectiveMessageText = transcription;
+          log(`📝 Transcription: ${transcription.substring(0, 100)}...`);
+        } else {
+          // Transcription failed — ask user to type instead
+          await this.whatsappService.sendTextMessage(
+            replyToJid || phoneNumber,
+            "🎤 I received your voice note but couldn't process it right now. Could you please type your message instead?"
+          );
+          return;
+        }
+      }
+
+      const userIntent = this.detectUserIntent(effectiveMessageText, state.userIntent);
 
       // If user has declined, don't auto-respond unless they show renewed interest
       if (state.userIntent === 'declined' && userIntent === 'declined') {
@@ -706,12 +734,13 @@ export class ChatbotService {
       });
 
       // Get conversation history
-      const limit = config.contextMessageCount || 5;
+      const limit = userRagConfig?.contextMessageCount ?? config.contextMessageCount ?? 5;
       const history = await this.getConversationHistory(phoneNumber, limit);
       const recentHistory = await this.getConversationHistory(phoneNumber, 40);
-      const voiceNoteRequested = this.isVoiceNoteRequested(messageText);
+      const voiceNoteRequested = this.isVoiceNoteRequested(effectiveMessageText);
       const voiceNoteAlreadySent = this.hasSentVoiceNoteEarlier(recentHistory);
-      const greetingItems = this.parseGreetingItems((config as any)?.greetingMessage || DEFAULT_GREETING);
+      const userGreeting = userRagConfig?.greetingMessage;
+      const greetingItems = this.parseGreetingItems(userGreeting || (config as any)?.greetingMessage || DEFAULT_GREETING);
       const hasConfiguredVoiceGreeting = greetingItems.some(item => item.kind === 'audio' || item.kind === 'audio_url');
 
       log(`Retrieved ${history.length} messages from conversation history`);
@@ -721,7 +750,7 @@ export class ChatbotService {
         ...history,
         {
           phoneNumber,
-          content: messageText,
+          content: effectiveMessageText,
           type: "incoming" as const,
           status: "received" as const,
           timestamp: new Date(),
@@ -739,8 +768,7 @@ export class ChatbotService {
         configuredInGreeting: hasConfiguredVoiceGreeting,
       });
 
-      // Check for user-scoped RAG config override
-      const userRagConfig = await this.getUserRagConfig();
+      // Check for user-scoped RAG config override (userRagConfig already loaded above)
       let effectiveConfig = config;
       let useSupabaseRag = false;
 
@@ -1149,6 +1177,64 @@ export class ChatbotService {
         success: false,
         message: `Connection failed: ${error.message}`
       };
+    }
+  }
+
+  /**
+   * Transcribe a voice note using Anthropic Claude's audio input capability.
+   * Returns the transcription text or null if unavailable/failed.
+   */
+  private async transcribeVoiceNote(audioData: { base64: string; mimetype: string }): Promise<string | null> {
+    const log = (msg: string) => console.log(`[ChatbotService] ${msg}`);
+    const apiKey = process.env.ANTHROPIC_API_KEY;
+    if (!apiKey) {
+      log("⚠️ ANTHROPIC_API_KEY not set — cannot transcribe voice note");
+      return null;
+    }
+
+    try {
+      const anthropic = new Anthropic({ apiKey });
+
+      // Map WhatsApp mimetype to Anthropic media type
+      let mediaType: "audio/wav" | "audio/mp3" | "audio/aiff" | "audio/aac" | "audio/ogg" | "audio/flac" = "audio/ogg";
+      if (audioData.mimetype.includes('ogg')) mediaType = "audio/ogg";
+      else if (audioData.mimetype.includes('mp3') || audioData.mimetype.includes('mpeg')) mediaType = "audio/mp3";
+      else if (audioData.mimetype.includes('wav')) mediaType = "audio/wav";
+      else if (audioData.mimetype.includes('aac') || audioData.mimetype.includes('m4a')) mediaType = "audio/aac";
+      else if (audioData.mimetype.includes('flac')) mediaType = "audio/flac";
+
+      const response = await anthropic.messages.create({
+        model: "claude-sonnet-4-20250514",
+        max_tokens: 1024,
+        messages: [
+          {
+            role: "user",
+            content: [
+              {
+                type: "text",
+                text: "Please transcribe this voice message exactly as spoken. Return ONLY the transcription text with no extra commentary."
+              },
+              {
+                type: "input_audio",
+                input_audio: {
+                  data: audioData.base64,
+                  media_type: mediaType
+                }
+              }
+            ] as Anthropic.ContentBlockParam[]
+          }
+        ]
+      });
+
+      const textBlock = response.content.find(b => b.type === "text");
+      if (textBlock && textBlock.type === "text") {
+        log(`🎤 Transcription successful (${textBlock.text.length} chars)`);
+        return textBlock.text;
+      }
+      return null;
+    } catch (error: any) {
+      log(`❌ Voice transcription failed: ${error.message}`);
+      return null;
     }
   }
 }

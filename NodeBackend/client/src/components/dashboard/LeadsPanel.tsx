@@ -23,6 +23,7 @@ import {
 import { Skeleton } from "@/components/ui/skeleton";
 import { UserPlus, MessageSquare, Calendar, Trash2, Pause, Play, Info } from "lucide-react";
 import { useToast } from "@/hooks/use-toast";
+import { apiRequest } from "@/lib/queryClient";
 
 const flagLeadSchema = z.object({
   phoneNumber: z.string().min(10, "Phone number must be at least 10 digits"),
@@ -75,22 +76,11 @@ export function LeadsPanel() {
   // Mutation to flag a lead
   const flagLeadMutation = useMutation({
     mutationFn: async (data: FlagLeadFormData) => {
-      const response = await fetch("/api/leads/flag", {
-        method: "POST",
-        headers: {
-          "Content-Type": "application/json",
-        },
-        body: JSON.stringify({
-          phoneNumber: data.phoneNumber,
-          name: data.name || undefined,
-          keyword: data.keyword || "Manual flag",
-        }),
+      const response = await apiRequest("POST", "/api/leads/flag", {
+        phoneNumber: data.phoneNumber,
+        name: data.name || undefined,
+        keyword: data.keyword || "Manual flag",
       });
-
-      if (!response.ok) {
-        const error = await response.json();
-        throw new Error(error.error || "Failed to flag lead");
-      }
 
       return response.json();
     },
@@ -115,15 +105,7 @@ export function LeadsPanel() {
   // Mutation to delete a lead
   const deleteLeadMutation = useMutation({
     mutationFn: async (phoneNumber: string) => {
-      const response = await fetch(`/api/leads/${encodeURIComponent(phoneNumber)}`, {
-        method: "DELETE",
-      });
-
-      if (!response.ok) {
-        const error = await response.json();
-        throw new Error(error.error || "Failed to delete lead");
-      }
-
+      const response = await apiRequest("DELETE", `/api/leads/${encodeURIComponent(phoneNumber)}`);
       return response.json();
     },
     onSuccess: () => {
@@ -145,19 +127,7 @@ export function LeadsPanel() {
   // Mutation to toggle chatbot status
   const toggleChatbotMutation = useMutation({
     mutationFn: async ({ phoneNumber, active }: { phoneNumber: string; active: boolean }) => {
-      const response = await fetch(`/api/leads/${encodeURIComponent(phoneNumber)}/chatbot-status`, {
-        method: "PATCH",
-        headers: {
-          "Content-Type": "application/json",
-        },
-        body: JSON.stringify({ active }),
-      });
-
-      if (!response.ok) {
-        const error = await response.json();
-        throw new Error(error.error || "Failed to toggle chatbot status");
-      }
-
+      const response = await apiRequest("PATCH", `/api/leads/${encodeURIComponent(phoneNumber)}/chatbot-status`, { active });
       return response.json();
     },
     onSuccess: (_, variables) => {
@@ -179,20 +149,12 @@ export function LeadsPanel() {
   // Mutation to schedule a demo
   const scheduleDemoMutation = useMutation({
     mutationFn: async ({ phoneNumber, data }: { phoneNumber: string; data: ScheduleDemoFormData }) => {
-      const response = await fetch(`/api/leads/${encodeURIComponent(phoneNumber)}/schedule-demo`, {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({
-          demoDate: data.demoDate,
-          demoTime: data.demoTime,
-          meetingLink: data.meetingLink,
-          contactName: scheduleDemoTarget?.name || undefined,
-        }),
+      const response = await apiRequest("POST", `/api/leads/${encodeURIComponent(phoneNumber)}/schedule-demo`, {
+        demoDate: data.demoDate,
+        demoTime: data.demoTime,
+        meetingLink: data.meetingLink,
+        contactName: scheduleDemoTarget?.name || undefined,
       });
-      if (!response.ok) {
-        const err = await response.json();
-        throw new Error(err.error || "Failed to schedule demo");
-      }
       return response.json();
     },
     onSuccess: (result) => {

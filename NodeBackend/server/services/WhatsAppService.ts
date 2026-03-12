@@ -31,6 +31,12 @@ export class WhatsAppService extends EventEmitter {
   private badSessionRetryCount: number = 0;
   private static readonly MAX_BAD_SESSION_RETRIES = 3;
 
+  /**
+   * LID JID Cache: maps phone digits → actual JID (preferring @lid over @s.whatsapp.net).
+   * Populated from every incoming message so outbound messages use the correct encryption session.
+   */
+  private lidJidCache = new Map<string, string>();
+
   constructor(sessionDir?: string) {
     super();
     this.authPath = sessionDir
@@ -161,6 +167,11 @@ export class WhatsAppService extends EventEmitter {
         // Prefer senderPn for LID chats so lead lookup matches real phone numbers (e.g. 91xxxxxxxxxx).
         const phoneNumber = this.resolveIncomingPhoneNumber(from, senderPn);
         const isFromMe = msg.key.fromMe;
+
+        // Cache the sender's JID (prefer @lid over @s.whatsapp.net) for outbound resolution
+        if (from && phoneNumber) {
+          this.cacheJid(phoneNumber, from);
+        }
 
         // Only process incoming messages (not sent by us)
         if (isFromMe) return;
@@ -311,8 +322,7 @@ export class WhatsAppService extends EventEmitter {
       throw new Error('WhatsApp not connected');
     }
 
-    // Preserve original JID format if already provided (@lid or @s.whatsapp.net)
-    const jid = phoneNumber.includes('@') ? phoneNumber : `${this.formatPhoneNumber(phoneNumber)}@s.whatsapp.net`;
+    const jid = this.resolveOutgoingJid(phoneNumber);
     const result = await this.socket.sendMessage(jid, { text: message });
 
     this.status.lastSeen = new Date();
@@ -352,9 +362,32 @@ export class WhatsAppService extends EventEmitter {
     const participants = meta.participants || [];
 
     return participants.map((participant: any) => {
-      const jid = participant.id || '';
-      const phone = jid.replace(/@s\.whatsapp\.net$|@lid$/i, '').replace(/\D/g, '');
-      return { phone, jid };
+      // Baileys Contact has: id (lid or jid), lid (@lid format), jid (@s.whatsapp.net format)
+      // Prefer participant.jid (phone-based) for real phone numbers
+      const pnJid = participant.jid || '';  // e.g. "919901234567@s.whatsapp.net"
+      const lidJid = participant.lid || ''; // e.g. "261129817338018@lid"
+      const rawId = participant.id || '';   // could be either format
+
+      // Extract phone digits from the @s.whatsapp.net JID
+      const pnDigits = pnJid.replace(/@s\.whatsapp\.net$/i, '').replace(/\D/g, '');
+      // If no pn JID, try extracting from id (only useful when id is @s.whatsapp.net format)
+      const idDigits = rawId.endsWith('@lid')
+        ? '' // LID digits are not phone numbers
+        : rawId.replace(/@s\.whatsapp\.net$/i, '').replace(/\D/g, '');
+
+      const phone = pnDigits || idDigits;
+      const bestJid = pnJid || rawId;
+
+      // Cache the LID → phone mapping for outbound message resolution
+      if (phone && lidJid) {
+        this.cacheJid(phone, lidJid);
+      }
+      if (phone && pnJid) {
+        // Also register the pn JID (cacheJid will prefer @lid if already cached)
+        this.cacheJid(phone, pnJid);
+      }
+
+      return { phone, jid: bestJid };
     }).filter((item) => item.phone.length > 0);
   }
 
@@ -367,9 +400,6 @@ export class WhatsAppService extends EventEmitter {
     if (!this.socket || !this.status.isConnected) {
       throw new Error('WhatsApp not connected');
     }
-
-    // Preserve original JID format if already provided (@lid or @s.whatsapp.net)
-    const jid = phoneNumber.includes('@') ? phoneNumber : `${this.formatPhoneNumber(phoneNumber)}@s.whatsapp.net`;
 
     // Baileys v6.x doesn't fully support new interactive message format yet
     // Using text fallback with clear formatting for better compatibility
@@ -402,8 +432,7 @@ export class WhatsAppService extends EventEmitter {
       throw new Error('WhatsApp not connected');
     }
 
-    // Preserve original JID format if already provided (@lid or @s.whatsapp.net)
-    const jid = phoneNumber.includes('@') ? phoneNumber : `${this.formatPhoneNumber(phoneNumber)}@s.whatsapp.net`;
+    const jid = this.resolveOutgoingJid(phoneNumber);
     const fileBuffer = fs.readFileSync(filePath);
     const fileExtension = path.extname(filePath).toLowerCase();
 
@@ -510,6 +539,48 @@ export class WhatsAppService extends EventEmitter {
 
   getStatus(): WhatsAppStatus {
     return { ...this.status };
+  }
+
+  /**
+   * Resolve the JID to use for outgoing messages.
+   * Checks the LID cache first; falls back to @s.whatsapp.net for unknown contacts.
+   */
+  private resolveOutgoingJid(phoneNumber: string): string {
+    // Already a full JID — return as-is
+    if (phoneNumber.includes('@')) {
+      return phoneNumber;
+    }
+
+    const digits = this.formatPhoneNumber(phoneNumber);
+
+    // Check the LID cache
+    const cached = this.lidJidCache.get(digits);
+    if (cached) {
+      return cached;
+    }
+
+    // Fallback to @s.whatsapp.net for contacts that have never messaged us
+    return `${digits}@s.whatsapp.net`;
+  }
+
+  /**
+   * Cache a phone number → JID mapping, preferring @lid over @s.whatsapp.net.
+   */
+  private cacheJid(phoneDigits: string, jid: string): void {
+    const digits = this.formatPhoneNumber(phoneDigits);
+    const existing = this.lidJidCache.get(digits);
+
+    // Prefer @lid JIDs over @s.whatsapp.net
+    if (!existing || jid.endsWith('@lid')) {
+      this.lidJidCache.set(digits, jid);
+    }
+  }
+
+  /**
+   * Public method for external code to register JID mappings.
+   */
+  registerJid(phoneDigits: string, jid: string): void {
+    this.cacheJid(phoneDigits, jid);
   }
 
   private resolveIncomingPhoneNumber(from?: string | null, senderPn?: string | null): string {
