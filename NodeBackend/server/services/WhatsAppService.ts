@@ -184,6 +184,36 @@ export class WhatsAppService extends EventEmitter {
         }
       });
 
+      // Listen for contact updates to build phone ↔ LID mapping
+      this.socket.ev.on('contacts.upsert', (contacts: any[]) => {
+        for (const contact of contacts) {
+          // contact.id might be @lid or @s.whatsapp.net
+          // contact.lid is the @lid JID (if available)
+          // contact.jid is @s.whatsapp.net (if available, sometimes only on groups)
+          // contact.notify / contact.name are display names
+          const lid = contact.lid || (contact.id?.endsWith?.('@lid') ? contact.id : '');
+          const pnJid = contact.jid || (contact.id?.endsWith?.('@s.whatsapp.net') ? contact.id : '');
+          const phone = pnJid ? pnJid.replace(/@s\.whatsapp\.net$/i, '').replace(/\D/g, '') : '';
+
+          if (phone && lid) {
+            this.cacheJid(phone, lid);
+          }
+        }
+      });
+
+      // Also listen for contacts.update (partial updates)
+      this.socket.ev.on('contacts.update', (updates: any[]) => {
+        for (const update of updates) {
+          const lid = update.lid || (update.id?.endsWith?.('@lid') ? update.id : '');
+          const pnJid = update.jid || (update.id?.endsWith?.('@s.whatsapp.net') ? update.id : '');
+          const phone = pnJid ? pnJid.replace(/@s\.whatsapp\.net$/i, '').replace(/\D/g, '') : '';
+
+          if (phone && lid) {
+            this.cacheJid(phone, lid);
+          }
+        }
+      });
+
       // Listen for incoming messages (quick reply buttons, text, audio, etc.)
       this.socket.ev.on('messages.upsert', async ({ messages }) => {
         const msg = messages[0];
@@ -195,8 +225,18 @@ export class WhatsAppService extends EventEmitter {
         const phoneNumber = this.resolveIncomingPhoneNumber(from, senderPn);
         const isFromMe = msg.key.fromMe;
 
-        // Cache the sender's JID (prefer @lid over @s.whatsapp.net) for outbound resolution
-        if (from && phoneNumber) {
+        // Cache the sender's LID JID for outbound resolution
+        // When senderPn is available, we know the real phone → cache phone→LID
+        // When senderPn is missing and from is @lid, cache LID digits→LID (for reply flow)
+        if (from && from.endsWith('@lid')) {
+          if (senderPn) {
+            // Best case: we know the real phone number for this LID
+            const pnDigits = senderPn.replace(/\D/g, '');
+            if (pnDigits.length >= 10) {
+              this.cacheJid(pnDigits, from);
+            }
+          }
+          // Always cache LID digits → LID JID for reply routing
           this.cacheJid(phoneNumber, from);
         }
 
@@ -603,17 +643,20 @@ export class WhatsAppService extends EventEmitter {
   }
 
   /**
-   * Cache a phone number → JID mapping, preferring @lid over @s.whatsapp.net.
+   * Cache a phone number → JID mapping. Only stores @lid JIDs.
+   * Caching @s.whatsapp.net is pointless — it's the default fallback.
    */
   private cacheJid(phoneDigits: string, jid: string): void {
     const digits = this.formatPhoneNumber(phoneDigits);
-    const existing = this.lidJidCache.get(digits);
 
-    // Prefer @lid JIDs over @s.whatsapp.net
-    if (!existing || jid.endsWith('@lid')) {
-      if (!existing || existing !== jid) {
-        console.log(`[LID] 📥 Cached ${digits} → ${jid}${existing ? ` (was: ${existing})` : ''}`);
-      }
+    // Only cache @lid JIDs — @s.whatsapp.net is already the fallback
+    if (!jid.endsWith('@lid')) {
+      return;
+    }
+
+    const existing = this.lidJidCache.get(digits);
+    if (!existing || existing !== jid) {
+      console.log(`[LID] 📥 Cached ${digits} → ${jid}${existing ? ` (was: ${existing})` : ''}`);
       this.lidJidCache.set(digits, jid);
       this.saveLidCache();
     }
@@ -649,10 +692,20 @@ export class WhatsAppService extends EventEmitter {
     try {
       if (fs.existsSync(this.lidCachePath)) {
         const data = JSON.parse(fs.readFileSync(this.lidCachePath, 'utf-8'));
+        let loaded = 0;
+        let skipped = 0;
         for (const [k, v] of Object.entries(data)) {
-          this.lidJidCache.set(k, v as string);
+          // Only load @lid entries — purge stale @s.whatsapp.net from old cache
+          if ((v as string).endsWith('@lid')) {
+            this.lidJidCache.set(k, v as string);
+            loaded++;
+          } else {
+            skipped++;
+          }
         }
-        console.log(`[LID] 📂 Loaded ${this.lidJidCache.size} cached JID mappings from disk`);
+        console.log(`[LID] 📂 Loaded ${loaded} @lid mappings from disk${skipped ? ` (purged ${skipped} @s.whatsapp.net entries)` : ''}`);
+        // Re-save to purge stale entries from the file
+        if (skipped > 0) this.saveLidCache();
       }
     } catch (err) {
       console.warn('[LID] ⚠️ Could not load LID cache:', err);
