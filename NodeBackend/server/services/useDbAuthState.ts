@@ -2,7 +2,7 @@ import { proto, initAuthCreds, BufferJSON } from '@whiskeysockets/baileys';
 import type { AuthenticationCreds, AuthenticationState, SignalDataTypeMap, SignalDataSet } from '@whiskeysockets/baileys';
 import { db } from '../db';
 import { baileysAuthKeys } from '@shared/schema';
-import { eq, and } from 'drizzle-orm';
+import { eq, and, sql } from 'drizzle-orm';
 
 /**
  * Database-backed Baileys auth state.
@@ -34,31 +34,18 @@ export async function useDbAuthState(sessionId: string): Promise<{
 
   async function writeData(category: string, keyId: string, value: any): Promise<void> {
     // Serialize with BufferJSON to handle Buffer / Uint8Array fields
-    const data = JSON.parse(JSON.stringify(value, BufferJSON.replacer));
+    const dataJson = JSON.stringify(value, BufferJSON.replacer);
 
-    // Upsert: try update first, insert if not found
-    const existing = await db
-      .select({ id: baileysAuthKeys.id })
-      .from(baileysAuthKeys)
-      .where(and(
-        eq(baileysAuthKeys.sessionId, sessionId),
-        eq(baileysAuthKeys.category, category),
-        eq(baileysAuthKeys.keyId, keyId),
-      ))
-      .limit(1);
-
-    if (existing.length > 0) {
-      await db
-        .update(baileysAuthKeys)
-        .set({ data, updatedAt: new Date() })
-        .where(eq(baileysAuthKeys.id, existing[0].id));
-    } else {
-      await db.insert(baileysAuthKeys).values({
-        sessionId,
-        category,
-        keyId,
-        data,
-      });
+    // Atomic upsert via ON CONFLICT — no race condition
+    try {
+      await db.execute(sql`
+        INSERT INTO baileys_auth_keys (id, session_id, category, key_id, data, created_at, updated_at)
+        VALUES (gen_random_uuid(), ${sessionId}, ${category}, ${keyId}, ${dataJson}::jsonb, now(), now())
+        ON CONFLICT (session_id, category, key_id)
+        DO UPDATE SET data = ${dataJson}::jsonb, updated_at = now()
+      `);
+    } catch (err) {
+      console.error(`❌ useDbAuthState writeData failed [${category}/${keyId}]:`, err);
     }
   }
 
@@ -96,28 +83,39 @@ export async function useDbAuthState(sessionId: string): Promise<{
               }
             }),
           );
+          const found = Object.keys(result).length;
+          if (type === 'session' || type === 'pre-key') {
+            console.log(`🔑 keys.get(${type}, [${ids.length} ids]) → found ${found}/${ids.length}`);
+          }
           return result;
         },
 
         set: async (data: SignalDataSet): Promise<void> => {
           const tasks: Promise<void>[] = [];
+          const summary: string[] = [];
           for (const category in data) {
             const entries = data[category as keyof SignalDataTypeMap]!;
+            let writes = 0, deletes = 0;
             for (const id in entries) {
               const value = entries[id];
-              tasks.push(
-                value != null
-                  ? writeData(category, id, value)
-                  : removeData(category, id),
-              );
+              if (value != null) {
+                writes++;
+                tasks.push(writeData(category, id, value));
+              } else {
+                deletes++;
+                tasks.push(removeData(category, id));
+              }
             }
+            summary.push(`${category}: +${writes} -${deletes}`);
           }
           await Promise.all(tasks);
+          console.log(`🔑 keys.set → ${summary.join(', ')}`);
         },
       },
     },
 
     saveCreds: async () => {
+      console.log(`💾 Saving creds to DB for session "${sessionId}"`);
       await writeData('creds', 'creds', creds);
     },
   };
