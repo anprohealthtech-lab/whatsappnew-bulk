@@ -49,6 +49,10 @@ export class WhatsAppService extends EventEmitter {
     try {
       console.log('🚀 Starting Baileys WhatsApp - no Chrome needed!');
 
+      // One-time migration: clear stale signal sessions created by old config
+      // (makeCacheableSignalKeyStore + LID cache). Only runs once per auth dir.
+      this.migrateSignalSessions();
+
       // Clean up any existing socket first
       if (this.socket) {
         this.socket.end(undefined);
@@ -621,6 +625,38 @@ export class WhatsAppService extends EventEmitter {
       }
     } catch (error) {
       console.error('⚠️ Failed to clear auth state:', error);
+    }
+  }
+
+  /**
+   * One-time migration: purge signal sessions + LID cache files created by old config.
+   * Runs once per auth directory (creates .migrated-v2 marker after first run).
+   */
+  private migrateSignalSessions(): void {
+    const marker = path.join(this.authPath, '.migrated-v2');
+    if (fs.existsSync(marker)) return;
+
+    try {
+      if (!fs.existsSync(this.authPath)) return;
+
+      const files = fs.readdirSync(this.authPath);
+      let cleared = 0;
+      const keepPatterns = ['creds.json', 'app-state-sync-key'];
+
+      for (const file of files) {
+        const shouldKeep = keepPatterns.some(p => file.startsWith(p) || file === p);
+        if (!shouldKeep) {
+          fs.unlinkSync(path.join(this.authPath, file));
+          cleared++;
+        }
+      }
+
+      fs.writeFileSync(marker, new Date().toISOString(), 'utf-8');
+      if (cleared > 0) {
+        console.log(`🔄 Migration: cleared ${cleared} stale signal/LID files from ${this.authPath}`);
+      }
+    } catch (err) {
+      console.warn('⚠️ Signal session migration failed (non-fatal):', err);
     }
   }
 
