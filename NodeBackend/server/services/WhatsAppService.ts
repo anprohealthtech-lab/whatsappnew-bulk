@@ -1,14 +1,12 @@
 import makeWASocket, {
   useMultiFileAuthState,
   fetchLatestBaileysVersion,
-  makeCacheableSignalKeyStore,
   DisconnectReason,
   WASocket,
   downloadMediaMessage,
   proto,
   WAMessageKey,
 } from '@whiskeysockets/baileys';
-import pino from 'pino';
 import { Boom } from '@hapi/boom';
 import { EventEmitter } from 'events';
 import fs from 'fs';
@@ -36,17 +34,6 @@ export class WhatsAppService extends EventEmitter {
   private static readonly MAX_BAD_SESSION_RETRIES = 3;
   private userId: string;
 
-  /**
-   * LID JID Cache: maps phone digits → actual JID (preferring @lid over @s.whatsapp.net).
-   * Populated from every incoming message so outbound messages use the correct encryption session.
-   * Persisted to disk alongside auth state to survive restarts.
-   */
-  private lidJidCache = new Map<string, string>();
-
-  private get lidCachePath(): string {
-    return path.join(this.authPath, 'lid-cache.json');
-  }
-
   constructor(sessionDir?: string, userId?: string) {
     super();
     this.userId = userId || 'default';
@@ -71,34 +58,27 @@ export class WhatsAppService extends EventEmitter {
       const { state, saveCreds } = await useMultiFileAuthState(this.authPath);
       const { version } = await fetchLatestBaileysVersion();
 
-      // Load persisted LID cache from disk
-      this.loadLidCache();
-
-      // Wrap signal keys with in-memory cache for faster encryption key lookups
-      // This prevents "waiting for this message" caused by missing/slow signal keys
-      const logger = pino({ level: 'silent' });
-
       this.socket = makeWASocket({
         version,
-        auth: {
-          creds: state.creds,
-          keys: makeCacheableSignalKeyStore(state.keys, logger),
-        },
-        logger,
+        auth: state,
+        logger: { level: 'silent' } as any,
         printQRInTerminal: false,
-        // Unique browser fingerprint per user to avoid session conflicts
         browser: [`WhatsApp-${this.userId}`, 'Chrome', '10.0'],
+        generateHighQualityLinkPreview: false,
         markOnlineOnConnect: true,
         syncFullHistory: false,
-        connectTimeoutMs: 30000,
+        fireInitQueries: true,
+        connectTimeoutMs: 60000,
         defaultQueryTimeoutMs: 60000,
         keepAliveIntervalMs: 30000,
-        // Add retry configuration
-        retryRequestDelayMs: 250,
-        maxMsgRetryCount: 5,
-        // Return undefined so Baileys skips the retry-encrypt path.
-        // Returning cached message data causes Baileys to re-encrypt for every
-        // linked device, triggering "Closing stale open session" loops.
+        qrTimeout: 60000,
+        retryRequestDelayMs: 3000,
+        maxMsgRetryCount: 3,
+        transactionOpts: { maxCommitRetries: 3, delayBetweenTriesMs: 3000 },
+        mobile: false,
+        shouldSyncHistoryMessage: () => false,
+        shouldIgnoreJid: (jid: string) => jid.includes('status@broadcast'),
+        patchMessageBeforeSending: (msg: any) => msg,
         getMessage: async (_key: WAMessageKey): Promise<proto.IMessage | undefined> => {
           return undefined;
         },
@@ -188,36 +168,6 @@ export class WhatsAppService extends EventEmitter {
         }
       });
 
-      // Listen for contact updates to build phone ↔ LID mapping
-      this.socket.ev.on('contacts.upsert', (contacts: any[]) => {
-        for (const contact of contacts) {
-          // contact.id might be @lid or @s.whatsapp.net
-          // contact.lid is the @lid JID (if available)
-          // contact.jid is @s.whatsapp.net (if available, sometimes only on groups)
-          // contact.notify / contact.name are display names
-          const lid = contact.lid || (contact.id?.endsWith?.('@lid') ? contact.id : '');
-          const pnJid = contact.jid || (contact.id?.endsWith?.('@s.whatsapp.net') ? contact.id : '');
-          const phone = pnJid ? pnJid.replace(/@s\.whatsapp\.net$/i, '').replace(/\D/g, '') : '';
-
-          if (phone && lid) {
-            this.cacheJid(phone, lid);
-          }
-        }
-      });
-
-      // Also listen for contacts.update (partial updates)
-      this.socket.ev.on('contacts.update', (updates: any[]) => {
-        for (const update of updates) {
-          const lid = update.lid || (update.id?.endsWith?.('@lid') ? update.id : '');
-          const pnJid = update.jid || (update.id?.endsWith?.('@s.whatsapp.net') ? update.id : '');
-          const phone = pnJid ? pnJid.replace(/@s\.whatsapp\.net$/i, '').replace(/\D/g, '') : '';
-
-          if (phone && lid) {
-            this.cacheJid(phone, lid);
-          }
-        }
-      });
-
       // Listen for incoming messages (quick reply buttons, text, audio, etc.)
       this.socket.ev.on('messages.upsert', async ({ messages }) => {
         const msg = messages[0];
@@ -228,21 +178,6 @@ export class WhatsAppService extends EventEmitter {
         // Prefer senderPn for LID chats so lead lookup matches real phone numbers (e.g. 91xxxxxxxxxx).
         const phoneNumber = this.resolveIncomingPhoneNumber(from, senderPn);
         const isFromMe = msg.key.fromMe;
-
-        // Cache the sender's LID JID for outbound resolution
-        // When senderPn is available, we know the real phone → cache phone→LID
-        // When senderPn is missing and from is @lid, cache LID digits→LID (for reply flow)
-        if (from && from.endsWith('@lid')) {
-          if (senderPn) {
-            // Best case: we know the real phone number for this LID
-            const pnDigits = senderPn.replace(/\D/g, '');
-            if (pnDigits.length >= 10) {
-              this.cacheJid(pnDigits, from);
-            }
-          }
-          // Always cache LID digits → LID JID for reply routing
-          this.cacheJid(phoneNumber, from);
-        }
 
         // Only process incoming messages (not sent by us)
         if (isFromMe) return;
@@ -451,15 +386,6 @@ export class WhatsAppService extends EventEmitter {
       // Push name (notify) or verifiedName from the participant metadata
       const name = participant.notify || participant.verifiedName || participant.name || '';
 
-      // Cache the LID → phone mapping for outbound message resolution
-      if (phone && lidJid) {
-        this.cacheJid(phone, lidJid);
-      }
-      if (phone && pnJid) {
-        // Also register the pn JID (cacheJid will prefer @lid if already cached)
-        this.cacheJid(phone, pnJid);
-      }
-
       return { phone, jid: bestJid, name };
     }).filter((item) => item.phone.length > 0);
   }
@@ -616,83 +542,18 @@ export class WhatsAppService extends EventEmitter {
 
   /**
    * Resolve the JID to use for outgoing messages.
-   * Checks the LID cache first; falls back to @s.whatsapp.net for unknown contacts.
+   * Always uses @s.whatsapp.net — never @lid for outgoing.
    */
   private resolveOutgoingJid(phoneNumber: string): string {
-    // Already a full JID — return as-is (but force @s.whatsapp.net for @lid JIDs)
     if (phoneNumber.includes('@')) {
       if (phoneNumber.endsWith('@lid')) {
-        // LID JIDs cause Signal session mismatches on outgoing — strip and use @s.whatsapp.net
         const digits = phoneNumber.replace(/@lid$/i, '').replace(/\D/g, '');
         return `${digits}@s.whatsapp.net`;
       }
       return phoneNumber;
     }
-
     const digits = this.formatPhoneNumber(phoneNumber);
-    // Always use @s.whatsapp.net — the LID cache fights against Baileys'
-    // internal session routing and causes "Closing stale open session" loops.
     return `${digits}@s.whatsapp.net`;
-  }
-
-  /**
-   * Cache a phone number → JID mapping. Only stores @lid JIDs.
-   * Caching @s.whatsapp.net is pointless — it's the default fallback.
-   */
-  private cacheJid(phoneDigits: string, jid: string): void {
-    const digits = this.formatPhoneNumber(phoneDigits);
-
-    // Only cache @lid JIDs — @s.whatsapp.net is already the fallback
-    if (!jid.endsWith('@lid')) {
-      return;
-    }
-
-    const existing = this.lidJidCache.get(digits);
-    if (!existing || existing !== jid) {
-      console.log(`[LID] 📥 Cached ${digits} → ${jid}${existing ? ` (was: ${existing})` : ''}`);
-      this.lidJidCache.set(digits, jid);
-      this.saveLidCache();
-    }
-  }
-
-  /**
-   * Public method for external code to register JID mappings.
-   */
-  registerJid(phoneDigits: string, jid: string): void {
-    this.cacheJid(phoneDigits, jid);
-  }
-
-  /** Persist LID cache to disk so it survives server restarts */
-  private saveLidCache(): void {
-    try {
-      const data = Object.fromEntries(this.lidJidCache);
-      fs.writeFileSync(this.lidCachePath, JSON.stringify(data), 'utf-8');
-    } catch { /* non-fatal */ }
-  }
-
-  /** Load persisted LID cache from disk */
-  private loadLidCache(): void {
-    try {
-      if (fs.existsSync(this.lidCachePath)) {
-        const data = JSON.parse(fs.readFileSync(this.lidCachePath, 'utf-8'));
-        let loaded = 0;
-        let skipped = 0;
-        for (const [k, v] of Object.entries(data)) {
-          // Only load @lid entries — purge stale @s.whatsapp.net from old cache
-          if ((v as string).endsWith('@lid')) {
-            this.lidJidCache.set(k, v as string);
-            loaded++;
-          } else {
-            skipped++;
-          }
-        }
-        console.log(`[LID] 📂 Loaded ${loaded} @lid mappings from disk${skipped ? ` (purged ${skipped} @s.whatsapp.net entries)` : ''}`);
-        // Re-save to purge stale entries from the file
-        if (skipped > 0) this.saveLidCache();
-      }
-    } catch (err) {
-      console.warn('[LID] ⚠️ Could not load LID cache:', err);
-    }
   }
 
   private resolveIncomingPhoneNumber(from?: string | null, senderPn?: string | null): string {
@@ -778,9 +639,9 @@ export class WhatsAppService extends EventEmitter {
       }
 
       const files = fs.readdirSync(this.authPath);
-      // Keep: creds.json (QR auth), app-state-sync-key-* (app state), lid-cache.json (our cache)
+      // Keep: creds.json (QR auth), app-state-sync-key-* (app state)
       // Clear: session-* (Signal sessions), pre-key-* (pre-keys), sender-key-* (group keys)
-      const keepPatterns = ['creds.json', 'app-state-sync-key', 'lid-cache.json'];
+      const keepPatterns = ['creds.json', 'app-state-sync-key'];
 
       for (const file of files) {
         const shouldKeep = keepPatterns.some(p => file.startsWith(p) || file === p);
@@ -793,9 +654,6 @@ export class WhatsAppService extends EventEmitter {
       }
 
       console.log(`🧹 Signal session cleanup: cleared ${cleared} files, kept ${kept} files`);
-
-      // Also clear in-memory LID cache
-      this.lidJidCache.clear();
 
       // Disconnect and re-initialize to rebuild fresh sessions
       if (this.socket) {
