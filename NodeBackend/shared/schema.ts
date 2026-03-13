@@ -226,6 +226,17 @@ export const demoSchedules = pgTable("demo_schedules", {
   createdAt: timestamp("created_at").defaultNow(),
 });
 
+// Baileys auth state stored in DB (survives ephemeral filesystem deploys)
+export const baileysAuthKeys = pgTable("baileys_auth_keys", {
+  id: varchar("id").primaryKey().default(sql`gen_random_uuid()`),
+  sessionId: text("session_id").notNull(),       // e.g. "user_5::My Session"
+  category: text("category").notNull(),           // "creds" | "pre-key" | "session" | "sender-key" | etc.
+  keyId: text("key_id").notNull(),                // key identifier (e.g. "creds" or the specific key id)
+  data: jsonb("data").notNull(),                  // serialised JSON via BufferJSON
+  createdAt: timestamp("created_at").defaultNow(),
+  updatedAt: timestamp("updated_at").defaultNow(),
+});
+
 export const insertUserSchema = createInsertSchema(users).pick({
   username: true,
   password: true,

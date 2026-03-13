@@ -1,5 +1,4 @@
 import makeWASocket, {
-  useMultiFileAuthState,
   fetchLatestBaileysVersion,
   DisconnectReason,
   WASocket,
@@ -12,6 +11,7 @@ import { Boom } from '@hapi/boom';
 import { EventEmitter } from 'events';
 import fs from 'fs';
 import path from 'path';
+import { useDbAuthState, clearDbAuthState } from './useDbAuthState';
 
 export interface WhatsAppStatus {
   isConnected: boolean;
@@ -30,6 +30,7 @@ export class WhatsAppService extends EventEmitter {
     sessionInfo: null,
   };
   private authPath: string;
+  private dbSessionId: string;
   private currentQR: string | null = null;
   private badSessionRetryCount: number = 0;
   private static readonly MAX_BAD_SESSION_RETRIES = 3;
@@ -38,21 +39,20 @@ export class WhatsAppService extends EventEmitter {
   constructor(sessionDir?: string, userId?: string) {
     super();
     this.userId = userId || 'default';
+    // DB session ID for auth state persistence
+    this.dbSessionId = sessionDir
+      ? `${sessionDir}`
+      : `default_session`;
+    // Keep authPath for media file operations only (not for auth state)
     this.authPath = sessionDir
       ? path.join(process.cwd(), sessionDir, 'baileys_auth')
       : path.join(process.cwd(), 'server/sessions/baileys_auth');
-    if (!fs.existsSync(this.authPath)) {
-      fs.mkdirSync(this.authPath, { recursive: true });
-    }
   }
 
   async initialize(): Promise<void> {
     try {
       console.log('🚀 Starting Baileys WhatsApp - no Chrome needed!');
-
-      // One-time migration: clear stale signal sessions created by old config
-      // (makeCacheableSignalKeyStore + LID cache). Only runs once per auth dir.
-      this.migrateSignalSessions();
+      console.log(`📦 Auth state: DB session "${this.dbSessionId}"`);
 
       // Clean up any existing socket first
       if (this.socket) {
@@ -60,7 +60,7 @@ export class WhatsAppService extends EventEmitter {
         this.socket = null;
       }
 
-      const { state, saveCreds } = await useMultiFileAuthState(this.authPath);
+      const { state, saveCreds } = await useDbAuthState(this.dbSessionId);
       const { version } = await fetchLatestBaileysVersion();
 
       this.socket = makeWASocket({
@@ -522,16 +522,12 @@ export class WhatsAppService extends EventEmitter {
 
     await this.cleanup();
 
-    // Clear auth files to force fresh QR generation
+    // Clear auth state from DB
     try {
-      const fsPromises = fs.promises;
-      if (fs.existsSync(this.authPath)) {
-        await fsPromises.rm(this.authPath, { recursive: true, force: true });
-        fs.mkdirSync(this.authPath, { recursive: true });
-        console.log('🧹 Authentication files cleared');
-      }
+      const count = await clearDbAuthState(this.dbSessionId);
+      console.log(`🧹 Cleared ${count} auth keys from DB for session "${this.dbSessionId}"`);
     } catch (error) {
-      console.log('⚠️ Error clearing auth files:', error instanceof Error ? error.message : 'Unknown error');
+      console.log('⚠️ Error clearing DB auth state:', error instanceof Error ? error.message : 'Unknown error');
     }
 
     this.emit('whatsapp-auth-failure', { error: 'Disconnected' });
@@ -616,54 +612,17 @@ export class WhatsAppService extends EventEmitter {
 
   private async clearAuthState(): Promise<void> {
     try {
-      console.log('🗑️ Clearing old auth state...');
-      if (fs.existsSync(this.authPath)) {
-        const files = fs.readdirSync(this.authPath);
-        for (const file of files) {
-          fs.unlinkSync(path.join(this.authPath, file));
-        }
-        console.log('✅ Auth state cleared successfully');
-      }
+      console.log('🗑️ Clearing old auth state from DB...');
+      const count = await clearDbAuthState(this.dbSessionId);
+      console.log(`✅ Auth state cleared: ${count} keys removed for session "${this.dbSessionId}"`);
     } catch (error) {
       console.error('⚠️ Failed to clear auth state:', error);
     }
   }
 
   /**
-   * One-time migration: purge signal sessions + LID cache files created by old config.
-   * Runs once per auth directory (creates .migrated-v2 marker after first run).
-   */
-  private migrateSignalSessions(): void {
-    const marker = path.join(this.authPath, '.migrated-v2');
-    if (fs.existsSync(marker)) return;
-
-    try {
-      if (!fs.existsSync(this.authPath)) return;
-
-      const files = fs.readdirSync(this.authPath);
-      let cleared = 0;
-      const keepPatterns = ['creds.json', 'app-state-sync-key'];
-
-      for (const file of files) {
-        const shouldKeep = keepPatterns.some(p => file.startsWith(p) || file === p);
-        if (!shouldKeep) {
-          fs.unlinkSync(path.join(this.authPath, file));
-          cleared++;
-        }
-      }
-
-      fs.writeFileSync(marker, new Date().toISOString(), 'utf-8');
-      if (cleared > 0) {
-        console.log(`🔄 Migration: cleared ${cleared} stale signal/LID files from ${this.authPath}`);
-      }
-    } catch (err) {
-      console.warn('⚠️ Signal session migration failed (non-fatal):', err);
-    }
-  }
-
-  /**
    * Clear stale Signal protocol sessions while preserving QR auth credentials.
-   * Fixes "waiting for this message" caused by corrupted/stale encryption sessions.
+   * Removes session/pre-key/sender-key entries from DB but keeps creds + app-state-sync-key.
    * After clearing, the connection is re-initialized to rebuild fresh sessions.
    */
   async clearSignalSessions(): Promise<{ cleared: number; kept: number }> {
@@ -671,26 +630,28 @@ export class WhatsAppService extends EventEmitter {
     let kept = 0;
 
     try {
-      if (!fs.existsSync(this.authPath)) {
-        return { cleared: 0, kept: 0 };
-      }
+      // Import DB helpers inline to avoid circular deps at module level
+      const { db } = await import('../db');
+      const { baileysAuthKeys } = await import('@shared/schema');
+      const { eq, and } = await import('drizzle-orm');
 
-      const files = fs.readdirSync(this.authPath);
-      // Keep: creds.json (QR auth), app-state-sync-key-* (app state)
-      // Clear: session-* (Signal sessions), pre-key-* (pre-keys), sender-key-* (group keys)
-      const keepPatterns = ['creds.json', 'app-state-sync-key'];
+      const rows = await db
+        .select()
+        .from(baileysAuthKeys)
+        .where(eq(baileysAuthKeys.sessionId, this.dbSessionId));
 
-      for (const file of files) {
-        const shouldKeep = keepPatterns.some(p => file.startsWith(p) || file === p);
-        if (shouldKeep) {
+      const keepCategories = ['creds', 'app-state-sync-key', 'app-state-sync-version'];
+
+      for (const row of rows) {
+        if (keepCategories.includes(row.category)) {
           kept++;
         } else {
-          fs.unlinkSync(path.join(this.authPath, file));
+          await db.delete(baileysAuthKeys).where(eq(baileysAuthKeys.id, row.id));
           cleared++;
         }
       }
 
-      console.log(`🧹 Signal session cleanup: cleared ${cleared} files, kept ${kept} files`);
+      console.log(`🧹 Signal session cleanup: cleared ${cleared} DB keys, kept ${kept}`);
 
       // Disconnect and re-initialize to rebuild fresh sessions
       if (this.socket) {

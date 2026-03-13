@@ -1116,21 +1116,38 @@ export async function registerRoutes(app: Express): Promise<Server> {
       const rootExists = fs.existsSync(sessionsRoot);
       const userDirExists = fs.existsSync(userDir);
       const files = userDirExists ? fs.readdirSync(userDir) : [];
-      const sessionFiles = files.filter(f => f.startsWith('session-'));
-      const preKeyFiles = files.filter(f => f.startsWith('pre-key-'));
-      const hasCreds = files.includes('creds.json');
+
+      // Also check DB auth state
+      const { baileysAuthKeys } = await import('@shared/schema');
+      const { eq } = await import('drizzle-orm');
+      const dbSessionId = `server/sessions/user_${userId}/default`;
+      const dbRows = await db
+        .select({ category: baileysAuthKeys.category, keyId: baileysAuthKeys.keyId })
+        .from(baileysAuthKeys)
+        .where(eq(baileysAuthKeys.sessionId, dbSessionId));
+
+      const dbCreds = dbRows.filter(r => r.category === 'creds').length;
+      const dbSessions = dbRows.filter(r => r.category === 'session').length;
+      const dbPreKeys = dbRows.filter(r => r.category === 'pre-key').length;
 
       res.json({
         cwd: process.cwd(),
-        sessionsRoot,
-        sessionsRootExists: rootExists,
-        userAuthDir: userDir,
-        userAuthDirExists: userDirExists,
-        totalFiles: files.length,
-        hasCreds,
-        sessionFileCount: sessionFiles.length,
-        preKeyFileCount: preKeyFiles.length,
-        allFiles: files,
+        authMode: 'database',
+        dbSessionId,
+        dbTotalKeys: dbRows.length,
+        dbHasCreds: dbCreds > 0,
+        dbSessionCount: dbSessions,
+        dbPreKeyCount: dbPreKeys,
+        dbCategories: [...new Set(dbRows.map(r => r.category))],
+        // Legacy filesystem info (should be empty with DB auth)
+        legacyFilesystem: {
+          sessionsRoot,
+          sessionsRootExists: rootExists,
+          userAuthDir: userDir,
+          userAuthDirExists: userDirExists,
+          totalFiles: files.length,
+          allFiles: files,
+        },
       });
     } catch (error) {
       res.status(500).json({ error: error instanceof Error ? error.message : 'Unknown' });
