@@ -3,6 +3,8 @@ import { createServer, type Server } from "http";
 import { WebSocketServer } from "ws";
 import multer from "multer";
 import cors from "cors";
+import fs from "fs";
+import path from "path";
 import { storage } from "./storage";
 import type { WhatsAppService } from "./services/WhatsAppService";
 import { messageService } from "./services/MessageService";
@@ -1102,6 +1104,36 @@ export async function registerRoutes(app: Express): Promise<Server> {
         success: false,
         error: errorMessage || 'Failed to disconnect from WhatsApp'
       });
+    }
+  });
+
+  // Diagnostic: check if session files exist and volume is mounted
+  app.get('/api/whatsapp/debug/session-files', requireAuth, async (req, res) => {
+    try {
+      const userId = req.auth!.userId;
+      const sessionsRoot = path.join(process.cwd(), 'server/sessions');
+      const userDir = path.join(sessionsRoot, `user_${userId}`, 'default', 'baileys_auth');
+      const rootExists = fs.existsSync(sessionsRoot);
+      const userDirExists = fs.existsSync(userDir);
+      const files = userDirExists ? fs.readdirSync(userDir) : [];
+      const sessionFiles = files.filter(f => f.startsWith('session-'));
+      const preKeyFiles = files.filter(f => f.startsWith('pre-key-'));
+      const hasCreds = files.includes('creds.json');
+
+      res.json({
+        cwd: process.cwd(),
+        sessionsRoot,
+        sessionsRootExists: rootExists,
+        userAuthDir: userDir,
+        userAuthDirExists: userDirExists,
+        totalFiles: files.length,
+        hasCreds,
+        sessionFileCount: sessionFiles.length,
+        preKeyFileCount: preKeyFiles.length,
+        allFiles: files,
+      });
+    } catch (error) {
+      res.status(500).json({ error: error instanceof Error ? error.message : 'Unknown' });
     }
   });
 
