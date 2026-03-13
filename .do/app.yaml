@@ -76,11 +76,12 @@ services:
     failure_threshold: 5
   
   # Volume for WhatsApp session persistence across deploys
-  # Without this, users must re-scan QR after every deploy
-  # volumes:
-  # - name: whatsapp-sessions
-  #   size: 2GiB
-  #   mount_path: /workspace/NodeBackend/server/sessions
+  # Without this, users must re-scan QR after every deploy and Signal sessions
+  # are lost, causing "waiting for this message" on recipient phones.
+  volumes:
+  - name: whatsapp-sessions
+    size: 1GiB
+    mount_path: /workspace/NodeBackend/server/sessions
 
 # NOTE: Using external DO Managed PostgreSQL — set DATABASE_URL env var directly
 # Do NOT add a databases block here (it creates a NEW db and breaks the URL reference)
