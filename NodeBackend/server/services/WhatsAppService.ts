@@ -7,6 +7,7 @@ import makeWASocket, {
   proto,
   WAMessageKey,
 } from '@whiskeysockets/baileys';
+import pino from 'pino';
 import { Boom } from '@hapi/boom';
 import { EventEmitter } from 'events';
 import fs from 'fs';
@@ -65,7 +66,7 @@ export class WhatsAppService extends EventEmitter {
       this.socket = makeWASocket({
         version,
         auth: state,
-        logger: { level: 'silent' } as any,
+        logger: pino({ level: 'silent' }),
         printQRInTerminal: false,
         browser: [`WhatsApp-${this.userId}`, 'Chrome', '10.0'],
         generateHighQualityLinkPreview: false,
