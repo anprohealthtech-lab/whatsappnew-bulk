@@ -445,7 +445,9 @@ export async function registerRoutes(app: Express): Promise<Server> {
       const wa = sessionManager.getLoadedSession(userId, sessionName);
       const qrData = wa?.getCurrentQR();
       const qrValue = qrData && typeof qrData === 'object' && 'qr' in qrData ? qrData.qr : null;
-      res.json({ qr: qrValue });
+      const qrCode = qrData && typeof qrData === 'object' && 'qrCode' in qrData ? qrData.qrCode || qrValue : qrValue;
+      const rawQR = qrData && typeof qrData === 'object' && 'rawQR' in qrData ? qrData.rawQR || null : null;
+      res.json({ qr: qrValue, qrCode, rawQR });
     } catch (error: any) {
       res.status(500).json({ message: error.message });
     }

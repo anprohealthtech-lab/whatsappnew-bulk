@@ -15,6 +15,13 @@ export interface WhatsAppStatus {
   sessionInfo: any;
 }
 
+type QRPayload = {
+  qr: string;
+  qrCode: string;
+  rawQR: string;
+  timestamp: number;
+};
+
 export class ExternalWhatsAppProxy extends EventEmitter {
   private status: WhatsAppStatus = {
     isConnected: false,
@@ -23,7 +30,7 @@ export class ExternalWhatsAppProxy extends EventEmitter {
     sessionInfo: null,
   };
 
-  private currentQR: { qr: string; timestamp: number } | null = null;
+  private currentQR: QRPayload | null = null;
   private baseUrl: string;
   private apiKey: string;
   private userId: string;
@@ -84,7 +91,7 @@ export class ExternalWhatsAppProxy extends EventEmitter {
   }
 
   private buildQrImageUrl(rawQr: string): string {
-    return `https://api.qrserver.com/v1/create-qr-code/?size=256x256&data=${encodeURIComponent(rawQr)}`;
+    return `https://quickchart.io/qr?size=512&margin=4&ecLevel=M&text=${encodeURIComponent(rawQr)}`;
   }
 
   private applyDisconnectedState(sessionInfo?: any): void {
@@ -121,8 +128,8 @@ export class ExternalWhatsAppProxy extends EventEmitter {
       if (connectData?.qrCode) {
         const rawQR = connectData.qrCode;
         const qr = connectData.qrCodeUrl || this.buildQrImageUrl(rawQR);
-        this.currentQR = { qr, timestamp: Date.now() };
-        this.emit('qr-code', { qr, rawQR });
+        this.currentQR = { qr, qrCode: qr, rawQR, timestamp: Date.now() };
+        this.emit('qr-code', { qr, qrCode: qr, rawQR });
       }
 
       const statusRes = await this.request('GET', `/api/users/${this.userId}/whatsapp/status`);
@@ -185,8 +192,8 @@ export class ExternalWhatsAppProxy extends EventEmitter {
             if (refreshData?.qrCode) {
               const rawQR = refreshData.qrCode;
               const qr = refreshData.qrCodeUrl || this.buildQrImageUrl(rawQR);
-              this.currentQR = { qr, timestamp: Date.now() };
-              this.emit('qr-code', { qr, rawQR });
+              this.currentQR = { qr, qrCode: qr, rawQR, timestamp: Date.now() };
+              this.emit('qr-code', { qr, qrCode: qr, rawQR });
             }
           } catch {
             // Ignore refresh failures while polling.
@@ -357,7 +364,7 @@ export class ExternalWhatsAppProxy extends EventEmitter {
     this.emit('whatsapp-auth-failure', { error: 'Disconnected' });
   }
 
-  getCurrentQR(): { qr: string; timestamp: number } | null {
+  getCurrentQR(): QRPayload | null {
     return this.currentQR;
   }
 

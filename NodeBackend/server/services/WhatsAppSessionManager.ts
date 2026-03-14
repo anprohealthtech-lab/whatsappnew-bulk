@@ -33,7 +33,7 @@ export interface WAServiceInstance {
   listGroups(): Promise<Array<{ id: string; subject: string; participantsCount: number }>>;
   scrapeGroupNumbers(groupId: string): Promise<Array<{ phone: string; jid: string; name: string }>>;
   generateQRCode(): Promise<void>;
-  getCurrentQR(): { qr: string; timestamp: number } | null;
+  getCurrentQR(): { qr: string; qrCode?: string; rawQR?: string; timestamp: number } | null;
   getStatus(): WhatsAppStatus;
   cleanup(): Promise<void>;
 }
@@ -55,7 +55,7 @@ class ManagedBaileysSession extends EventEmitter implements WAServiceInstance {
     lastSeen: null,
     sessionInfo: null,
   };
-  private currentQR: { qr: string; timestamp: number } | null = null;
+  private currentQR: { qr: string; qrCode?: string; rawQR?: string; timestamp: number } | null = null;
   private browserIdentity = 'LIMS';
 
   constructor(
@@ -193,8 +193,8 @@ class ManagedBaileysSession extends EventEmitter implements WAServiceInstance {
       this.isPairing = true;
       this.phase = 'pairing';
       const qrUrl = `https://api.qrserver.com/v1/create-qr-code/?size=256x256&data=${encodeURIComponent(qr)}`;
-      this.currentQR = { qr: qrUrl, timestamp: Date.now() };
-      this.emit('qr-code', { qr: qrUrl, rawQR: qr });
+      this.currentQR = { qr: qrUrl, qrCode: qrUrl, rawQR: qr, timestamp: Date.now() };
+      this.emit('qr-code', { qr: qrUrl, qrCode: qrUrl, rawQR: qr });
       this.emit('whatsapp-status', this.getStatus());
       return;
     }
@@ -559,7 +559,7 @@ class ManagedBaileysSession extends EventEmitter implements WAServiceInstance {
     await this.initialize();
   }
 
-  getCurrentQR(): { qr: string; timestamp: number } | null {
+  getCurrentQR(): { qr: string; qrCode?: string; rawQR?: string; timestamp: number } | null {
     return this.currentQR;
   }
 

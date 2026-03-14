@@ -24,9 +24,16 @@ interface Session {
   connectedAt?: string;
 }
 
+type ActiveQR = {
+  sessionName: string;
+  qr: string | null;
+  qrCode?: string | null;
+  rawQR?: string | null;
+};
+
 export function WhatsAppSessionPanel() {
   const [newSessionName, setNewSessionName] = useState("default");
-  const [activeQR, setActiveQR] = useState<{ sessionName: string; qr: string | null }>({ sessionName: "", qr: null });
+  const [activeQR, setActiveQR] = useState<ActiveQR>({ sessionName: "", qr: null, qrCode: null, rawQR: null });
   const { toast } = useToast();
   const queryClient = useQueryClient();
 
@@ -55,7 +62,7 @@ export function WhatsAppSessionPanel() {
     },
     onSuccess: () => {
       toast({ title: "Disconnected" });
-      setActiveQR({ sessionName: "", qr: null });
+      setActiveQR({ sessionName: "", qr: null, qrCode: null, rawQR: null });
       queryClient.invalidateQueries({ queryKey: ["/api/whatsapp/sessions"] });
     },
     onError: (err: any) => toast({ title: "Error", description: err.message, variant: "destructive" }),
@@ -74,6 +81,9 @@ export function WhatsAppSessionPanel() {
   });
 
   async function pollQR(sessionName: string) {
+    const buildQrFromRaw = (rawQR: string) =>
+      `https://quickchart.io/qr?size=512&margin=4&ecLevel=M&text=${encodeURIComponent(rawQR)}`;
+
     let attempts = 0;
     const poll = async () => {
       if (attempts > 30) return;
@@ -81,14 +91,17 @@ export function WhatsAppSessionPanel() {
       try {
         const res = await apiRequest("GET", `/api/whatsapp/session/qr?sessionName=${encodeURIComponent(sessionName)}`);
         const data = await res.json();
-        if (data.qr) {
-          setActiveQR({ sessionName, qr: data.qr });
+        const qrCode = data.qrCode || data.qr || null;
+        const rawQR = data.rawQR || null;
+        const qr = qrCode || (rawQR ? buildQrFromRaw(rawQR) : null);
+        if (qr) {
+          setActiveQR({ sessionName, qr, qrCode, rawQR });
         } else {
           // Check status
           const statusRes = await apiRequest("GET", `/api/whatsapp/session/status?sessionName=${encodeURIComponent(sessionName)}`);
           const status = await statusRes.json();
           if (status.isConnected) {
-            setActiveQR({ sessionName: "", qr: null });
+            setActiveQR({ sessionName: "", qr: null, qrCode: null, rawQR: null });
             queryClient.invalidateQueries({ queryKey: ["/api/whatsapp/sessions"] });
             return;
           }
@@ -152,8 +165,13 @@ export function WhatsAppSessionPanel() {
                 <p className="text-sm text-muted-foreground mb-3">
                   Scan QR for session: <strong>{activeQR.sessionName}</strong>
                 </p>
-                <div className="bg-white p-3 rounded-xl inline-block">
-                  <img src={activeQR.qr} alt="QR Code" className="w-48 h-48 object-contain" />
+                <div className="bg-white p-4 rounded-xl inline-block shadow-sm">
+                  <img
+                    src={activeQR.qr}
+                    alt="QR Code"
+                    className="w-72 h-72 max-w-full"
+                    style={{ imageRendering: "pixelated" }}
+                  />
                 </div>
                 <p className="text-xs text-muted-foreground mt-3">Open WhatsApp &gt; Linked Devices &gt; Link a Device</p>
               </CardContent>
