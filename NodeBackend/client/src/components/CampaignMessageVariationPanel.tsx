@@ -1,4 +1,5 @@
 import { useState, useEffect } from 'react';
+import { useQueryClient } from '@tanstack/react-query';
 import { getAuthToken } from '@/lib/AuthContext';
 import { Button } from '@/components/ui/button';
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/components/ui/card';
@@ -37,6 +38,7 @@ interface CampaignMessageVariationPanelProps {
   supabaseUrl: string;
   supabaseAnonKey: string;
   edgeFunctionUrl: string;
+  onCampaignCreated?: () => void;
 }
 
 export function CampaignMessageVariationPanel({
@@ -44,7 +46,9 @@ export function CampaignMessageVariationPanel({
   supabaseUrl,
   supabaseAnonKey,
   edgeFunctionUrl,
+  onCampaignCreated,
 }: CampaignMessageVariationPanelProps) {
+  const queryClient = useQueryClient();
   const [campaignId, setCampaignId] = useState(initialCampaignId || '');
   const [campaign, setCampaign] = useState<Campaign | null>(null);
   const [contacts, setContacts] = useState<Contact[]>([]);
@@ -209,6 +213,9 @@ export function CampaignMessageVariationPanel({
         setOriginalMessage('');
         setFixedParams({});
         setAttachmentFile(null);
+        // Invalidate campaign list cache so ScheduleCampaignPanel and other lists update
+        queryClient.invalidateQueries({ queryKey: ['/api/campaigns'] });
+        onCampaignCreated?.();
       } else {
         setError(data.error);
       }
