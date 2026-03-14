@@ -241,7 +241,7 @@ export class ExternalWhatsAppProxy extends EventEmitter {
   async sendTextMessage(phoneNumber: string, message: string): Promise<any> {
     const res = await this.request('POST', '/api/external/messages/send-user', {
       userId: this.userId,
-      phoneNumber: this.formatPhoneNumber(phoneNumber),
+      phoneNumber: this.formatOutgoingPhoneNumber(phoneNumber),
       message,
     });
 
@@ -274,7 +274,7 @@ export class ExternalWhatsAppProxy extends EventEmitter {
     if (filePath.startsWith('http://') || filePath.startsWith('https://')) {
       const res = await this.request('POST', '/api/external/reports/send-url', {
         userId: this.userId,
-        phoneNumber: this.formatPhoneNumber(phoneNumber),
+        phoneNumber: this.formatOutgoingPhoneNumber(phoneNumber),
         fileUrl: filePath,
         caption: caption || '',
       });
@@ -289,7 +289,7 @@ export class ExternalWhatsAppProxy extends EventEmitter {
 
     const formData = new FormData();
     formData.append('userId', this.userId);
-    formData.append('phoneNumber', this.formatPhoneNumber(phoneNumber));
+    formData.append('phoneNumber', this.formatOutgoingPhoneNumber(phoneNumber));
     formData.append('content', caption || '');
     // We need a sessionId for the multipart report endpoint. 
     // The user-based send-url is simpler, so let's convert local file to a simulated URL approach.
@@ -302,7 +302,7 @@ export class ExternalWhatsAppProxy extends EventEmitter {
       const url = `${this.baseUrl}/api/external/reports/send`;
       const form = new FormData();
       form.append('sessionId', this.sessionId);
-      form.append('phoneNumber', this.formatPhoneNumber(phoneNumber));
+      form.append('phoneNumber', this.formatOutgoingPhoneNumber(phoneNumber));
       form.append('content', caption || '');
       form.append('file', new Blob([new Uint8Array(fileBuffer)]), fileName);
 
@@ -411,7 +411,11 @@ export class ExternalWhatsAppProxy extends EventEmitter {
 
   // ─── Helpers ──────────────────────────────────────────────────
 
-  private formatPhoneNumber(phoneNumber: string): string {
+  private formatOutgoingPhoneNumber(phoneNumber: string): string {
+    if (phoneNumber.includes('@')) {
+      return phoneNumber;
+    }
+
     let cleaned = phoneNumber.replace(/\D/g, '');
     if (!cleaned.startsWith('91') && cleaned.length === 10) {
       cleaned = '91' + cleaned;

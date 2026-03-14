@@ -558,14 +558,10 @@ export class WhatsAppService extends EventEmitter {
 
   /**
    * Resolve the JID to use for outgoing messages.
-   * Always uses @s.whatsapp.net — never @lid for outgoing.
+   * Preserve full JIDs when callers already know the exact recipient.
    */
   private resolveOutgoingJid(phoneNumber: string): string {
     if (phoneNumber.includes('@')) {
-      if (phoneNumber.endsWith('@lid')) {
-        const digits = phoneNumber.replace(/@lid$/i, '').replace(/\D/g, '');
-        return `${digits}@s.whatsapp.net`;
-      }
       return phoneNumber;
     }
     const digits = this.formatPhoneNumber(phoneNumber);
