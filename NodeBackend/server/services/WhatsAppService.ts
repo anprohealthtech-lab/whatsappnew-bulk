@@ -11,6 +11,7 @@ import { Boom } from '@hapi/boom';
 import { EventEmitter } from 'events';
 import fs from 'fs';
 import path from 'path';
+import { storage } from '../storage';
 
 export interface WhatsAppStatus {
   isConnected: boolean;
@@ -38,16 +39,8 @@ export class WhatsAppService extends EventEmitter {
   constructor(sessionDir?: string, userId?: string) {
     super();
     this.userId = userId || 'default';
-    // Use persistent auth directory (file-based, matching the working app pattern).
-    // On DigitalOcean App Platform, mount a persistent volume at /mnt/auth or use
-    // AUTH_BASE_DIR env var.  Locally this defaults to ./auth/<userId>.
     const baseDir = process.env.AUTH_BASE_DIR || path.join(process.cwd(), 'auth');
-    // sessionDir carries "server/sessions/user_<id>/<name>" from the manager;
-    // derive a filesystem-safe subdirectory from it, or fall back to plain userId.
-    const subDir = sessionDir
-      ? sessionDir.replace(/[/\\]/g, '_')
-      : this.userId;
-    this.authPath = path.join(baseDir, subDir);
+    this.authPath = path.join(baseDir, this.userId);
   }
 
   async initialize(): Promise<void> {
@@ -61,11 +54,13 @@ export class WhatsAppService extends EventEmitter {
         this.socket = null;
       }
 
-      // Ensure auth directory exists
+      // Ensure auth directory exists and validate the saved auth state before use.
       fs.mkdirSync(this.authPath, { recursive: true });
+      await this.validateAuthState(this.authPath);
 
       const { state, saveCreds } = await useMultiFileAuthState(this.authPath);
-      const { version } = await fetchLatestBaileysVersion();
+      const { version, isLatest } = await fetchLatestBaileysVersion();
+      console.log(`[WhatsAppService] Using WA v${version.join('.')}, isLatest=${isLatest} authPath="${this.authPath}"`);
 
       this.socket = makeWASocket({
         version,
@@ -138,6 +133,42 @@ export class WhatsAppService extends EventEmitter {
 
           this.status.isConnected = false;
           this.status.isAuthenticated = false;
+
+          const isConnectionLost = statusCode === DisconnectReason.connectionLost;
+          const isTimedOut = statusCode === DisconnectReason.timedOut;
+          const isRestartRequired = statusCode === DisconnectReason.restartRequired || statusCode === 515;
+          const isServerTerminated = statusCode === 428;
+          const isConnectionReplaced = statusCode === DisconnectReason.connectionReplaced || statusCode === 440;
+          const shouldReconnectWithAuth = statusCode !== DisconnectReason.loggedOut && !isConnectionReplaced && (
+            statusCode === DisconnectReason.badSession ||
+            isConnectionLost ||
+            isTimedOut ||
+            isRestartRequired ||
+            isServerTerminated ||
+            statusCode === 0 ||
+            statusCode === undefined
+          );
+
+          if (shouldReconnectWithAuth) {
+            const delayMs = statusCode === DisconnectReason.badSession ? 10000 : isRestartRequired ? 8000 : 30000;
+            console.log(`[WhatsAppService] Reconnecting with preserved auth in ${Math.round(delayMs / 1000)}s (code=${statusCode ?? 'unknown'})`);
+            if (this.reconnectTimer) {
+              clearTimeout(this.reconnectTimer);
+            }
+            this.reconnectTimer = setTimeout(() => {
+              this.reconnectTimer = null;
+              this.initialize();
+            }, delayMs);
+            return;
+          }
+
+          if (statusCode === DisconnectReason.loggedOut || isConnectionReplaced) {
+            console.log('[WhatsAppService] Logged out or connection replaced - clearing auth state');
+            await this.clearAuthState();
+            this.currentQR = null;
+            this.emit('whatsapp-auth-failure', { error: 'Logged out or disconnected' });
+            return;
+          }
 
           // Only reconnect for network issues, not for logout or manual disconnect
           const isLoggedOut = statusCode === DisconnectReason.loggedOut;
@@ -355,7 +386,7 @@ export class WhatsAppService extends EventEmitter {
       throw new Error('WhatsApp not connected');
     }
 
-    const jid = this.resolveOutgoingJid(phoneNumber);
+    const jid = await this.resolveOutgoingJid(phoneNumber);
     console.log(`[WhatsAppService] sendTextMessage target="${phoneNumber}" resolvedJid="${jid}" length=${message.length}`);
     const result = await this.socket.sendMessage(jid, { text: message });
 
@@ -459,7 +490,7 @@ export class WhatsAppService extends EventEmitter {
       throw new Error('WhatsApp not connected');
     }
 
-    const jid = this.resolveOutgoingJid(phoneNumber);
+    const jid = await this.resolveOutgoingJid(phoneNumber);
     console.log(`[WhatsAppService] sendMediaMessage target="${phoneNumber}" resolvedJid="${jid}" file="${path.basename(filePath)}"`);
     const fileBuffer = fs.readFileSync(filePath);
     const fileExtension = path.extname(filePath).toLowerCase();
@@ -564,7 +595,7 @@ export class WhatsAppService extends EventEmitter {
    * Resolve the JID to use for outgoing messages.
    * Preserve full JIDs when callers already know the exact recipient.
    */
-  private resolveOutgoingJid(phoneNumber: string): string {
+  private async resolveOutgoingJid(phoneNumber: string): Promise<string> {
     if (phoneNumber.includes('@')) {
       return phoneNumber;
     }
@@ -573,6 +604,13 @@ export class WhatsAppService extends EventEmitter {
     if (knownJid) {
       return knownJid;
     }
+
+    const storedJid = await this.findStoredJidForPhone(digits);
+    if (storedJid) {
+      this.recentJidByPhone.set(digits, { jid: storedJid, updatedAt: Date.now() });
+      return storedJid;
+    }
+
     return `${digits}@s.whatsapp.net`;
   }
 
@@ -623,6 +661,28 @@ export class WhatsAppService extends EventEmitter {
     });
   }
 
+  private async findStoredJidForPhone(phoneNumber: string): Promise<string | null> {
+    try {
+      const recentMessages = await storage.getMessages({
+        phoneNumber,
+        type: 'incoming',
+        limit: 20,
+      });
+
+      for (const message of recentMessages) {
+        const metadata = message.metadata as Record<string, unknown> | null;
+        const from = typeof metadata?.from === 'string' ? metadata.from : null;
+        if (from && from.includes('@') && !from.endsWith('@g.us') && !from.includes('status@broadcast')) {
+          return from;
+        }
+      }
+    } catch (error) {
+      console.warn('[WhatsAppService] Failed to load stored JID for phone:', phoneNumber, error);
+    }
+
+    return null;
+  }
+
   async cleanup(): Promise<void> {
     if (this.reconnectTimer) {
       clearTimeout(this.reconnectTimer);
@@ -656,6 +716,32 @@ export class WhatsAppService extends EventEmitter {
       }
     } catch (error) {
       console.error('⚠️ Failed to clear auth state:', error);
+    }
+  }
+
+  private async validateAuthState(authPath: string): Promise<boolean> {
+    try {
+      if (!fs.existsSync(authPath)) {
+        return true;
+      }
+
+      const { state } = await useMultiFileAuthState(authPath);
+      const creds = state.creds;
+      if (!creds?.noiseKey || !creds?.signedIdentityKey || !creds?.signedPreKey) {
+        console.log(`[WhatsAppService] Invalid auth state detected at "${authPath}" - recreating`);
+        fs.rmSync(authPath, { recursive: true, force: true });
+        fs.mkdirSync(authPath, { recursive: true });
+        return false;
+      }
+
+      return true;
+    } catch (error) {
+      console.warn(`[WhatsAppService] Auth validation failed at "${authPath}", recreating`, error);
+      if (fs.existsSync(authPath)) {
+        fs.rmSync(authPath, { recursive: true, force: true });
+      }
+      fs.mkdirSync(authPath, { recursive: true });
+      return false;
     }
   }
 

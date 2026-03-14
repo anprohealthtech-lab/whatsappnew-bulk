@@ -590,6 +590,10 @@ export async function registerRoutes(app: Express): Promise<Server> {
         content: data.content,
         type: 'incoming',
         status: 'received',
+        metadata: {
+          from: data.from || null,
+          senderPn: data.senderPn || null,
+        },
       }));
     } catch (err) {
       console.error('❌ Failed to store incoming message:', err);
