@@ -354,6 +354,7 @@ export class WhatsAppService extends EventEmitter {
     }
 
     const jid = this.resolveOutgoingJid(phoneNumber);
+    console.log(`[WhatsAppService] sendTextMessage target="${phoneNumber}" resolvedJid="${jid}" length=${message.length}`);
     const result = await this.socket.sendMessage(jid, { text: message });
 
     this.status.lastSeen = new Date();
@@ -457,6 +458,7 @@ export class WhatsAppService extends EventEmitter {
     }
 
     const jid = this.resolveOutgoingJid(phoneNumber);
+    console.log(`[WhatsAppService] sendMediaMessage target="${phoneNumber}" resolvedJid="${jid}" file="${path.basename(filePath)}"`);
     const fileBuffer = fs.readFileSync(filePath);
     const fileExtension = path.extname(filePath).toLowerCase();
 
