@@ -75,13 +75,10 @@ services:
     timeout_seconds: 10
     failure_threshold: 5
   
-  # Volume for WhatsApp session persistence across deploys
-  # Without this, users must re-scan QR after every deploy and Signal sessions
-  # are lost, causing "waiting for this message" on recipient phones.
-  volumes:
-  - name: whatsapp-sessions
-    size: 1GiB
-    mount_path: /workspace/NodeBackend/server/sessions
+  # Auth files are stored on ephemeral filesystem (./auth/).
+  # Users re-scan QR after each deploy — same as the working app.
+  # If you upgrade to Professional plan, add a volume at /mnt/auth
+  # and set AUTH_BASE_DIR=/mnt/auth to persist across deploys.
 
 # NOTE: Using external DO Managed PostgreSQL — set DATABASE_URL env var directly
 # Do NOT add a databases block here (it creates a NEW db and breaks the URL reference)

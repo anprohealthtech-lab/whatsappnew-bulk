@@ -2,7 +2,7 @@ import { db } from '../db';
 import { campaigns, campaignRecipients, messageVariations, campaignSchedules } from '@shared/schema';
 import { eq, and, desc, lte } from 'drizzle-orm';
 import { sessionManager } from './WhatsAppSessionManager';
-import type { WhatsAppService } from './WhatsAppService';
+import type { WAServiceInstance } from './WhatsAppSessionManager';
 import { messageService } from './MessageService';
 import { variationService } from './VariationService';
 import { storage } from '../storage';

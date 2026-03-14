@@ -1,17 +1,16 @@
 import makeWASocket, {
   fetchLatestBaileysVersion,
+  useMultiFileAuthState,
   DisconnectReason,
   WASocket,
   downloadMediaMessage,
   proto,
   WAMessageKey,
 } from '@whiskeysockets/baileys';
-import pino from 'pino';
 import { Boom } from '@hapi/boom';
 import { EventEmitter } from 'events';
 import fs from 'fs';
 import path from 'path';
-import { useDbAuthState, clearDbAuthState } from './useDbAuthState';
 
 export interface WhatsAppStatus {
   isConnected: boolean;
@@ -30,8 +29,7 @@ export class WhatsAppService extends EventEmitter {
     sessionInfo: null,
   };
   private authPath: string;
-  private dbSessionId: string;
-  private currentQR: string | null = null;
+  private currentQR: { qr: string; timestamp: number } | null = null;
   private badSessionRetryCount: number = 0;
   private static readonly MAX_BAD_SESSION_RETRIES = 3;
   private userId: string;
@@ -39,20 +37,22 @@ export class WhatsAppService extends EventEmitter {
   constructor(sessionDir?: string, userId?: string) {
     super();
     this.userId = userId || 'default';
-    // DB session ID for auth state persistence
-    this.dbSessionId = sessionDir
-      ? `${sessionDir}`
-      : `default_session`;
-    // Keep authPath for media file operations only (not for auth state)
-    this.authPath = sessionDir
-      ? path.join(process.cwd(), sessionDir, 'baileys_auth')
-      : path.join(process.cwd(), 'server/sessions/baileys_auth');
+    // Use persistent auth directory (file-based, matching the working app pattern).
+    // On DigitalOcean App Platform, mount a persistent volume at /mnt/auth or use
+    // AUTH_BASE_DIR env var.  Locally this defaults to ./auth/<userId>.
+    const baseDir = process.env.AUTH_BASE_DIR || path.join(process.cwd(), 'auth');
+    // sessionDir carries "server/sessions/user_<id>/<name>" from the manager;
+    // derive a filesystem-safe subdirectory from it, or fall back to plain userId.
+    const subDir = sessionDir
+      ? sessionDir.replace(/[/\\]/g, '_')
+      : this.userId;
+    this.authPath = path.join(baseDir, subDir);
   }
 
   async initialize(): Promise<void> {
     try {
       console.log('🚀 Starting Baileys WhatsApp - no Chrome needed!');
-      console.log(`📦 Auth state: DB session "${this.dbSessionId}"`);
+      console.log(`� Auth state: file-based at "${this.authPath}"`);
 
       // Clean up any existing socket first
       if (this.socket) {
@@ -60,13 +60,33 @@ export class WhatsAppService extends EventEmitter {
         this.socket = null;
       }
 
-      const { state, saveCreds } = await useDbAuthState(this.dbSessionId);
+      // Ensure auth directory exists
+      fs.mkdirSync(this.authPath, { recursive: true });
+
+      const { state, saveCreds } = await useMultiFileAuthState(this.authPath);
       const { version } = await fetchLatestBaileysVersion();
 
       this.socket = makeWASocket({
         version,
         auth: state,
-        logger: pino({ level: 'silent' }),
+        logger: {
+          level: 'silent',
+          fatal: () => {},
+          error: () => {},
+          warn: () => {},
+          info: () => {},
+          debug: () => {},
+          trace: () => {},
+          child: () => ({
+            level: 'silent',
+            fatal: () => {},
+            error: () => {},
+            warn: () => {},
+            info: () => {},
+            debug: () => {},
+            trace: () => {},
+          }),
+        } as any,
         printQRInTerminal: false,
         browser: [`WhatsApp-${this.userId}`, 'Chrome', '10.0'],
         generateHighQualityLinkPreview: false,
@@ -97,7 +117,7 @@ export class WhatsAppService extends EventEmitter {
         if (qr) {
           console.log('📱 Baileys QR received!');
           const qrUrl = `https://api.qrserver.com/v1/create-qr-code/?size=256x256&data=${encodeURIComponent(qr)}`;
-          this.currentQR = qrUrl;
+          this.currentQR = { qr: qrUrl, timestamp: Date.now() };
           this.emit('qr-code', { qr: qrUrl, rawQR: qr });
           console.log('🎯 Baileys QR emitted to frontend');
         }
@@ -522,18 +542,13 @@ export class WhatsAppService extends EventEmitter {
 
     await this.cleanup();
 
-    // Clear auth state from DB
-    try {
-      const count = await clearDbAuthState(this.dbSessionId);
-      console.log(`🧹 Cleared ${count} auth keys from DB for session "${this.dbSessionId}"`);
-    } catch (error) {
-      console.log('⚠️ Error clearing DB auth state:', error instanceof Error ? error.message : 'Unknown error');
-    }
+    // Clear file-based auth state
+    await this.clearAuthState();
 
     this.emit('whatsapp-auth-failure', { error: 'Disconnected' });
   }
 
-  getCurrentQR(): string | null {
+  getCurrentQR(): { qr: string; timestamp: number } | null {
     return this.currentQR;
   }
 
@@ -612,9 +627,13 @@ export class WhatsAppService extends EventEmitter {
 
   private async clearAuthState(): Promise<void> {
     try {
-      console.log('🗑️ Clearing old auth state from DB...');
-      const count = await clearDbAuthState(this.dbSessionId);
-      console.log(`✅ Auth state cleared: ${count} keys removed for session "${this.dbSessionId}"`);
+      console.log(`🗑️ Clearing auth state at "${this.authPath}"...`);
+      if (fs.existsSync(this.authPath)) {
+        fs.rmSync(this.authPath, { recursive: true, force: true });
+        console.log('✅ Auth state directory removed');
+      } else {
+        console.log('ℹ️ Auth state directory does not exist, nothing to clear');
+      }
     } catch (error) {
       console.error('⚠️ Failed to clear auth state:', error);
     }
@@ -622,7 +641,7 @@ export class WhatsAppService extends EventEmitter {
 
   /**
    * Clear stale Signal protocol sessions while preserving QR auth credentials.
-   * Removes session/pre-key/sender-key entries from DB but keeps creds + app-state-sync-key.
+   * Removes session/pre-key/sender-key files but keeps creds.json + app-state-sync-key files.
    * After clearing, the connection is re-initialized to rebuild fresh sessions.
    */
   async clearSignalSessions(): Promise<{ cleared: number; kept: number }> {
@@ -630,28 +649,25 @@ export class WhatsAppService extends EventEmitter {
     let kept = 0;
 
     try {
-      // Import DB helpers inline to avoid circular deps at module level
-      const { db } = await import('../db');
-      const { baileysAuthKeys } = await import('@shared/schema');
-      const { eq, and } = await import('drizzle-orm');
+      if (!fs.existsSync(this.authPath)) {
+        console.log('ℹ️ No auth directory to clean');
+        return { cleared, kept };
+      }
 
-      const rows = await db
-        .select()
-        .from(baileysAuthKeys)
-        .where(eq(baileysAuthKeys.sessionId, this.dbSessionId));
+      const keepPrefixes = ['creds', 'app-state-sync-key', 'app-state-sync-version'];
+      const files = fs.readdirSync(this.authPath);
 
-      const keepCategories = ['creds', 'app-state-sync-key', 'app-state-sync-version'];
-
-      for (const row of rows) {
-        if (keepCategories.includes(row.category)) {
+      for (const file of files) {
+        const shouldKeep = keepPrefixes.some(prefix => file.startsWith(prefix));
+        if (shouldKeep) {
           kept++;
         } else {
-          await db.delete(baileysAuthKeys).where(eq(baileysAuthKeys.id, row.id));
+          fs.unlinkSync(path.join(this.authPath, file));
           cleared++;
         }
       }
 
-      console.log(`🧹 Signal session cleanup: cleared ${cleared} DB keys, kept ${kept}`);
+      console.log(`🧹 Signal session cleanup: cleared ${cleared} files, kept ${kept}`);
 
       // Disconnect and re-initialize to rebuild fresh sessions
       if (this.socket) {

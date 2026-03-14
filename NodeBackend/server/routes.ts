@@ -6,7 +6,7 @@ import cors from "cors";
 import fs from "fs";
 import path from "path";
 import { storage } from "./storage";
-import type { WhatsAppService } from "./services/WhatsAppService";
+import type { WAServiceInstance } from "./services/WhatsAppSessionManager";
 import { messageService } from "./services/MessageService";
 import { fileService } from "./services/FileService";
 import { persistentFileService } from "./services/PersistentFileService";
@@ -94,7 +94,7 @@ function extractLineValue(text: string, label: string): string | undefined {
 }
 
 /** Get the user's first connected WhatsApp session, or throw */
-async function getUserWASession(req: Request): Promise<WhatsAppService> {
+async function getUserWASession(req: Request): Promise<WAServiceInstance> {
   const userId = req.auth?.userId;
   if (!userId) throw new Error('Authentication required');
   const session = await sessionManager.getFirstConnectedSession(userId);
@@ -443,7 +443,9 @@ export async function registerRoutes(app: Express): Promise<Server> {
       const userId = req.auth!.userId;
       const sessionName = (req.query.sessionName as string) || 'default';
       const wa = sessionManager.getLoadedSession(userId, sessionName);
-      res.json({ qr: wa?.getCurrentQR() || null });
+      const qrData = wa?.getCurrentQR();
+      const qrValue = qrData && typeof qrData === 'object' && 'qr' in qrData ? qrData.qr : null;
+      res.json({ qr: qrValue });
     } catch (error: any) {
       res.status(500).json({ message: error.message });
     }
@@ -1027,7 +1029,7 @@ export async function registerRoutes(app: Express): Promise<Server> {
       // Get user's session (default name)
       const waSession = sessionManager.getLoadedSession(req.auth!.userId, 'default');
       const currentQR = waSession?.getCurrentQR();
-      if (currentQR) {
+      if (currentQR && typeof currentQR === 'object' && 'qr' in currentQR) {
         res.json({
           success: true,
           data: {
@@ -1111,43 +1113,28 @@ export async function registerRoutes(app: Express): Promise<Server> {
   app.get('/api/whatsapp/debug/session-files', requireAuth, async (req, res) => {
     try {
       const userId = req.auth!.userId;
-      const sessionsRoot = path.join(process.cwd(), 'server/sessions');
-      const userDir = path.join(sessionsRoot, `user_${userId}`, 'default', 'baileys_auth');
-      const rootExists = fs.existsSync(sessionsRoot);
-      const userDirExists = fs.existsSync(userDir);
-      const files = userDirExists ? fs.readdirSync(userDir) : [];
+      const baseDir = process.env.AUTH_BASE_DIR || path.join(process.cwd(), 'auth');
+      const userAuthDir = path.join(baseDir, userId);
+      const baseDirExists = fs.existsSync(baseDir);
+      const userDirExists = fs.existsSync(userAuthDir);
+      const files = userDirExists ? fs.readdirSync(userAuthDir) : [];
 
-      // Also check DB auth state
-      const { baileysAuthKeys } = await import('@shared/schema');
-      const { eq } = await import('drizzle-orm');
-      const dbSessionId = `server/sessions/user_${userId}/default`;
-      const dbRows = await db
-        .select({ category: baileysAuthKeys.category, keyId: baileysAuthKeys.keyId })
-        .from(baileysAuthKeys)
-        .where(eq(baileysAuthKeys.sessionId, dbSessionId));
-
-      const dbCreds = dbRows.filter(r => r.category === 'creds').length;
-      const dbSessions = dbRows.filter(r => r.category === 'session').length;
-      const dbPreKeys = dbRows.filter(r => r.category === 'pre-key').length;
+      const credsFile = files.find(f => f.startsWith('creds'));
+      const sessionFiles = files.filter(f => f.startsWith('session-'));
+      const preKeyFiles = files.filter(f => f.startsWith('pre-key-'));
 
       res.json({
         cwd: process.cwd(),
-        authMode: 'database',
-        dbSessionId,
-        dbTotalKeys: dbRows.length,
-        dbHasCreds: dbCreds > 0,
-        dbSessionCount: dbSessions,
-        dbPreKeyCount: dbPreKeys,
-        dbCategories: [...new Set(dbRows.map(r => r.category))],
-        // Legacy filesystem info (should be empty with DB auth)
-        legacyFilesystem: {
-          sessionsRoot,
-          sessionsRootExists: rootExists,
-          userAuthDir: userDir,
-          userAuthDirExists: userDirExists,
-          totalFiles: files.length,
-          allFiles: files,
-        },
+        authMode: 'file-based (useMultiFileAuthState)',
+        authBaseDir: baseDir,
+        authBaseDirExists: baseDirExists,
+        userAuthDir,
+        userAuthDirExists: userDirExists,
+        totalFiles: files.length,
+        hasCreds: !!credsFile,
+        sessionFileCount: sessionFiles.length,
+        preKeyFileCount: preKeyFiles.length,
+        allFiles: files,
       });
     } catch (error) {
       res.status(500).json({ error: error instanceof Error ? error.message : 'Unknown' });

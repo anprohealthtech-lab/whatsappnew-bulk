@@ -1,16 +1,22 @@
 import { WhatsAppService } from './WhatsAppService';
+import { ExternalWhatsAppProxy } from './ExternalWhatsAppProxy';
 import { db } from '../db';
 import { whatsappSessions } from '@shared/schema';
 import { eq, and } from 'drizzle-orm';
 import { log } from '../utils';
 import type { WhatsAppSession } from '@shared/schema';
 
+/** A WhatsApp service – either the local Baileys instance or the external proxy */
+export type WAServiceInstance = WhatsAppService | ExternalWhatsAppProxy;
+
+const useExternalProxy = !!process.env.EXTERNAL_WA_API_URL;
+
 /**
  * Manages per-user WhatsApp sessions.
  * Each user gets their own Baileys instance backed by a unique session directory.
  */
 export class WhatsAppSessionManager {
-  private sessions = new Map<string, WhatsAppService>();
+  private sessions = new Map<string, WAServiceInstance>();
   /** Registered event handlers that are wired to every session */
   private sessionEventHandlers: Array<{ event: string; handler: (userId: string, sessionName: string, data: any) => void }> = [];
 
@@ -36,16 +42,22 @@ export class WhatsAppSessionManager {
    * Get or create a WhatsApp service instance for a user.
    * On first access, creates a new Baileys session with its own auth directory.
    */
-  async getSession(userId: string, sessionName = 'default'): Promise<WhatsAppService> {
+  async getSession(userId: string, sessionName = 'default'): Promise<WAServiceInstance> {
     const k = this.key(userId, sessionName);
 
     if (this.sessions.has(k)) {
       return this.sessions.get(k)!;
     }
 
-    // Create new WhatsApp service with unique session dir
+    // Create new WhatsApp service — external proxy or local Baileys
     const sessionDir = `server/sessions/user_${userId}/${sessionName}`;
-    const service = new WhatsAppService(sessionDir, userId);
+    const service: WAServiceInstance = useExternalProxy
+      ? new ExternalWhatsAppProxy(sessionDir, userId)
+      : new WhatsAppService(sessionDir, userId);
+
+    if (useExternalProxy) {
+      log(`🔗 [ExtProxy] Creating external proxy session for user ${userId}`);
+    }
 
     // Wire up status persistence
     service.on('whatsapp-authenticated', async () => {
@@ -72,7 +84,7 @@ export class WhatsAppSessionManager {
   }
 
   /** Get a session only if already loaded (no DB creation) */
-  getLoadedSession(userId: string, sessionName = 'default'): WhatsAppService | undefined {
+  getLoadedSession(userId: string, sessionName = 'default'): WAServiceInstance | undefined {
     return this.sessions.get(this.key(userId, sessionName));
   }
 
@@ -80,7 +92,13 @@ export class WhatsAppSessionManager {
    * Get the first connected session for a user.
    * Returns the WhatsAppService instance if found, or null if no connected session.
    */
-  async getFirstConnectedSession(userId: string): Promise<WhatsAppService | null> {
+  async getFirstConnectedSession(userId: string): Promise<WAServiceInstance | null> {
+    // For external proxy, return the loaded session if it's connected
+    if (useExternalProxy) {
+      const loaded = this.getLoadedSession(userId, 'default');
+      if (loaded && loaded.getStatus().isConnected) return loaded;
+      return null;
+    }
     const sessions = await this.listSessions(userId);
     const connected = sessions.find(s => s.status === 'connected');
     if (!connected) return null;
@@ -91,8 +109,8 @@ export class WhatsAppSessionManager {
    * Get any connected session across all users (for system-level operations).
    * Returns { userId, service } or null if none found.
    */
-  getAnyConnectedSession(): { userId: string; sessionName: string; service: WhatsAppService } | null {
-    let result: { userId: string; sessionName: string; service: WhatsAppService } | null = null;
+  getAnyConnectedSession(): { userId: string; sessionName: string; service: WAServiceInstance } | null {
+    let result: { userId: string; sessionName: string; service: WAServiceInstance } | null = null;
     this.sessions.forEach((service, key) => {
       if (!result) {
         const status = service.getStatus();
@@ -106,8 +124,8 @@ export class WhatsAppSessionManager {
   }
 
   /** Get all currently loaded sessions with their user info */
-  getAllLoadedSessions(): Array<{ userId: string; sessionName: string; service: WhatsAppService }> {
-    const result: Array<{ userId: string; sessionName: string; service: WhatsAppService }> = [];
+  getAllLoadedSessions(): Array<{ userId: string; sessionName: string; service: WAServiceInstance }> {
+    const result: Array<{ userId: string; sessionName: string; service: WAServiceInstance }> = [];
     this.sessions.forEach((service, key) => {
       const [userId, sessionName] = key.split('::');
       result.push({ userId, sessionName, service });

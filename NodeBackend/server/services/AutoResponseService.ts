@@ -1,12 +1,12 @@
 import { storage } from '../storage';
-import type { WhatsAppService } from './WhatsAppService';
+import type { WAServiceInstance } from './WhatsAppSessionManager';
 import { log } from '../utils';
 
 export class AutoResponseService {
-  private whatsAppService: WhatsAppService | null = null;
+  private whatsAppService: WAServiceInstance | null = null;
 
   /** Set the WhatsApp service instance for sending responses */
-  setWhatsAppService(service: WhatsAppService) {
+  setWhatsAppService(service: WAServiceInstance) {
     this.whatsAppService = service;
   }
 
