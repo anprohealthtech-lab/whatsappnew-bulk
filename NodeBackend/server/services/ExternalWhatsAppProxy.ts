@@ -94,6 +94,50 @@ export class ExternalWhatsAppProxy extends EventEmitter {
     return `https://quickchart.io/qr?size=512&margin=4&ecLevel=M&text=${encodeURIComponent(rawQr)}`;
   }
 
+  private getPublicBaseUrl(): string | null {
+    const explicit =
+      process.env.PUBLIC_BASE_URL ||
+      process.env.APP_BASE_URL ||
+      process.env.PUBLIC_APP_URL ||
+      process.env.DO_APP_URL ||
+      '';
+
+    if (explicit.trim()) {
+      return explicit.trim().replace(/\/+$/, '');
+    }
+
+    const replitDomains = (process.env.REPLIT_DOMAINS || '')
+      .split(',')
+      .map((value) => value.trim())
+      .filter(Boolean);
+    if (replitDomains.length > 0) {
+      return `https://${replitDomains[0].replace(/^https?:\/\//, '').replace(/\/+$/, '')}`;
+    }
+
+    return null;
+  }
+
+  private resolveFileUrl(filePath: string): string | null {
+    if (filePath.startsWith('http://') || filePath.startsWith('https://')) {
+      return filePath;
+    }
+
+    const normalized = filePath.replace(/\\/g, '/');
+    const marker = '/uploads/';
+    const markerIndex = normalized.lastIndexOf(marker);
+    if (markerIndex === -1) {
+      return null;
+    }
+
+    const publicBaseUrl = this.getPublicBaseUrl();
+    if (!publicBaseUrl) {
+      return null;
+    }
+
+    const relativePath = normalized.slice(markerIndex);
+    return `${publicBaseUrl}${relativePath}`;
+  }
+
   private applyDisconnectedState(sessionInfo?: any): void {
     this.status.isConnected = false;
     this.status.isAuthenticated = Boolean(sessionInfo?.isAuthenticated);
@@ -268,46 +312,25 @@ export class ExternalWhatsAppProxy extends EventEmitter {
   }
 
   async sendMediaMessage(phoneNumber: string, filePath: string, caption?: string): Promise<any> {
-    const fs = await import('fs');
     const path = await import('path');
+    const fileUrl = this.resolveFileUrl(filePath);
 
-    if (filePath.startsWith('http://') || filePath.startsWith('https://')) {
-      const response = await this.request('POST', '/api/external/reports/send-url', {
-        userId: this.userId,
-        phoneNumber: this.formatOutgoingPhoneNumber(phoneNumber),
-        fileUrl: filePath,
-        caption: caption || '',
-      });
-      const data = this.getNestedData<any>(response);
-      this.status.lastSeen = new Date();
-      return { id: data.messageId, to: phoneNumber, hasMedia: true, caption, timestamp: Date.now() };
+    if (!fileUrl) {
+      throw new Error(
+        'Attachment forwarding requires a public file URL. Set PUBLIC_BASE_URL for this app or provide an HTTP(S) file URL.'
+      );
     }
 
-    const fileBuffer = fs.readFileSync(filePath);
-    const fileName = path.basename(filePath);
-
-    if (this.sessionId) {
-      const form = new FormData();
-      form.append('sessionId', this.sessionId);
-      form.append('phoneNumber', this.formatOutgoingPhoneNumber(phoneNumber));
-      form.append('content', caption || '');
-      form.append('file', new Blob([new Uint8Array(fileBuffer)]), fileName);
-
-      const response = await fetch(`${this.baseUrl}/api/external/reports/send`, {
-        method: 'POST',
-        headers: { 'x-api-key': this.apiKey },
-        body: form,
-      });
-      const json = await response.json();
-      if (!response.ok) {
-        throw new Error(`External WA API error: ${json?.message || response.status}`);
-      }
-      const data = this.getNestedData<any>(json);
-      this.status.lastSeen = new Date();
-      return { id: data.messageId, to: phoneNumber, hasMedia: true, caption, timestamp: Date.now() };
-    }
-
-    throw new Error('No external session available for file upload');
+    const response = await this.request('POST', '/api/external/reports/send-url', {
+      userId: this.userId,
+      phoneNumber: this.formatOutgoingPhoneNumber(phoneNumber),
+      fileUrl,
+      fileName: path.basename(filePath),
+      caption: caption || '',
+    });
+    const data = this.getNestedData<any>(response);
+    this.status.lastSeen = new Date();
+    return { id: data.messageId, to: phoneNumber, hasMedia: true, caption, timestamp: Date.now() };
   }
 
   async sendMessageWithButtons(

@@ -1,5 +1,7 @@
 import 'dotenv/config';
 import express, { type Request, Response, NextFunction } from "express";
+import fs from "fs";
+import path from "path";
 import { registerRoutes } from "./routes";
 import { serveStatic, log } from "./utils";
 import { runMigrations } from "./migrate";
@@ -10,6 +12,11 @@ import { seedSuperAdmin } from "./seedSuperAdmin";
 const app = express();
 app.use(express.json());
 app.use(express.urlencoded({ extended: false }));
+
+const uploadsDir = path.resolve(process.cwd(), "uploads");
+if (fs.existsSync(uploadsDir)) {
+  app.use('/uploads', express.static(uploadsDir));
+}
 
 app.use((req, res, next) => {
   const start = Date.now();
