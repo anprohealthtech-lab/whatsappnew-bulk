@@ -24,6 +24,8 @@ export class WhatsAppService extends EventEmitter {
   private socket: WASocket | null = null;
   private reconnectTimer: NodeJS.Timeout | null = null;
   private recentJidByPhone = new Map<string, { jid: string; updatedAt: number }>();
+  private reconnectAttempts = 0;
+  private isPairing = false;
   private status: WhatsAppStatus = {
     isConnected: false,
     isAuthenticated: false,
@@ -40,7 +42,10 @@ export class WhatsAppService extends EventEmitter {
     super();
     this.userId = userId || 'default';
     const baseDir = process.env.AUTH_BASE_DIR || path.join(process.cwd(), 'auth');
-    this.authPath = path.join(baseDir, this.userId);
+    const normalizedSessionDir = sessionDir
+      ? sessionDir.replace(/^server[\\/]+sessions[\\/]+/i, '')
+      : this.userId;
+    this.authPath = path.join(baseDir, normalizedSessionDir);
   }
 
   async initialize(): Promise<void> {
@@ -61,6 +66,8 @@ export class WhatsAppService extends EventEmitter {
       const { state, saveCreds } = await useMultiFileAuthState(this.authPath);
       const { version, isLatest } = await fetchLatestBaileysVersion();
       console.log(`[WhatsAppService] Using WA v${version.join('.')}, isLatest=${isLatest} authPath="${this.authPath}"`);
+      const userHash = this.userId.substring(0, 8);
+      const uniqueBrowser: [string, string, string] = [`LIMS-${userHash}`, 'Chrome', '10.0'];
 
       this.socket = makeWASocket({
         version,
@@ -84,7 +91,7 @@ export class WhatsAppService extends EventEmitter {
           }),
         } as any,
         printQRInTerminal: false,
-        browser: [`WhatsApp-${this.userId}`, 'Chrome', '10.0'],
+        browser: uniqueBrowser,
         generateHighQualityLinkPreview: false,
         markOnlineOnConnect: true,
         syncFullHistory: false,
@@ -105,13 +112,21 @@ export class WhatsAppService extends EventEmitter {
         },
       });
 
-      this.socket.ev.on('creds.update', saveCreds);
+      this.socket.ev.on('creds.update', async () => {
+        try {
+          await saveCreds();
+          console.log(`Saved auth credentials for ${this.userId} to ${this.authPath}`);
+        } catch (error) {
+          console.error(`Failed to save auth credentials for ${this.userId}:`, error);
+        }
+      });
 
       this.socket.ev.on('connection.update', async (update: any) => {
         const { connection, lastDisconnect, qr } = update;
 
         if (qr) {
           console.log('📱 Baileys QR received!');
+          this.isPairing = true;
           const qrUrl = `https://api.qrserver.com/v1/create-qr-code/?size=256x256&data=${encodeURIComponent(qr)}`;
           this.currentQR = { qr: qrUrl, timestamp: Date.now() };
           this.emit('qr-code', { qr: qrUrl, rawQR: qr });
@@ -124,7 +139,13 @@ export class WhatsAppService extends EventEmitter {
           this.status.isAuthenticated = true;
           this.status.lastSeen = new Date();
           this.currentQR = null;
-          this.badSessionRetryCount = 0; // Reset on successful connection
+          this.badSessionRetryCount = 0;
+          this.reconnectAttempts = 0;
+          this.isPairing = false;
+          if (this.reconnectTimer) {
+            clearTimeout(this.reconnectTimer);
+            this.reconnectTimer = null;
+          }
           this.emit('whatsapp-authenticated', { status: this.status });
         } else if (connection === 'close') {
           console.log('❌ Baileys connection closed');
@@ -134,92 +155,58 @@ export class WhatsAppService extends EventEmitter {
           this.status.isConnected = false;
           this.status.isAuthenticated = false;
 
-          const isConnectionLost = statusCode === DisconnectReason.connectionLost;
-          const isTimedOut = statusCode === DisconnectReason.timedOut;
-          const isRestartRequired = statusCode === DisconnectReason.restartRequired || statusCode === 515;
-          const isServerTerminated = statusCode === 428;
-          const isConnectionReplaced = statusCode === DisconnectReason.connectionReplaced || statusCode === 440;
-          const shouldReconnectWithAuth = statusCode !== DisconnectReason.loggedOut && !isConnectionReplaced && (
-            statusCode === DisconnectReason.badSession ||
-            isConnectionLost ||
-            isTimedOut ||
-            isRestartRequired ||
-            isServerTerminated ||
-            statusCode === 0 ||
-            statusCode === undefined
-          );
+          const loggedOut = statusCode === DisconnectReason.loggedOut;
+          const restartRequired = statusCode === DisconnectReason.restartRequired || statusCode === 515;
+          const connectionLost = statusCode === DisconnectReason.connectionLost;
+          const timedOut = statusCode === DisconnectReason.timedOut;
+          const serverTerminated = statusCode === 428;
+          const connectionReplaced = statusCode === DisconnectReason.connectionReplaced || statusCode === 440;
+          const badSession = statusCode === DisconnectReason.badSession || statusCode === 500;
+          const shouldReconnect = !loggedOut && !connectionReplaced &&
+            (restartRequired || connectionLost || timedOut || serverTerminated || badSession || statusCode === 0 || statusCode === undefined);
 
-          if (shouldReconnectWithAuth) {
-            const delayMs = statusCode === DisconnectReason.badSession ? 10000 : isRestartRequired ? 8000 : 30000;
-            console.log(`[WhatsAppService] Reconnecting with preserved auth in ${Math.round(delayMs / 1000)}s (code=${statusCode ?? 'unknown'})`);
+          if (shouldReconnect) {
+            this.reconnectAttempts++;
+            let delayMs: number;
+            if (restartRequired && this.isPairing && this.reconnectAttempts <= 3) {
+              delayMs = 500;
+            } else if (badSession) {
+              delayMs = Math.min(10000 * Math.pow(1.5, Math.max(this.reconnectAttempts - 1, 0)), 180000);
+            } else if (statusCode === 0) {
+              delayMs = Math.min(30000 * Math.pow(1.8, Math.max(this.reconnectAttempts - 1, 0)), 600000);
+            } else if (restartRequired) {
+              delayMs = 8000;
+            } else if (connectionLost || timedOut) {
+              delayMs = Math.min(15000 * Math.pow(1.5, Math.max(this.reconnectAttempts - 1, 0)), 300000);
+            } else if (serverTerminated) {
+              delayMs = Math.min(20000 * Math.pow(1.6, Math.max(this.reconnectAttempts - 1, 0)), 360000);
+            } else {
+              delayMs = 30000;
+            }
+
+            const jitter = restartRequired && this.isPairing ? 0 : Math.random() * 3000;
+            const finalDelayMs = Math.round(delayMs + jitter);
+            console.log(`[WhatsAppService] Reconnecting with preserved auth in ${Math.round(finalDelayMs / 1000)}s (code=${statusCode ?? 'unknown'}, attempt=${this.reconnectAttempts})`);
             if (this.reconnectTimer) {
               clearTimeout(this.reconnectTimer);
             }
             this.reconnectTimer = setTimeout(() => {
               this.reconnectTimer = null;
               this.initialize();
-            }, delayMs);
+            }, finalDelayMs);
             return;
           }
 
-          if (statusCode === DisconnectReason.loggedOut || isConnectionReplaced) {
+          if (loggedOut || connectionReplaced) {
             console.log('[WhatsAppService] Logged out or connection replaced - clearing auth state');
             await this.clearAuthState();
             this.currentQR = null;
+            this.reconnectAttempts = 0;
+            this.isPairing = false;
             this.emit('whatsapp-auth-failure', { error: 'Logged out or disconnected' });
             return;
           }
 
-          // Only reconnect for network issues, not for logout or manual disconnect
-          const isLoggedOut = statusCode === DisconnectReason.loggedOut;
-          const isBadSession = statusCode === DisconnectReason.badSession;
-          const shouldReconnect = !isLoggedOut && !isBadSession && statusCode !== undefined;
-
-          if (shouldReconnect) {
-            console.log('🔄 Reconnecting in 30 seconds...');
-            if (this.reconnectTimer) {
-              clearTimeout(this.reconnectTimer);
-            }
-            this.reconnectTimer = setTimeout(() => {
-              this.reconnectTimer = null;
-              this.initialize();
-            }, 30000); // 30 seconds delay
-          } else if (isBadSession) {
-            this.badSessionRetryCount++;
-            console.log(`⚠️ Bad session detected (attempt ${this.badSessionRetryCount}/${WhatsAppService.MAX_BAD_SESSION_RETRIES})`);
-
-            if (this.badSessionRetryCount >= WhatsAppService.MAX_BAD_SESSION_RETRIES) {
-              // Only clear auth after multiple consecutive failures
-              console.log('🗑️ Max bad-session retries reached — clearing auth state for fresh QR...');
-              await this.clearAuthState();
-              this.currentQR = null;
-              this.badSessionRetryCount = 0;
-              this.emit('whatsapp-auth-failure', { error: 'Bad session, re-pair required' });
-              if (this.reconnectTimer) {
-                clearTimeout(this.reconnectTimer);
-              }
-              this.reconnectTimer = setTimeout(() => {
-                this.reconnectTimer = null;
-                console.log('🔄 Re-initializing after badSession cleanup...');
-                this.initialize();
-              }, 5000);
-            } else {
-              // Reconnect with existing credentials — session is likely still valid
-              console.log('🔄 Reconnecting with existing credentials (stream error is often transient)...');
-              if (this.reconnectTimer) {
-                clearTimeout(this.reconnectTimer);
-              }
-              this.reconnectTimer = setTimeout(() => {
-                this.reconnectTimer = null;
-                this.initialize();
-              }, 10000); // 10 seconds delay
-            }
-          } else {
-            console.log('🚪 Logged out or connection closed - clearing auth and need new QR scan');
-            await this.clearAuthState();
-            this.currentQR = null;
-            this.emit('whatsapp-auth-failure', { error: 'Logged out or disconnected' });
-          }
         } else if (connection === 'connecting') {
           console.log('🔄 Baileys connecting...');
         }
@@ -795,3 +782,4 @@ export class WhatsAppService extends EventEmitter {
 }
 
 export const whatsAppService = new WhatsAppService();
+
