@@ -710,6 +710,7 @@ class ManagedBaileysSession extends EventEmitter implements WAServiceInstance {
 export class WhatsAppSessionManager {
   private sessions = new Map<string, WAServiceInstance>();
   private sessionEventHandlers: Array<{ event: string; handler: (userId: string, sessionName: string, data: any) => void }> = [];
+  private resolvedExternalBaseUrl: string | null | undefined;
 
   private key(userId: string, sessionName = 'default'): string {
     return `${userId}::${sessionName}`;
@@ -731,9 +732,14 @@ export class WhatsAppSessionManager {
 
     const sessionDir = `server/sessions/user_${userId}/${sessionName}`;
     const authPath = path.join(process.env.AUTH_BASE_DIR || path.join(process.cwd(), 'auth'), sessionDir.replace(/^server[\\/]+sessions[\\/]+/i, ''));
-    const service: WAServiceInstance = useExternalProxy
-      ? new ExternalWhatsAppProxy(sessionDir, userId)
+    const externalBaseUrl = await this.resolveExternalBaseUrl();
+    const service: WAServiceInstance = externalBaseUrl
+      ? new ExternalWhatsAppProxy(sessionDir, userId, externalBaseUrl)
       : new ManagedBaileysSession(userId, sessionName, authPath);
+
+    if (externalBaseUrl) {
+      log(`[WA] Using working-app proxy for ${userId}/${sessionName} via ${externalBaseUrl}`);
+    }
 
     service.on('whatsapp-authenticated', async (data: any) => {
       await this.updateSessionStatus(userId, sessionName, 'connected', (data?.status?.sessionInfo as any)?.id?.split(':')[0]);
@@ -843,6 +849,44 @@ export class WhatsAppSessionManager {
 
   get activeCount(): number {
     return this.sessions.size;
+  }
+
+  private async resolveExternalBaseUrl(): Promise<string | null> {
+    if (this.resolvedExternalBaseUrl !== undefined) {
+      return this.resolvedExternalBaseUrl;
+    }
+
+    const explicit = (process.env.EXTERNAL_WA_API_URL || '').trim().replace(/\/+$/, '');
+    if (explicit) {
+      this.resolvedExternalBaseUrl = explicit;
+      return explicit;
+    }
+
+    if (!useExternalProxy) {
+      const candidates = ['http://127.0.0.1:3001', 'http://localhost:3001'];
+      for (const candidate of candidates) {
+        try {
+          const response = await fetch(`${candidate}/api/users/whatsapp/summary`, {
+            method: 'GET',
+            headers: { Accept: 'application/json' },
+          });
+
+          if (!response.ok) {
+            continue;
+          }
+
+          const json = await response.json().catch(() => null);
+          if (json && typeof json === 'object' && json.success === true) {
+            this.resolvedExternalBaseUrl = candidate;
+            return candidate;
+          }
+        } catch {
+          // ignore and try the next candidate
+        }
+      }
+    }
+
+    return null;
   }
 
   private async ensureSessionRecord(userId: string, sessionName: string): Promise<void> {

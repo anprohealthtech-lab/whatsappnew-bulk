@@ -34,10 +34,10 @@ export class ExternalWhatsAppProxy extends EventEmitter {
   private sessionId: string | null = null;
   private pollingTimer: ReturnType<typeof setInterval> | null = null;
 
-  constructor(_sessionDir?: string, userId?: string) {
+  constructor(_sessionDir?: string, userId?: string, baseUrlOverride?: string) {
     super();
     this.userId = userId || 'default';
-    this.baseUrl = (process.env.EXTERNAL_WA_API_URL || '').replace(/\/+$/, '');
+    this.baseUrl = (baseUrlOverride || process.env.EXTERNAL_WA_API_URL || '').replace(/\/+$/, '');
     this.apiKey = process.env.EXTERNAL_WA_API_KEY || 'whatsapp-lims-api-key-2024';
   }
 
