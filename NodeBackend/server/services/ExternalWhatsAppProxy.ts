@@ -83,6 +83,10 @@ export class ExternalWhatsAppProxy extends EventEmitter {
     this.sessionId = sessionInfo?.sessionId || this.sessionId;
   }
 
+  private buildQrImageUrl(rawQr: string): string {
+    return `https://api.qrserver.com/v1/create-qr-code/?size=256x256&data=${encodeURIComponent(rawQr)}`;
+  }
+
   private applyDisconnectedState(sessionInfo?: any): void {
     this.status.isConnected = false;
     this.status.isAuthenticated = Boolean(sessionInfo?.isAuthenticated);
@@ -115,9 +119,10 @@ export class ExternalWhatsAppProxy extends EventEmitter {
       const connectData = this.getNestedData<any>(connectRes);
 
       if (connectData?.qrCode) {
-        const qr = connectData.qrCodeUrl || connectData.qrCode;
+        const rawQR = connectData.qrCode;
+        const qr = connectData.qrCodeUrl || this.buildQrImageUrl(rawQR);
         this.currentQR = { qr, timestamp: Date.now() };
-        this.emit('qr-code', { qr, rawQR: connectData.qrCode });
+        this.emit('qr-code', { qr, rawQR });
       }
 
       const statusRes = await this.request('GET', `/api/users/${this.userId}/whatsapp/status`);
@@ -178,9 +183,10 @@ export class ExternalWhatsAppProxy extends EventEmitter {
             const refreshRes = await this.request('POST', `/api/users/${this.userId}/whatsapp/refresh-qr`);
             const refreshData = this.getNestedData<any>(refreshRes);
             if (refreshData?.qrCode) {
-              const qr = refreshData.qrCodeUrl || refreshData.qrCode;
+              const rawQR = refreshData.qrCode;
+              const qr = refreshData.qrCodeUrl || this.buildQrImageUrl(rawQR);
               this.currentQR = { qr, timestamp: Date.now() };
-              this.emit('qr-code', { qr, rawQR: refreshData.qrCode });
+              this.emit('qr-code', { qr, rawQR });
             }
           } catch {
             // Ignore refresh failures while polling.
