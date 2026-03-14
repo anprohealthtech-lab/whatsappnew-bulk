@@ -22,6 +22,7 @@ export interface WhatsAppStatus {
 export class WhatsAppService extends EventEmitter {
   private socket: WASocket | null = null;
   private reconnectTimer: NodeJS.Timeout | null = null;
+  private recentJidByPhone = new Map<string, { jid: string; updatedAt: number }>();
   private status: WhatsAppStatus = {
     isConnected: false,
     isAuthenticated: false,
@@ -202,6 +203,7 @@ export class WhatsAppService extends EventEmitter {
         const senderPn = (msg.key as any)?.senderPn as string | undefined;
         // Prefer senderPn for LID chats so lead lookup matches real phone numbers (e.g. 91xxxxxxxxxx).
         const phoneNumber = this.resolveIncomingPhoneNumber(from, senderPn);
+        this.rememberRecentJid(phoneNumber, from);
         const isFromMe = msg.key.fromMe;
 
         // Only process incoming messages (not sent by us)
@@ -567,6 +569,10 @@ export class WhatsAppService extends EventEmitter {
       return phoneNumber;
     }
     const digits = this.formatPhoneNumber(phoneNumber);
+    const knownJid = this.recentJidByPhone.get(digits)?.jid;
+    if (knownJid) {
+      return knownJid;
+    }
     return `${digits}@s.whatsapp.net`;
   }
 
@@ -599,6 +605,22 @@ export class WhatsAppService extends EventEmitter {
     }
 
     return cleaned;
+  }
+
+  private rememberRecentJid(phoneNumber: string, from?: string | null): void {
+    if (!from || !from.includes('@') || from.endsWith('@g.us') || from.includes('status@broadcast')) {
+      return;
+    }
+
+    const digits = this.formatPhoneNumber(phoneNumber);
+    if (!digits) {
+      return;
+    }
+
+    this.recentJidByPhone.set(digits, {
+      jid: from,
+      updatedAt: Date.now(),
+    });
   }
 
   async cleanup(): Promise<void> {
