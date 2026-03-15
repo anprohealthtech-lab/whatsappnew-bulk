@@ -768,6 +768,20 @@ export class WhatsAppSessionManager {
     return this.sessions.get(this.key(userId, sessionName));
   }
 
+  emitExternalSessionEvent(userId: string, sessionName: string, event: string, data: any) {
+    const service = this.getLoadedSession(userId, sessionName);
+    if (service) {
+      service.emit(event, data);
+      return;
+    }
+
+    for (const registration of this.sessionEventHandlers) {
+      if (registration.event === event) {
+        registration.handler(userId, sessionName, data);
+      }
+    }
+  }
+
   async getFirstConnectedSession(userId: string): Promise<WAServiceInstance | null> {
     const loaded = Array.from(this.sessions.entries())
       .find(([key, service]) => key.startsWith(`${userId}::`) && service.getStatus().isConnected);

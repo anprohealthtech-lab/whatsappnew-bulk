@@ -582,7 +582,7 @@ export async function registerRoutes(app: Express): Promise<Server> {
   const DEBOUNCE_DELAY = 5000; // 5 seconds - wait for user to finish typing
 
   // Handle incoming messages from any session
-  sessionManager.onSessionEvent('incoming-message', async (userId, sessionName, data) => {
+  const handleIncomingSessionMessage = async (userId: string, sessionName: string, data: any) => {
     console.log(`📥 Incoming message received (user ${userId}/${sessionName}):`, data);
 
     // Store each incoming message immediately in DB (don't lose any)
@@ -645,7 +645,9 @@ export async function registerRoutes(app: Express): Promise<Server> {
     }, DEBOUNCE_DELAY);
 
     messageDebounceMap.set(data.phoneNumber, timeoutId);
-  });
+  };
+
+  sessionManager.onSessionEvent('incoming-message', handleIncomingSessionMessage);
 
   // Extract message processing logic — now uses the session that received the message
   async function processIncomingMessage(data: any) {
@@ -845,6 +847,62 @@ export async function registerRoutes(app: Express): Promise<Server> {
       broadcast('incoming-message', data);
     }
   }
+
+  app.post('/api/external/incoming-message', async (req, res) => {
+    try {
+      const expectedApiKey =
+        process.env.WHATSAPP_SYNC_API_KEY ||
+        process.env.EXTERNAL_WA_API_KEY ||
+        process.env.NOTIFICATION_API_KEY ||
+        'whatsapp-lims-secure-api-key-2024';
+      const apiKey = req.headers['x-api-key'] || req.headers['authorization']?.toString().replace('Bearer ', '');
+
+      if (apiKey !== expectedApiKey) {
+        return res.status(401).json({ success: false, error: 'Invalid API key' });
+      }
+
+      const {
+        userId,
+        sessionName = 'default',
+        phoneNumber,
+        content,
+        from,
+        senderPn,
+        timestamp,
+        messageType = 'text',
+        mediaInfo,
+        audioData,
+      } = req.body || {};
+
+      if (!userId || !phoneNumber || !content) {
+        return res.status(400).json({
+          success: false,
+          error: 'userId, phoneNumber, and content are required',
+        });
+      }
+
+      await sessionManager.getSession(String(userId), String(sessionName));
+
+      await handleIncomingSessionMessage(String(userId), String(sessionName), {
+        phoneNumber: String(phoneNumber),
+        content: String(content),
+        from: from ? String(from) : undefined,
+        senderPn: senderPn ? String(senderPn) : undefined,
+        timestamp: timestamp ? Number(timestamp) : Date.now(),
+        messageType: String(messageType),
+        mediaInfo,
+        audioData,
+      });
+
+      res.json({ success: true, message: 'Incoming message accepted' });
+    } catch (error) {
+      console.error('❌ Failed to accept external incoming message:', error);
+      res.status(500).json({
+        success: false,
+        error: error instanceof Error ? error.message : 'Unknown error',
+      });
+    }
+  });
 
   // API Routes
 
