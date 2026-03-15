@@ -228,8 +228,9 @@ export class ExternalWhatsAppProxy extends EventEmitter {
           return;
         }
 
-        // Best-effort QR refresh using the working app's refresh endpoint.
-        if (!this.currentQR && attempts % 5 === 0) {
+        // Keep asking for a fresh QR while unauthenticated because the external app
+        // may restart the pairing socket and invalidate the previous code.
+        if (attempts % 5 === 0) {
           try {
             const refreshRes = await this.request('POST', `/api/users/${this.userId}/whatsapp/refresh-qr`);
             const refreshData = this.getNestedData<any>(refreshRes);
