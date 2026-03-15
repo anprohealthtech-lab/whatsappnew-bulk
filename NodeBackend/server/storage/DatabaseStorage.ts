@@ -1,10 +1,8 @@
 import { eq, desc, and, gte, lte, sql, or } from 'drizzle-orm';
 import { db } from '../db';
-import { users, messages, systemLogs, blockedNumbers, autoResponses, contacts, chatbotConfigs, hrAdmins, hrChatbotConfigs } from '@shared/schema';
-import type { User, InsertUser, Message, InsertMessage, SystemLog, InsertSystemLog, BlockedNumber, AutoResponse, Contact, ChatbotConfig, HRAdmin, HRChatbotConfig } from '@shared/schema';
-import type { IStorage } from '../storage';
-
-export type TenantFilter = { organizationId: string; userId: string };
+import { users, messages, systemLogs, blockedNumbers, autoResponses, contacts, hrAdmins, hrChatbotConfigs } from '@shared/schema';
+import type { User, InsertUser, Message, InsertMessage, SystemLog, InsertSystemLog, BlockedNumber, AutoResponse, Contact, HRAdmin, HRChatbotConfig } from '@shared/schema';
+import type { IStorage, TenantFilter } from '../storage';
 
 export class DatabaseStorage implements IStorage {
   // User methods
@@ -398,55 +396,6 @@ export class DatabaseStorage implements IStorage {
   }
 
   // Chatbot config methods
-  async getChatbotConfig(): Promise<ChatbotConfig | undefined> {
-    const result = await db.select()
-      .from(chatbotConfigs)
-      .orderBy(desc(chatbotConfigs.updatedAt))
-      .limit(1);
-    
-    return result[0];
-  }
-
-  async updateChatbotConfig(config: Partial<ChatbotConfig> & { agentName: string }): Promise<ChatbotConfig> {
-    // Check if config exists
-    const existing = await this.getChatbotConfig();
-
-    if (existing) {
-      // Update existing config
-      const updateData: any = {
-        ...config,
-        isActive: typeof config.isActive === 'boolean' ? (config.isActive ? 'true' : 'false') : existing.isActive,
-        updatedAt: new Date(),
-      };
-
-      const result = await db.update(chatbotConfigs)
-        .set(updateData)
-        .where(eq(chatbotConfigs.id, existing.id))
-        .returning();
-      
-      return result[0];
-    } else {
-      // Create new config
-      const configAny = config as any;
-      const result = await db.insert(chatbotConfigs)
-        .values({
-          agentName: config.agentName,
-          triggerKeywords: config.triggerKeywords || [],
-          ragBaseUrl: config.ragBaseUrl || '',
-          ragAccessKey: config.ragAccessKey || '',
-          systemPrompt: configAny.systemPrompt || null,
-          greetingMessage: configAny.greetingMessage || null,
-          contextMessageCount: config.contextMessageCount || 5,
-          replyCooldownSeconds: configAny.replyCooldownSeconds || 8,
-          typingDelayMs: configAny.typingDelayMs || 2000,
-          isActive: typeof config.isActive === 'boolean' ? (config.isActive ? 'true' : 'false') : 'true',
-        })
-        .returning();
-      
-      return result[0];
-    }
-  }
-
   // ============================================================================
   // HR Admin methods
   // ============================================================================
@@ -756,6 +705,16 @@ export class DatabaseStorage implements IStorage {
     )).orderBy(desc(blockedNumbers.blockedAt));
   }
 
+  async getBlockedNumberByTenant(tenant: TenantFilter, phoneNumber: string): Promise<BlockedNumber | undefined> {
+    const cleanedNumber = phoneNumber.replace(/\D/g, '');
+    const result = await db.select().from(blockedNumbers).where(and(
+      eq(blockedNumbers.organizationId, tenant.organizationId),
+      eq(blockedNumbers.userId, tenant.userId),
+      eq(blockedNumbers.phoneNumber, cleanedNumber),
+    )).limit(1);
+    return result[0];
+  }
+
   async addToBlocklistForTenant(tenant: TenantFilter, phoneNumber: string, reason = 'user_requested'): Promise<BlockedNumber> {
     const cleanedNumber = phoneNumber.replace(/\D/g, '');
     const result = await db.insert(blockedNumbers).values({
@@ -775,6 +734,55 @@ export class DatabaseStorage implements IStorage {
       eq(blockedNumbers.phoneNumber, cleanedNumber),
     )).limit(1);
     return result.length > 0;
+  }
+
+  async removeFromBlocklistForTenant(tenant: TenantFilter, phoneNumber: string): Promise<void> {
+    const cleanedNumber = phoneNumber.replace(/\D/g, '');
+    await db.delete(blockedNumbers).where(and(
+      eq(blockedNumbers.organizationId, tenant.organizationId),
+      eq(blockedNumbers.userId, tenant.userId),
+      eq(blockedNumbers.phoneNumber, cleanedNumber),
+    ));
+  }
+
+  async getAllAutoResponsesByTenant(tenant: TenantFilter): Promise<AutoResponse[]> {
+    return db.select().from(autoResponses).where(and(
+      eq(autoResponses.organizationId, tenant.organizationId),
+      eq(autoResponses.userId, tenant.userId),
+    )).orderBy(desc(autoResponses.createdAt));
+  }
+
+  async updateAutoResponseForTenant(
+    tenant: TenantFilter,
+    id: string,
+    data: { keyword?: string; response?: string; isActive?: boolean }
+  ): Promise<AutoResponse | undefined> {
+    const updateData: any = {
+      updatedAt: new Date(),
+    };
+
+    if (data.keyword !== undefined) updateData.keyword = data.keyword;
+    if (data.response !== undefined) updateData.response = data.response;
+    if (data.isActive !== undefined) updateData.isActive = data.isActive ? 'true' : 'false';
+
+    const result = await db.update(autoResponses)
+      .set(updateData)
+      .where(and(
+        eq(autoResponses.id, id),
+        eq(autoResponses.organizationId, tenant.organizationId),
+        eq(autoResponses.userId, tenant.userId),
+      ))
+      .returning();
+
+    return result[0];
+  }
+
+  async deleteAutoResponseForTenant(tenant: TenantFilter, id: string): Promise<void> {
+    await db.delete(autoResponses).where(and(
+      eq(autoResponses.id, id),
+      eq(autoResponses.organizationId, tenant.organizationId),
+      eq(autoResponses.userId, tenant.userId),
+    ));
   }
 
   async getContactsByTenant(tenant: TenantFilter, filters?: { limit?: number; offset?: number }): Promise<Contact[]> {
@@ -828,6 +836,11 @@ export class DatabaseStorage implements IStorage {
       }).returning();
       return result[0];
     }
+  }
+
+  async isLeadForTenant(tenant: TenantFilter, phoneNumber: string): Promise<boolean> {
+    const contact = await this.getContactByTenant(tenant, phoneNumber);
+    return contact?.isLead === 'true';
   }
 
   async getContactByTenant(tenant: TenantFilter, phoneNumber: string): Promise<Contact | undefined> {

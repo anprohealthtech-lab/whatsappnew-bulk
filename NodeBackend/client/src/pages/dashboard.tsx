@@ -25,7 +25,6 @@ import { ReportForm } from "@/components/dashboard/ReportForm";
 import { MessageHistory } from "@/components/dashboard/MessageHistory";
 import { AutoResponsePanel } from "@/components/dashboard/AutoResponsePanel";
 import { LeadsPanel } from "@/components/dashboard/LeadsPanel";
-import { HRAdminsPanel } from "@/components/dashboard/HRAdminsPanel";
 import { WhatsAppSessionPanel } from "@/components/dashboard/WhatsAppSessionPanel";
 import { CampaignTemplatesPanel } from "@/components/dashboard/CampaignTemplatesPanel";
 import { ScheduleCampaignPanel } from "@/components/dashboard/ScheduleCampaignPanel";
@@ -465,9 +464,6 @@ export default function Dashboard() {
 
           {/* Leads Section */}
           {activeSection === "leads" && <LeadsPanel />}
-
-          {/* HR Admins Section */}
-          {activeSection === "hr-admins" && <HRAdminsPanel />}
 
           {/* WhatsApp Sessions Section */}
           {activeSection === "sessions" && <WhatsAppSessionPanel />}

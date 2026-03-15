@@ -5,7 +5,6 @@ import {
     Megaphone,
     User,
     Users,
-    Building2,
     Smartphone,
     FileText,
     Clock,
@@ -36,7 +35,6 @@ export function Sidebar({ activeSection, setActiveSection, setLocation }: Sideba
         { id: "history", label: "Message History", icon: History, action: () => setActiveSection("history") },
         { id: "auto-responses", label: "Auto-Responses", icon: MessageSquare, action: () => setActiveSection("auto-responses") },
         { id: "leads", label: "Leads", icon: Users, action: () => setActiveSection("leads") },
-        { id: "hr-admins", label: "HR / Tasks", icon: Building2, action: () => setActiveSection("hr-admins") },
         { id: "rag-settings", label: "AI Chatbot", icon: Bot, action: () => setActiveSection("rag-settings") },
         { id: "knowledge-base", label: "Knowledge Base", icon: Database, action: () => setActiveSection("knowledge-base") },
         ...(user?.role === 'super_admin' ? [

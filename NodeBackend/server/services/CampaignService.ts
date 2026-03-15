@@ -430,7 +430,7 @@ export class CampaignService {
 
       try {
         // Check if number is blocked
-        const isBlocked = await storage.isNumberBlocked(contact.phone);
+        const isBlocked = await storage.isNumberBlockedForTenant(normalizedTenant, contact.phone);
         if (isBlocked) {
           log(`  ⏭️  Skipping blocked number: ${contact.phone}`);
           failed++;

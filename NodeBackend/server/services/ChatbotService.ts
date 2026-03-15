@@ -154,7 +154,7 @@ Regards,
 const lastReplyTimestamps = new Map<string, number>();
 
 // Pending greetings that failed due to WhatsApp being disconnected
-const pendingGreetings = new Map<string, { keyword: string; replyToJid?: string; timestamp: number }>();
+const pendingGreetings = new Map<string, { phoneNumber: string; keyword: string; replyToJid?: string; timestamp: number }>();
 
 export class ChatbotService {
   private tenantContext?: { organizationId: string; userId: string };
@@ -193,6 +193,51 @@ export class ChatbotService {
     }
   }
 
+  private requireTenantContext(): { organizationId: string; userId: string } {
+    if (!this.tenantContext) {
+      throw new Error('Tenant context is required for chatbot operations');
+    }
+    return this.tenantContext;
+  }
+
+  private getScopedPhoneKey(phoneNumber: string): string {
+    return this.tenantContext
+      ? `${this.tenantContext.organizationId}:${this.tenantContext.userId}:${phoneNumber}`
+      : phoneNumber;
+  }
+
+  private getMessageTenantFields() {
+    return this.tenantContext
+      ? {
+          organizationId: this.tenantContext.organizationId,
+          userId: this.tenantContext.userId,
+        }
+      : {};
+  }
+
+  private async getEffectiveChatbotConfig(): Promise<ChatbotConfig | null> {
+    const userRagConfig = await this.getUserRagConfig();
+    if (!userRagConfig || userRagConfig.isActive !== 'true') {
+      return null;
+    }
+
+    return {
+      id: userRagConfig.id,
+      agentName: userRagConfig.agentName,
+      triggerKeywords: userRagConfig.triggerKeywords || [],
+      ragBaseUrl: userRagConfig.ragBaseUrl,
+      ragAccessKey: userRagConfig.ragAccessKey,
+      systemPrompt: userRagConfig.systemPrompt || DEFAULT_SYSTEM_PROMPT,
+      greetingMessage: userRagConfig.greetingMessage || DEFAULT_GREETING,
+      contextMessageCount: userRagConfig.contextMessageCount ?? 5,
+      replyCooldownSeconds: userRagConfig.replyCooldownSeconds ?? 8,
+      typingDelayMs: userRagConfig.typingDelayMs ?? 2000,
+      isActive: userRagConfig.isActive,
+      createdAt: userRagConfig.createdAt,
+      updatedAt: userRagConfig.updatedAt,
+    };
+  }
+
   /**
    * Retry greetings that failed because WhatsApp was disconnected
    */
@@ -209,7 +254,8 @@ export class ChatbotService {
     // Wait 5 seconds for connection to stabilize
     await new Promise(resolve => setTimeout(resolve, 5000));
 
-    for (const [phoneNumber, info] of Array.from(toRetry.entries())) {
+    for (const [_phoneKey, info] of Array.from(toRetry.entries())) {
+      const phoneNumber = info.phoneNumber;
       // Skip if too old (> 1 hour)
       if (Date.now() - info.timestamp > 60 * 60 * 1000) {
         log(`⏭️ Skipping stale pending greeting for ${phoneNumber} (${Math.round((Date.now() - info.timestamp) / 60000)}min old)`);
@@ -218,7 +264,7 @@ export class ChatbotService {
 
       try {
         log(`🔄 Retrying greeting for ${phoneNumber}`);
-        const config = await this.storage.getChatbotConfig();
+        const config = await this.getEffectiveChatbotConfig();
         const greetingRaw = (config as any)?.greetingMessage || DEFAULT_GREETING;
         const greetingParts = this.parseGreetingItems(greetingRaw);
 
@@ -237,13 +283,14 @@ export class ChatbotService {
           } catch (sendError: any) {
             log(`⚠️ Retry failed for ${phoneNumber} part ${i + 1}: ${this.errorMessage(sendError)}`);
             if (this.errorMessage(sendError).includes('not connected')) {
-              pendingGreetings.set(phoneNumber, info);
+              pendingGreetings.set(this.getScopedPhoneKey(phoneNumber), info);
               break;
             }
             continue;
           }
 
           await this.storage.createMessage({
+            ...this.getMessageTenantFields(),
             phoneNumber,
             content: (part.kind === 'audio' || part.kind === 'audio_url') ? `[Voice Note] ${part.value}` : part.value,
             type: (part.kind === 'audio' || part.kind === 'audio_url') ? "audio" : "text",
@@ -269,17 +316,13 @@ export class ChatbotService {
    * Detect if message text contains any configured trigger keyword (case-insensitive word match)
    */
   async detectLeadTrigger(messageText: string): Promise<string | null> {
-    const config = await this.storage.getChatbotConfig();
+    const config = await this.getEffectiveChatbotConfig();
 
     if (!config || config.isActive !== "true") {
       return null;
     }
 
-    // Per-user keywords override global keywords if configured
-    const userRagConfig = await this.getUserRagConfig();
-    const userKeywords = (userRagConfig?.triggerKeywords as string[] | null);
-    const globalKeywords = (config.triggerKeywords as string[]) || [];
-    const keywords = (userKeywords && userKeywords.length > 0) ? userKeywords : globalKeywords;
+    const keywords = (config.triggerKeywords as string[]) || [];
     const fallbackKeywords = [
       'Hello! Can I get more info on this?',
     ];
@@ -311,13 +354,14 @@ export class ChatbotService {
    */
   async flagAsLead(phoneNumber: string, keyword: string, name?: string, replyToJid?: string): Promise<Contact> {
     const log = (msg: string) => console.log(`[ChatbotService] ${msg}`);
+    const tenant = this.requireTenantContext();
 
     log(`Flagging ${phoneNumber} as lead (trigger: "${keyword}")`);
 
-    const contact = await this.storage.flagAsLead(phoneNumber, keyword, name);
+    const contact = await this.storage.flagAsLeadForTenant(tenant, phoneNumber, keyword, name);
 
     // Initialize conversation state
-    await this.storage.updateContact(phoneNumber, {
+    await this.storage.updateContactByTenant(tenant, phoneNumber, {
       conversationState: { ...DEFAULT_CONVERSATION_STATE, messageCount: 1 },
     });
 
@@ -326,17 +370,15 @@ export class ChatbotService {
     // Send initial greeting message(s)
     // Supports multiple messages separated by ===NEXT_MESSAGE===
     try {
-      const config = await this.storage.getChatbotConfig();
-      // Per-user greeting overrides global greeting
-      const userRagConfig = await this.getUserRagConfig();
-      const greetingRaw = userRagConfig?.greetingMessage || (config as any)?.greetingMessage || DEFAULT_GREETING;
+      const config = await this.getEffectiveChatbotConfig();
+      const greetingRaw = (config as any)?.greetingMessage || DEFAULT_GREETING;
       const greetingParts = this.parseGreetingItems(greetingRaw);
 
       // Check WhatsApp connection before attempting to send
       if (!this.whatsappService?.status?.isConnected) {
         log(`⚠️ WhatsApp not connected — queueing greeting for ${phoneNumber} to retry later`);
         // Store pending greeting so it can be retried
-        pendingGreetings.set(phoneNumber, { keyword, replyToJid, timestamp: Date.now() });
+        pendingGreetings.set(this.getScopedPhoneKey(phoneNumber), { phoneNumber, keyword, replyToJid, timestamp: Date.now() });
         return contact;
       }
 
@@ -368,7 +410,7 @@ export class ChatbotService {
           // If WhatsApp disconnected mid-greeting, stop trying and queue for retry
           if (this.errorMessage(sendError).includes('not connected')) {
             log(`⏸️ WhatsApp disconnected mid-greeting — queueing remaining parts for ${phoneNumber}`);
-            pendingGreetings.set(phoneNumber, { keyword, replyToJid, timestamp: Date.now() });
+            pendingGreetings.set(this.getScopedPhoneKey(phoneNumber), { phoneNumber, keyword, replyToJid, timestamp: Date.now() });
             break;
           }
           continue;
@@ -376,6 +418,7 @@ export class ChatbotService {
 
         // Store each greeting item in DB only if sent successfully
         await this.storage.createMessage({
+          ...this.getMessageTenantFields(),
           phoneNumber,
           content: (part.kind === 'audio' || part.kind === 'audio_url') ? `[Voice Note] ${part.value}` : part.value,
           type: (part.kind === 'audio' || part.kind === 'audio_url') ? "audio" : "text",
@@ -392,7 +435,7 @@ export class ChatbotService {
 
       // Record reply timestamp for cooldown
       if (sentCount > 0) {
-        lastReplyTimestamps.set(phoneNumber, Date.now());
+        lastReplyTimestamps.set(this.getScopedPhoneKey(phoneNumber), Date.now());
       }
 
       if (failedCount > 0) {
@@ -411,14 +454,14 @@ export class ChatbotService {
    * Check if a phone number is already a lead
    */
   async isLead(phoneNumber: string): Promise<boolean> {
-    return await this.storage.isLead(phoneNumber);
+    return await this.storage.isLeadForTenant(this.requireTenantContext(), phoneNumber);
   }
 
   /**
    * Check if reply cooldown has passed for this phone number
    */
   isOnCooldown(phoneNumber: string, cooldownSeconds: number): boolean {
-    const lastReply = lastReplyTimestamps.get(phoneNumber);
+    const lastReply = lastReplyTimestamps.get(this.getScopedPhoneKey(phoneNumber));
     if (!lastReply) return false;
 
     const elapsed = (Date.now() - lastReply) / 1000;
@@ -430,7 +473,7 @@ export class ChatbotService {
    * Returns messages ordered chronologically (oldest first)
    */
   async getConversationHistory(phoneNumber: string, limit: number = 5): Promise<Message[]> {
-    const messages = await this.storage.getConversationHistory(phoneNumber, limit);
+    const messages = await this.storage.getConversationHistoryByTenant(this.requireTenantContext(), phoneNumber, limit);
 
     // Reverse to get chronological order (oldest first)
     return messages.reverse();
@@ -440,7 +483,7 @@ export class ChatbotService {
    * Get or initialize conversation state for a contact
    */
   async getConversationState(phoneNumber: string): Promise<ConversationState> {
-    const contact = await this.storage.getContact(phoneNumber);
+    const contact = await this.storage.getContactByTenant(this.requireTenantContext(), phoneNumber);
     if (contact?.conversationState && typeof contact.conversationState === 'object') {
       return { ...DEFAULT_CONVERSATION_STATE, ...(contact.conversationState as any) };
     }
@@ -453,7 +496,7 @@ export class ChatbotService {
   async updateConversationState(phoneNumber: string, updates: Partial<ConversationState>): Promise<void> {
     const current = await this.getConversationState(phoneNumber);
     const newState = { ...current, ...updates };
-    await this.storage.updateContact(phoneNumber, {
+    await this.storage.updateContactByTenant(this.requireTenantContext(), phoneNumber, {
       conversationState: newState,
     });
   }
@@ -678,21 +721,20 @@ export class ChatbotService {
       log(`Processing lead message from ${phoneNumber}`);
 
       // Get chatbot config
-      const config = await this.storage.getChatbotConfig();
+      const config = await this.getEffectiveChatbotConfig();
 
       if (!config || config.isActive !== "true") {
         log(`⚠️ Chatbot not configured or inactive`);
         return;
       }
 
-      // Per-user overrides for cooldown and typing delay
       const userRagConfig = await this.getUserRagConfig();
-      const cooldownSeconds = userRagConfig?.replyCooldownSeconds ?? (config as any).replyCooldownSeconds ?? 8;
-      const typingDelayMs = userRagConfig?.typingDelayMs ?? (config as any).typingDelayMs ?? 2000;
+      const cooldownSeconds = (config as any).replyCooldownSeconds ?? 8;
+      const typingDelayMs = (config as any).typingDelayMs ?? 2000;
 
       // Check reply cooldown
       if (this.isOnCooldown(phoneNumber, cooldownSeconds)) {
-        const lastReply = lastReplyTimestamps.get(phoneNumber) || 0;
+        const lastReply = lastReplyTimestamps.get(this.getScopedPhoneKey(phoneNumber)) || 0;
         const remaining = cooldownSeconds - ((Date.now() - lastReply) / 1000);
         log(`⏳ Cooldown active for ${phoneNumber} (${remaining.toFixed(1)}s remaining) — skipping reply`);
         return;
@@ -734,13 +776,12 @@ export class ChatbotService {
       });
 
       // Get conversation history
-      const limit = userRagConfig?.contextMessageCount ?? config.contextMessageCount ?? 5;
+      const limit = config.contextMessageCount ?? 5;
       const history = await this.getConversationHistory(phoneNumber, limit);
       const recentHistory = await this.getConversationHistory(phoneNumber, 40);
       const voiceNoteRequested = this.isVoiceNoteRequested(effectiveMessageText);
       const voiceNoteAlreadySent = this.hasSentVoiceNoteEarlier(recentHistory);
-      const userGreeting = userRagConfig?.greetingMessage;
-      const greetingItems = this.parseGreetingItems(userGreeting || (config as any)?.greetingMessage || DEFAULT_GREETING);
+      const greetingItems = this.parseGreetingItems((config as any)?.greetingMessage || DEFAULT_GREETING);
       const hasConfiguredVoiceGreeting = greetingItems.some(item => item.kind === 'audio' || item.kind === 'audio_url');
 
       log(`Retrieved ${history.length} messages from conversation history`);
@@ -790,7 +831,7 @@ export class ChatbotService {
         }
       }
 
-      const effectiveSystemPrompt = userRagConfig?.systemPrompt || systemPrompt;
+      const effectiveSystemPrompt = (config as any).systemPrompt || systemPrompt;
 
       let botResponse: string;
 
@@ -828,7 +869,7 @@ export class ChatbotService {
       await this.whatsappService.sendTextMessage(replyToJid || phoneNumber, textMessage);
 
       // Record reply timestamp for cooldown
-      lastReplyTimestamps.set(phoneNumber, Date.now());
+      lastReplyTimestamps.set(this.getScopedPhoneKey(phoneNumber), Date.now());
 
       // Update conversation state with reply time
       await this.updateConversationState(phoneNumber, {
@@ -837,6 +878,7 @@ export class ChatbotService {
 
       // Store the outgoing message in DB
       await this.storage.createMessage({
+        ...this.getMessageTenantFields(),
         phoneNumber,
         content: textMessage,
         type: "text",
@@ -863,7 +905,7 @@ export class ChatbotService {
       log(`✅ Auto-reply sent successfully`);
 
       // Update contact's last message time
-      await this.storage.updateContact(phoneNumber, {
+      await this.storage.updateContactByTenant(this.requireTenantContext(), phoneNumber, {
         lastMessageAt: new Date(),
       });
 
@@ -933,6 +975,7 @@ export class ChatbotService {
 
       // Store the image message in DB
       await this.storage.createMessage({
+        ...this.getMessageTenantFields(),
         phoneNumber,
         content: 'Image attachment',
         type: "image",
@@ -1095,6 +1138,7 @@ export class ChatbotService {
       }
 
       await this.storage.createMessage({
+        ...this.getMessageTenantFields(),
         phoneNumber,
         content: `[Voice Note] ${item.value}`,
         type: "audio",

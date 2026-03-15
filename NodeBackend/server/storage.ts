@@ -1,5 +1,10 @@
-import { type User, type InsertUser, type Message, type InsertMessage, type SystemLog, type InsertSystemLog, type BlockedNumber, type AutoResponse, type Contact, type ChatbotConfig, type HRAdmin, type HRChatbotConfig } from "@shared/schema";
+import { type User, type InsertUser, type Message, type InsertMessage, type SystemLog, type InsertSystemLog, type BlockedNumber, type AutoResponse, type Contact, type HRAdmin, type HRChatbotConfig } from "@shared/schema";
 import { randomUUID } from "crypto";
+
+export interface TenantFilter {
+  organizationId: string;
+  userId: string;
+}
 
 export interface IStorage {
   // User methods
@@ -25,6 +30,11 @@ export interface IStorage {
   isNumberBlocked(phoneNumber: string): Promise<boolean>;
   getBlockedNumbers(): Promise<BlockedNumber[]>;
   getBlockedNumber(phoneNumber: string): Promise<BlockedNumber | undefined>;
+  addToBlocklistForTenant(tenant: TenantFilter, phoneNumber: string, reason?: string): Promise<BlockedNumber>;
+  removeFromBlocklistForTenant(tenant: TenantFilter, phoneNumber: string): Promise<void>;
+  isNumberBlockedForTenant(tenant: TenantFilter, phoneNumber: string): Promise<boolean>;
+  getBlockedNumbersByTenant(tenant: TenantFilter): Promise<BlockedNumber[]>;
+  getBlockedNumberByTenant(tenant: TenantFilter, phoneNumber: string): Promise<BlockedNumber | undefined>;
 
   // Auto-response methods
   getAutoResponses(): Promise<AutoResponse[]>;
@@ -32,6 +42,11 @@ export interface IStorage {
   createAutoResponse(data: { keyword: string; response: string; isActive?: boolean }): Promise<AutoResponse>;
   updateAutoResponse(id: string, data: { keyword?: string; response?: string; isActive?: boolean }): Promise<AutoResponse | undefined>;
   deleteAutoResponse(id: string): Promise<void>;
+  getAutoResponsesByTenant(tenant: TenantFilter): Promise<AutoResponse[]>;
+  getAllAutoResponsesByTenant(tenant: TenantFilter): Promise<AutoResponse[]>;
+  createAutoResponseForTenant(tenant: TenantFilter, data: { keyword: string; response: string; isActive?: boolean }): Promise<AutoResponse>;
+  updateAutoResponseForTenant(tenant: TenantFilter, id: string, data: { keyword?: string; response?: string; isActive?: boolean }): Promise<AutoResponse | undefined>;
+  deleteAutoResponseForTenant(tenant: TenantFilter, id: string): Promise<void>;
 
   // Contact/Lead methods
   flagAsLead(phoneNumber: string, keyword: string, name?: string): Promise<Contact>;
@@ -40,10 +55,12 @@ export interface IStorage {
   getContact(phoneNumber: string): Promise<Contact | undefined>;
   updateContact(phoneNumber: string, updates: Partial<Contact>): Promise<Contact | undefined>;
   getConversationHistory(phoneNumber: string, limit?: number): Promise<Message[]>;
-
-  // Chatbot config methods (for Lead chatbot)
-  getChatbotConfig(): Promise<ChatbotConfig | undefined>;
-  updateChatbotConfig(config: Partial<ChatbotConfig> & { agentName: string }): Promise<ChatbotConfig>;
+  flagAsLeadForTenant(tenant: TenantFilter, phoneNumber: string, keyword: string, name?: string): Promise<Contact>;
+  isLeadForTenant(tenant: TenantFilter, phoneNumber: string): Promise<boolean>;
+  getLeadsByTenant(tenant: TenantFilter, filters?: { limit?: number; offset?: number }): Promise<Contact[]>;
+  getContactByTenant(tenant: TenantFilter, phoneNumber: string): Promise<Contact | undefined>;
+  updateContactByTenant(tenant: TenantFilter, phoneNumber: string, updates: Partial<Contact>): Promise<Contact | undefined>;
+  getConversationHistoryByTenant(tenant: TenantFilter, phoneNumber: string, limit?: number): Promise<Message[]>;
 
   // HR Admin methods
   getHRAdmin(phoneNumber: string): Promise<HRAdmin | undefined>;
@@ -211,6 +228,26 @@ export class MemStorage implements IStorage {
     return this.blockedNumbers.get(cleanedNumber);
   }
 
+  async addToBlocklistForTenant(_tenant: TenantFilter, phoneNumber: string, reason: string = 'user_requested'): Promise<BlockedNumber> {
+    return this.addToBlocklist(phoneNumber, reason);
+  }
+
+  async removeFromBlocklistForTenant(_tenant: TenantFilter, phoneNumber: string): Promise<void> {
+    await this.removeFromBlocklist(phoneNumber);
+  }
+
+  async isNumberBlockedForTenant(_tenant: TenantFilter, phoneNumber: string): Promise<boolean> {
+    return this.isNumberBlocked(phoneNumber);
+  }
+
+  async getBlockedNumbersByTenant(_tenant: TenantFilter): Promise<BlockedNumber[]> {
+    return this.getBlockedNumbers();
+  }
+
+  async getBlockedNumberByTenant(_tenant: TenantFilter, phoneNumber: string): Promise<BlockedNumber | undefined> {
+    return this.getBlockedNumber(phoneNumber);
+  }
+
   // Auto-response methods (MemStorage implementation)
   private autoResponses: Map<string, AutoResponse> = new Map();
 
@@ -257,6 +294,26 @@ export class MemStorage implements IStorage {
 
   async deleteAutoResponse(id: string): Promise<void> {
     this.autoResponses.delete(id);
+  }
+
+  async getAutoResponsesByTenant(_tenant: TenantFilter): Promise<AutoResponse[]> {
+    return this.getAutoResponses();
+  }
+
+  async getAllAutoResponsesByTenant(_tenant: TenantFilter): Promise<AutoResponse[]> {
+    return this.getAllAutoResponses();
+  }
+
+  async createAutoResponseForTenant(_tenant: TenantFilter, data: { keyword: string; response: string; isActive?: boolean }): Promise<AutoResponse> {
+    return this.createAutoResponse(data);
+  }
+
+  async updateAutoResponseForTenant(_tenant: TenantFilter, id: string, data: { keyword?: string; response?: string; isActive?: boolean }): Promise<AutoResponse | undefined> {
+    return this.updateAutoResponse(id, data);
+  }
+
+  async deleteAutoResponseForTenant(_tenant: TenantFilter, id: string): Promise<void> {
+    await this.deleteAutoResponse(id);
   }
 
   // Contact/Lead methods (MemStorage stub implementations)
@@ -341,36 +398,28 @@ export class MemStorage implements IStorage {
     return messages.filter(msg => msg.type === 'incoming' || msg.type === 'text');
   }
 
-  // Chatbot config methods (MemStorage stub implementations)
-  private chatbotConfig: ChatbotConfig | undefined;
-
-  async getChatbotConfig(): Promise<ChatbotConfig | undefined> {
-    return this.chatbotConfig;
+  async flagAsLeadForTenant(_tenant: TenantFilter, phoneNumber: string, keyword: string, name?: string): Promise<Contact> {
+    return this.flagAsLead(phoneNumber, keyword, name);
   }
 
-  async updateChatbotConfig(config: Partial<ChatbotConfig> & { agentName: string }): Promise<ChatbotConfig> {
-    if (this.chatbotConfig) {
-      this.chatbotConfig = {
-        ...this.chatbotConfig,
-        ...config,
-        isActive: config.isActive !== undefined ? (config.isActive ? 'true' : 'false') : this.chatbotConfig.isActive,
-        updatedAt: new Date(),
-      };
-    } else {
-      const id = randomUUID();
-      this.chatbotConfig = {
-        id,
-        agentName: config.agentName,
-        triggerKeywords: config.triggerKeywords || [],
-        ragBaseUrl: config.ragBaseUrl || '',
-        ragAccessKey: config.ragAccessKey || '',
-        contextMessageCount: config.contextMessageCount || 3,
-        isActive: config.isActive !== undefined ? (config.isActive ? 'true' : 'false') : 'true',
-        createdAt: new Date(),
-        updatedAt: new Date(),
-      };
-    }
-    return this.chatbotConfig;
+  async isLeadForTenant(_tenant: TenantFilter, phoneNumber: string): Promise<boolean> {
+    return this.isLead(phoneNumber);
+  }
+
+  async getLeadsByTenant(_tenant: TenantFilter, filters?: { limit?: number; offset?: number }): Promise<Contact[]> {
+    return this.getLeads(filters);
+  }
+
+  async getContactByTenant(_tenant: TenantFilter, phoneNumber: string): Promise<Contact | undefined> {
+    return this.getContact(phoneNumber);
+  }
+
+  async updateContactByTenant(_tenant: TenantFilter, phoneNumber: string, updates: Partial<Contact>): Promise<Contact | undefined> {
+    return this.updateContact(phoneNumber, updates);
+  }
+
+  async getConversationHistoryByTenant(_tenant: TenantFilter, phoneNumber: string, limit: number = 10): Promise<Message[]> {
+    return this.getConversationHistory(phoneNumber, limit);
   }
 
   // HR Admin methods (MemStorage stub implementations)

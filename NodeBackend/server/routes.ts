@@ -11,10 +11,9 @@ import { messageService } from "./services/MessageService";
 import { fileService } from "./services/FileService";
 import { persistentFileService } from "./services/PersistentFileService";
 import { campaignService } from "./services/CampaignService";
-import { autoResponseService } from "./services/AutoResponseService";
+import { AutoResponseService } from "./services/AutoResponseService";
 import { ChatbotService } from "./services/ChatbotService";
 import { HRChatbotService } from "./services/HRChatbotService";
-import { initializeChatbotConfig } from "./initChatbot";
 import { sendMessageSchema, sendReportSchema, createCampaignSchema, bulkSendSchema, chatbotConfigSchema, flagLeadSchema, registerHRAdminSchema, hrChatbotConfigSchema, demoSchedules, scheduleCampaignSchema, userRagAgentSchema, userRagAgents, registerSchema, loginSchema } from "@shared/schema";
 import { log } from "./utils";
 import { getDbHealth, db } from "./db";
@@ -25,7 +24,7 @@ import * as XLSX from 'xlsx';
 import { authService } from "./services/AuthService";
 import { requireAuth, optionalAuth, getTenant, requireSuperAdmin } from "./authMiddleware";
 import { sessionManager } from "./services/WhatsAppSessionManager";
-import { users } from "@shared/schema";
+import { users, messages as messagesTable } from "@shared/schema";
 
 // Configure CORS
 const corsOptions = {
@@ -76,6 +75,26 @@ function getTenantFromRequest(req: Request): TenantContext {
   const organizationId = String(req.headers['x-organization-id'] || req.query.organizationId || req.body?.organizationId || 'default_org');
   const userId = String(req.headers['x-user-id'] || req.query.userId || req.body?.userId || 'default_user');
   return { organizationId, userId };
+}
+
+function hasExplicitTenantInRequest(req: Request): boolean {
+  return Boolean(
+    req.auth ||
+    req.headers['x-organization-id'] ||
+    req.headers['x-user-id'] ||
+    req.query.organizationId ||
+    req.query.userId ||
+    req.body?.organizationId ||
+    req.body?.userId
+  );
+}
+
+async function resolveTenantForUserId(userId: string): Promise<TenantContext> {
+  const ownerUser = await db.select().from(users).where(eq(users.id, userId)).limit(1);
+  if (ownerUser[0]) {
+    return { organizationId: ownerUser[0].organizationId, userId: ownerUser[0].id };
+  }
+  return { organizationId: 'default_org', userId };
 }
 
 function firstNonEmpty(...values: Array<unknown>): string | undefined {
@@ -482,8 +501,6 @@ export async function registerRoutes(app: Express): Promise<Server> {
   }
 
   // Initialize chatbot configuration
-  await initializeChatbotConfig();
-
   // Create HTTP server
   const httpServer = createServer(app);
 
@@ -557,7 +574,8 @@ export async function registerRoutes(app: Express): Promise<Server> {
     // Handle STOP_MESSAGES button
     if (data.buttonId === 'STOP_MESSAGES') {
       try {
-        await storage.addToBlocklist(data.phoneNumber, 'user_requested');
+        const tenant = await resolveTenantForUserId(String(userId));
+        await storage.addToBlocklistForTenant(tenant, data.phoneNumber, 'user_requested');
         console.log(`✅ Added ${data.phoneNumber} to blocklist`);
 
         // Send confirmation using the session that received the event
@@ -580,14 +598,18 @@ export async function registerRoutes(app: Express): Promise<Server> {
   const messageDebounceMap = new Map<string, NodeJS.Timeout>();
   const messageBatchMap = new Map<string, { messages: string[]; latestData: any; userId: string; sessionName: string }>();
   const DEBOUNCE_DELAY = 5000; // 5 seconds - wait for user to finish typing
+  const getIncomingMessageKey = (userId: string, sessionName: string, phoneNumber: string) => `${userId}:${sessionName}:${phoneNumber}`;
 
   // Handle incoming messages from any session
   const handleIncomingSessionMessage = async (userId: string, sessionName: string, data: any) => {
     console.log(`📥 Incoming message received (user ${userId}/${sessionName}):`, data);
+    const tenant = await resolveTenantForUserId(userId);
 
     // Store each incoming message immediately in DB (don't lose any)
     try {
       await withRetry(() => storage.createMessage({
+        organizationId: tenant.organizationId,
+        userId: tenant.userId,
         phoneNumber: data.phoneNumber,
         content: data.content,
         type: 'incoming',
@@ -601,13 +623,15 @@ export async function registerRoutes(app: Express): Promise<Server> {
       console.error('❌ Failed to store incoming message:', err);
     }
 
-    // Accumulate messages for this phone number
-    const existing = messageBatchMap.get(data.phoneNumber);
+    const incomingKey = getIncomingMessageKey(userId, sessionName, data.phoneNumber);
+
+    // Accumulate messages for this phone number within the owning user/session
+    const existing = messageBatchMap.get(incomingKey);
     if (existing) {
       existing.messages.push(data.content);
       existing.latestData = data;
     } else {
-      messageBatchMap.set(data.phoneNumber, {
+      messageBatchMap.set(incomingKey, {
         messages: [data.content],
         latestData: data,
         userId,
@@ -616,17 +640,17 @@ export async function registerRoutes(app: Express): Promise<Server> {
     }
 
     // Clear existing timeout for this phone number if any
-    const existingTimeout = messageDebounceMap.get(data.phoneNumber);
+    const existingTimeout = messageDebounceMap.get(incomingKey);
     if (existingTimeout) {
       clearTimeout(existingTimeout);
-      console.log(`⏱️ Debouncing message from ${data.phoneNumber} (${messageBatchMap.get(data.phoneNumber)?.messages.length} msgs batched)`);
+      console.log(`⏱️ Debouncing message from ${data.phoneNumber} (${messageBatchMap.get(incomingKey)?.messages.length} msgs batched)`);
     }
 
     // Set new timeout - process all batched messages after debounce window
     const timeoutId = setTimeout(async () => {
-      messageDebounceMap.delete(data.phoneNumber);
-      const batch = messageBatchMap.get(data.phoneNumber);
-      messageBatchMap.delete(data.phoneNumber);
+      messageDebounceMap.delete(incomingKey);
+      const batch = messageBatchMap.get(incomingKey);
+      messageBatchMap.delete(incomingKey);
 
       if (batch) {
         // Combine all batched messages into one for bot processing
@@ -644,7 +668,7 @@ export async function registerRoutes(app: Express): Promise<Server> {
       }
     }, DEBOUNCE_DELAY);
 
-    messageDebounceMap.set(data.phoneNumber, timeoutId);
+    messageDebounceMap.set(incomingKey, timeoutId);
   };
 
   sessionManager.onSessionEvent('incoming-message', handleIncomingSessionMessage);
@@ -663,7 +687,10 @@ export async function registerRoutes(app: Express): Promise<Server> {
     try {
       // Save incoming message to database (skip if already stored by debounce handler)
       if (!data._alreadyStored) {
+        const tenant = await resolveTenantForUserId(ownerUserId);
         await withRetry(() => storage.createMessage({
+          organizationId: tenant.organizationId,
+          userId: tenant.userId,
           phoneNumber: data.phoneNumber,
           content: data.content,
           type: 'incoming',
@@ -671,8 +698,10 @@ export async function registerRoutes(app: Express): Promise<Server> {
         }));
       }
 
+      const scopedTenant = await resolveTenantForUserId(ownerUserId);
+
       // Check if number is blocked
-      const isBlocked = await withRetry(() => storage.isNumberBlocked(data.phoneNumber));
+      const isBlocked = await withRetry(() => storage.isNumberBlockedForTenant(scopedTenant, data.phoneNumber));
       if (isBlocked) {
         console.log(`⛔ Ignoring message from blocked number: ${data.phoneNumber}`);
         broadcast('incoming-message', data);
@@ -764,6 +793,7 @@ export async function registerRoutes(app: Express): Promise<Server> {
       } catch (e) {
         console.error('⚠️ Failed to resolve tenant context for incoming message:', e);
       }
+      tenantContext = tenantContext || scopedTenant;
 
       // Initialize lead chatbot service with the session that received the message
       const chatbotService = new ChatbotService(storage, waSession, tenantContext);
@@ -795,7 +825,7 @@ export async function registerRoutes(app: Express): Promise<Server> {
 
       if (isLead) {
         // Check if chatbot is active for this lead
-        const contact = await withRetry(() => storage.getContact(data.phoneNumber));
+        const contact = await withRetry(() => storage.getContactByTenant(tenantContext!, data.phoneNumber));
         console.log(`🔍 Chatbot status check for ${data.phoneNumber}: ${contact?.chatbotActive === 'false' ? 'PAUSED ⏸️' : 'ACTIVE ✅'} (value: ${contact?.chatbotActive})`);
 
         if (contact?.chatbotActive === 'false') {
@@ -819,8 +849,8 @@ export async function registerRoutes(app: Express): Promise<Server> {
         // ========================================
         // PRIORITY 3: Check auto-responses for non-leads
         // ========================================
-        // Set the WhatsApp session for auto-response service
-        autoResponseService.setWhatsAppService(waSession);
+        // Use a tenant-scoped auto-response service for this session owner
+        const autoResponseService = new AutoResponseService(storage, tenantContext!, waSession);
         const responded = await withRetry(() =>
           autoResponseService.handleIncomingMessage(
             data.phoneNumber,
@@ -1028,18 +1058,33 @@ export async function registerRoutes(app: Express): Promise<Server> {
   // Get message history
   app.get('/api/messages', requireAuth, async (req, res) => {
     try {
+      const tenant = getTenantFromRequest(req);
       const { status, phoneNumber, type, limit = '50', offset = '0', search } = req.query;
 
-      const filters: any = {
-        limit: parseInt(limit as string),
-        offset: parseInt(offset as string),
+      const conditions = [
+        eq(messagesTable.organizationId, tenant.organizationId),
+        eq(messagesTable.userId, tenant.userId),
+      ];
+      if (status && status !== 'all') conditions.push(eq(messagesTable.status, String(status)));
+      if (phoneNumber) conditions.push(eq(messagesTable.phoneNumber, String(phoneNumber)));
+      if (type) conditions.push(eq(messagesTable.type, String(type)));
+
+      const parsedLimit = parseInt(limit as string);
+      const parsedOffset = parseInt(offset as string);
+
+      const scopedMessages = await db.select().from(messagesTable)
+        .where(and(...conditions))
+        .orderBy(desc(messagesTable.createdAt))
+        .limit(parsedLimit)
+        .offset(parsedOffset);
+
+      const totalResult = await db.select({ count: drizzleSql<number>`count(*)` }).from(messagesTable)
+        .where(and(...conditions));
+
+      const result = {
+        messages: scopedMessages,
+        total: Number(totalResult[0]?.count || 0),
       };
-
-      if (status && status !== 'all') filters.status = status;
-      if (phoneNumber) filters.phoneNumber = phoneNumber;
-      if (type) filters.type = type;
-
-      const result = await messageService.getMessageHistory(filters);
 
       // Apply search filter if provided
       let { messages } = result;
@@ -1057,12 +1102,13 @@ export async function registerRoutes(app: Express): Promise<Server> {
         data: {
           messages,
           total: result.total,
-          limit: filters.limit,
-          offset: filters.offset,
+          limit: parsedLimit,
+          offset: parsedOffset,
         }
       });
     } catch (error) {
-      log(`Get messages error: ${error.message}`);
+      const errorMessage = error instanceof Error ? error.message : 'Unknown error';
+      log(`Get messages error: ${errorMessage}`);
       res.status(500).json({
         success: false,
         error: 'Failed to get message history'
@@ -2051,13 +2097,14 @@ export async function registerRoutes(app: Express): Promise<Server> {
   // Block a phone number
   app.post('/api/blocklist/add', requireAuth, async (req, res) => {
     try {
+      const tenant = getTenantFromRequest(req);
       const { phoneNumber, reason } = req.body;
 
       if (!phoneNumber) {
         return res.status(400).json({ success: false, error: 'Phone number is required' });
       }
 
-      await storage.addToBlocklist(phoneNumber, reason || 'user_requested');
+      await storage.addToBlocklistForTenant(tenant, phoneNumber, reason || 'user_requested');
 
       log(`Blocked number: ${phoneNumber}`);
       res.json({ success: true, message: 'Number blocked successfully' });
@@ -2071,13 +2118,14 @@ export async function registerRoutes(app: Express): Promise<Server> {
   // Unblock a phone number
   app.post('/api/blocklist/remove', requireAuth, async (req, res) => {
     try {
+      const tenant = getTenantFromRequest(req);
       const { phoneNumber } = req.body;
 
       if (!phoneNumber) {
         return res.status(400).json({ success: false, error: 'Phone number is required' });
       }
 
-      await storage.removeFromBlocklist(phoneNumber);
+      await storage.removeFromBlocklistForTenant(tenant, phoneNumber);
 
       log(`Unblocked number: ${phoneNumber}`);
       res.json({ success: true, message: 'Number unblocked successfully' });
@@ -2091,8 +2139,9 @@ export async function registerRoutes(app: Express): Promise<Server> {
   // Check if number is blocked
   app.get('/api/blocklist/check/:phoneNumber', requireAuth, async (req, res) => {
     try {
+      const tenant = getTenantFromRequest(req);
       const { phoneNumber } = req.params;
-      const isBlocked = await storage.isNumberBlocked(phoneNumber);
+      const isBlocked = await storage.isNumberBlockedForTenant(tenant, phoneNumber);
 
       res.json({ isBlocked });
     } catch (error) {
@@ -2105,7 +2154,8 @@ export async function registerRoutes(app: Express): Promise<Server> {
   // Get all blocked numbers
   app.get('/api/blocklist', requireAuth, async (req, res) => {
     try {
-      const blockedNumbers = await storage.getBlockedNumbers();
+      const tenant = getTenantFromRequest(req);
+      const blockedNumbers = await storage.getBlockedNumbersByTenant(tenant);
       res.json(blockedNumbers);
     } catch (error) {
       const errorMessage = error instanceof Error ? error.message : 'Unknown error';
@@ -2119,7 +2169,8 @@ export async function registerRoutes(app: Express): Promise<Server> {
   // Get all auto-responses (active only)
   app.get('/api/auto-responses', requireAuth, async (req, res) => {
     try {
-      const autoResponses = await storage.getAutoResponses();
+      const tenant = getTenantFromRequest(req);
+      const autoResponses = await storage.getAutoResponsesByTenant(tenant);
       res.json(autoResponses);
     } catch (error) {
       const errorMessage = error instanceof Error ? error.message : 'Unknown error';
@@ -2131,7 +2182,8 @@ export async function registerRoutes(app: Express): Promise<Server> {
   // Get all auto-responses (including inactive)
   app.get('/api/auto-responses/all', requireAuth, async (req, res) => {
     try {
-      const autoResponses = await withRetry(() => storage.getAllAutoResponses());
+      const tenant = getTenantFromRequest(req);
+      const autoResponses = await withRetry(() => storage.getAllAutoResponsesByTenant(tenant));
       res.json(autoResponses);
     } catch (error) {
       const errorMessage = error instanceof Error ? error.message : 'Unknown error';
@@ -2146,6 +2198,7 @@ export async function registerRoutes(app: Express): Promise<Server> {
   // Create new auto-response
   app.post('/api/auto-responses', requireAuth, async (req, res) => {
     try {
+      const tenant = getTenantFromRequest(req);
       const { keyword, response, isActive } = req.body;
 
       if (!keyword || !response) {
@@ -2155,7 +2208,7 @@ export async function registerRoutes(app: Express): Promise<Server> {
         });
       }
 
-      const autoResponse = await withRetry(() => storage.createAutoResponse({
+      const autoResponse = await withRetry(() => storage.createAutoResponseForTenant(tenant, {
         keyword,
         response,
         isActive: isActive !== false, // Default to true
@@ -2175,10 +2228,11 @@ export async function registerRoutes(app: Express): Promise<Server> {
   // Update auto-response
   app.put('/api/auto-responses/:id', requireAuth, async (req, res) => {
     try {
+      const tenant = getTenantFromRequest(req);
       const { id } = req.params;
       const { keyword, response, isActive } = req.body;
 
-      const autoResponse = await withRetry(() => storage.updateAutoResponse(id, {
+      const autoResponse = await withRetry(() => storage.updateAutoResponseForTenant(tenant, id, {
         keyword,
         response,
         isActive,
@@ -2202,8 +2256,9 @@ export async function registerRoutes(app: Express): Promise<Server> {
   // Delete auto-response
   app.delete('/api/auto-responses/:id', requireAuth, async (req, res) => {
     try {
+      const tenant = getTenantFromRequest(req);
       const { id } = req.params;
-      await withRetry(() => storage.deleteAutoResponse(id));
+      await withRetry(() => storage.deleteAutoResponseForTenant(tenant, id));
       res.json({ success: true });
     } catch (error) {
       const errorMessage = error instanceof Error ? error.message : 'Unknown error';
@@ -2215,12 +2270,17 @@ export async function registerRoutes(app: Express): Promise<Server> {
   // Get recent incoming messages
   app.get('/api/incoming-messages', requireAuth, async (req, res) => {
     try {
+      const tenant = getTenantFromRequest(req);
       const limit = parseInt(req.query.limit as string) || 50;
-      const messages = await withRetry(() => storage.getMessages({
-        type: 'incoming',
-        limit,
-      }));
-      res.json(messages);
+      const scopedMessages = await db.select().from(messagesTable)
+        .where(and(
+          eq(messagesTable.organizationId, tenant.organizationId),
+          eq(messagesTable.userId, tenant.userId),
+          eq(messagesTable.type, 'incoming'),
+        ))
+        .orderBy(desc(messagesTable.createdAt))
+        .limit(limit);
+      res.json(scopedMessages);
     } catch (error) {
       const errorMessage = error instanceof Error ? error.message : 'Unknown error';
       const errorStack = error instanceof Error ? error.stack : '';
@@ -2236,7 +2296,11 @@ export async function registerRoutes(app: Express): Promise<Server> {
   // Get chatbot configuration
   app.get('/api/chatbot/config', requireAuth, async (req, res) => {
     try {
-      const config = await withRetry(() => storage.getChatbotConfig());
+      const tenant = getTenantFromRequest(req);
+      const [config] = await db.select().from(userRagAgents).where(and(
+        eq(userRagAgents.organizationId, tenant.organizationId),
+        eq(userRagAgents.userId, tenant.userId),
+      )).orderBy(desc(userRagAgents.updatedAt)).limit(1);
 
       if (!config) {
         return res.json({
@@ -2265,6 +2329,7 @@ export async function registerRoutes(app: Express): Promise<Server> {
   // Update chatbot configuration
   app.put('/api/chatbot/config', requireAuth, async (req, res) => {
     try {
+      const tenant = getTenantFromRequest(req);
       const validation = chatbotConfigSchema.safeParse(req.body);
 
       if (!validation.success) {
@@ -2276,18 +2341,44 @@ export async function registerRoutes(app: Express): Promise<Server> {
 
       const { agentName, triggerKeywords, ragBaseUrl, ragAccessKey, systemPrompt, greetingMessage, contextMessageCount, replyCooldownSeconds, typingDelayMs, isActive } = validation.data;
 
-      const config = await withRetry(() => storage.updateChatbotConfig({
-        agentName,
-        triggerKeywords,
-        ragBaseUrl,
-        ragAccessKey,
-        systemPrompt,
-        greetingMessage,
-        contextMessageCount,
-        replyCooldownSeconds,
-        typingDelayMs,
-        isActive,
-      } as any));
+      const existing = await db.select().from(userRagAgents).where(and(
+        eq(userRagAgents.organizationId, tenant.organizationId),
+        eq(userRagAgents.userId, tenant.userId),
+      )).orderBy(desc(userRagAgents.updatedAt)).limit(1);
+
+      let config;
+      if (existing[0]) {
+        const [updated] = await db.update(userRagAgents).set({
+          agentName,
+          ragBaseUrl,
+          ragAccessKey,
+          systemPrompt: systemPrompt || null,
+          triggerKeywords: triggerKeywords || [],
+          greetingMessage: greetingMessage || null,
+          contextMessageCount: contextMessageCount ?? null,
+          replyCooldownSeconds: replyCooldownSeconds ?? null,
+          typingDelayMs: typingDelayMs ?? null,
+          isActive: typeof isActive === 'boolean' ? (isActive ? 'true' : 'false') : existing[0].isActive,
+          updatedAt: new Date(),
+        }).where(eq(userRagAgents.id, existing[0].id)).returning();
+        config = updated;
+      } else {
+        const [created] = await db.insert(userRagAgents).values({
+          organizationId: tenant.organizationId,
+          userId: tenant.userId,
+          agentName,
+          ragBaseUrl,
+          ragAccessKey,
+          systemPrompt: systemPrompt || null,
+          triggerKeywords: triggerKeywords || [],
+          greetingMessage: greetingMessage || null,
+          contextMessageCount: contextMessageCount ?? null,
+          replyCooldownSeconds: replyCooldownSeconds ?? null,
+          typingDelayMs: typingDelayMs ?? null,
+          isActive: typeof isActive === 'boolean' ? (isActive ? 'true' : 'false') : 'true',
+        }).returning();
+        config = created;
+      }
 
       // Mask the access key in response
       const maskedConfig = {
@@ -2309,7 +2400,11 @@ export async function registerRoutes(app: Express): Promise<Server> {
   // Test chatbot RAG endpoint connection
   app.post('/api/chatbot/test', requireAuth, async (req, res) => {
     try {
-      const config = await withRetry(() => storage.getChatbotConfig());
+      const tenant = getTenantFromRequest(req);
+      const [config] = await db.select().from(userRagAgents).where(and(
+        eq(userRagAgents.organizationId, tenant.organizationId),
+        eq(userRagAgents.userId, tenant.userId),
+      )).orderBy(desc(userRagAgents.updatedAt)).limit(1);
 
       if (!config) {
         return res.status(400).json({
@@ -2319,8 +2414,8 @@ export async function registerRoutes(app: Express): Promise<Server> {
       }
 
       const waSession = await getUserWASession(req);
-      const chatbotService = new ChatbotService(storage, waSession);
-      const result = await chatbotService.testConnection(config);
+      const chatbotService = new ChatbotService(storage, waSession, tenant);
+      const result = await chatbotService.testConnection(config as any);
 
       res.json(result);
     } catch (error) {
@@ -2336,6 +2431,13 @@ export async function registerRoutes(app: Express): Promise<Server> {
   // Inbound webhook: create/update lead from external source (forms, automations, CRMs)
   app.post('/api/webhooks/leads', async (req, res) => {
     try {
+      if (!hasExplicitTenantInRequest(req)) {
+        return res.status(400).json({
+          success: false,
+          error: 'organizationId and userId are required for webhook lead routing',
+        });
+      }
+
       const expectedSecret = process.env.LEAD_WEBHOOK_SECRET;
       if (expectedSecret) {
         const providedSecret = firstNonEmpty(
@@ -2364,7 +2466,8 @@ export async function registerRoutes(app: Express): Promise<Server> {
       const phoneInfo = normalizeWebhookLeadPhone(parsedLead.phoneRaw);
       const normalizedPhone = phoneInfo.normalizedPhone;
 
-      const existingContact = await withRetry(() => storage.getContact(normalizedPhone));
+      const tenant = getTenantFromRequest(req);
+      const existingContact = await withRetry(() => storage.getContactByTenant(tenant, normalizedPhone));
       const sourceLabel = parsedLead.source || 'Webhook Lead';
       const triggerKeyword = `Webhook: ${sourceLabel}`;
 
@@ -2382,6 +2485,8 @@ export async function registerRoutes(app: Express): Promise<Server> {
             ].filter(Boolean).join('\n'),
             type: 'incoming',
             status: 'received',
+            organizationId: tenant.organizationId,
+            userId: tenant.userId,
             metadata: {
               webhook_lead: true,
               duplicate_lead_update: true,
@@ -2401,11 +2506,11 @@ export async function registerRoutes(app: Express): Promise<Server> {
         });
       }
 
-      const connectedSession = sessionManager.getAnyConnectedSession();
+      const connectedSession = sessionManager.getLoadedSession(tenant.userId, 'default') || await sessionManager.getFirstConnectedSession(tenant.userId);
       if (!connectedSession) {
         return res.status(503).json({ success: false, error: 'No connected WhatsApp session available to send greeting' });
       }
-      const chatbotService = new ChatbotService(storage, connectedSession.service);
+      const chatbotService = new ChatbotService(storage, connectedSession, tenant);
       const contact = await withRetry(() => chatbotService.flagAsLead(
         normalizedPhone,
         triggerKeyword,
@@ -2413,6 +2518,8 @@ export async function registerRoutes(app: Express): Promise<Server> {
       ));
 
       await withRetry(() => storage.createMessage({
+        organizationId: tenant.organizationId,
+        userId: tenant.userId,
         phoneNumber: normalizedPhone,
         content: [
           `New Lead Generated`,
@@ -2511,7 +2618,8 @@ export async function registerRoutes(app: Express): Promise<Server> {
 
       // Create chatbot service instance
       const waSession = await getUserWASession(req);
-      const chatbotService = new ChatbotService(storage, waSession);
+      const tenant = getTenantFromRequest(req);
+      const chatbotService = new ChatbotService(storage, waSession, tenant);
 
       // Use chatbot service to flag lead (sends greeting message automatically)
       const contact = await withRetry(() => chatbotService.flagAsLead(
@@ -2596,13 +2704,18 @@ export async function registerRoutes(app: Express): Promise<Server> {
         return res.status(401).json({ success: false, error: 'Invalid API key' });
       }
 
+      if (!hasExplicitTenantInRequest(req)) {
+        return res.status(400).json({ success: false, error: 'organizationId and userId are required' });
+      }
+
       const { phoneNumber, active } = req.body;
+      const tenant = getTenantFromRequest(req);
       if (!phoneNumber) {
         return res.status(400).json({ success: false, error: 'phoneNumber is required' });
       }
 
       const newState = active === true ? 'true' : 'false';
-      await withRetry(() => storage.updateContact(phoneNumber, {
+      await withRetry(() => storage.updateContactByTenant(tenant, phoneNumber, {
         chatbotActive: newState,
       }));
 
@@ -3207,6 +3320,7 @@ export async function registerRoutes(app: Express): Promise<Server> {
   // POST /api/leads/:phoneNumber/schedule-demo — manually schedule a demo for a lead
   app.post("/api/leads/:phoneNumber/schedule-demo", requireAuth, async (req: Request, res: Response) => {
     try {
+      const tenant = getTenantFromRequest(req);
       const { phoneNumber } = req.params;
       const { demoDate, demoTime, meetingLink, contactName } = req.body as {
         demoDate: string;  // YYYY-MM-DD
@@ -3244,7 +3358,7 @@ export async function registerRoutes(app: Express): Promise<Server> {
 
       // Pause chatbot for this lead so they can interact freely around demo time
       try {
-        await storage.updateContact(cleanPhone, { chatbotActive: "false" });
+        await storage.updateContactByTenant(tenant, cleanPhone, { chatbotActive: "false" });
         log(`⏸ Chatbot paused for ${cleanPhone} (demo scheduled)`);
       } catch (e: any) {
         log(`⚠️ Could not pause chatbot for ${cleanPhone}: ${e.message}`);
