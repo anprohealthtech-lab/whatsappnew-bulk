@@ -18,6 +18,7 @@ import type { ChatbotConfig, Contact, Message, UserRagAgent } from "@shared/sche
 import { userRagAgents } from "@shared/schema";
 import { db } from "../db";
 import { eq, and, desc } from "drizzle-orm";
+import { sendNotificationForEvent } from "./UserNotificationService";
 import Anthropic from "@anthropic-ai/sdk";
 import * as fs from 'fs';
 import * as path from 'path';
@@ -151,6 +152,19 @@ Regards,
 *Team AnPro Solutions*`;
 
 // In-memory cooldown tracker (per phone number)
+const WHATSAPP_FORMATTING_GUIDE = `
+
+WHATSAPP STYLE:
+- Make replies look clean and friendly on WhatsApp.
+- Use short paragraphs and proper line breaks.
+- Use 1-2 relevant emojis naturally when helpful.
+- For lists, use bullets like "•" and keep them compact.
+- Highlight only key terms with WhatsApp bold, like *CBC* or *Home Collection*.
+- Avoid sending one giant block of text.
+- If explaining multiple points, keep it to 3-5 bullets max.
+- Keep the tone warm, practical, and easy to scan.
+- End with one simple helpful next step or question when appropriate.`;
+
 const lastReplyTimestamps = new Map<string, number>();
 
 // Pending greetings that failed due to WhatsApp being disconnected
@@ -213,6 +227,21 @@ export class ChatbotService {
           userId: this.tenantContext.userId,
         }
       : {};
+  }
+
+  private async notifyEvent(
+    eventType: "lead_created" | "demo_scheduled" | "booking_confirmed",
+    payload: { title: string; lines: string[] },
+  ): Promise<void> {
+    if (!this.tenantContext || !this.whatsappService?.sendTextMessage) {
+      return;
+    }
+
+    try {
+      await sendNotificationForEvent(this.tenantContext, this.whatsappService, eventType, payload);
+    } catch (error: any) {
+      console.error(`[ChatbotService] Failed to send ${eventType} notification:`, error?.message || error);
+    }
   }
 
   private async getEffectiveChatbotConfig(): Promise<ChatbotConfig | null> {
@@ -379,8 +408,18 @@ export class ChatbotService {
         log(`⚠️ WhatsApp not connected — queueing greeting for ${phoneNumber} to retry later`);
         // Store pending greeting so it can be retried
         pendingGreetings.set(this.getScopedPhoneKey(phoneNumber), { phoneNumber, keyword, replyToJid, timestamp: Date.now() });
-        return contact;
-      }
+      await this.notifyEvent("lead_created", {
+        title: "🔔 New Lead Captured",
+        lines: [
+          name ? `👤 Name: ${name}` : "",
+          `📱 Phone: ${phoneNumber}`,
+          `🏷️ Trigger: ${keyword}`,
+          `🕒 Time: ${new Date().toLocaleString("en-IN", { timeZone: "Asia/Kolkata" })}`,
+        ],
+      });
+
+      return contact;
+    }
 
       log(`Sending ${greetingParts.length} greeting item(s) to new lead ${phoneNumber}`);
 
@@ -446,6 +485,16 @@ export class ChatbotService {
     } catch (error: any) {
       log(`⚠️ Failed to send greeting message: ${this.errorMessage(error)}`);
     }
+
+    await this.notifyEvent("lead_created", {
+      title: "🔔 New Lead Captured",
+      lines: [
+        name ? `👤 Name: ${name}` : "",
+        `📱 Phone: ${phoneNumber}`,
+        `🏷️ Trigger: ${keyword}`,
+        `🕒 Time: ${new Date().toLocaleString("en-IN", { timeZone: "Asia/Kolkata" })}`,
+      ],
+    });
 
     return contact;
   }
@@ -542,7 +591,7 @@ export class ChatbotService {
         : '',
     ].filter(Boolean).join('\n');
 
-    return basePrompt + stateContext;
+    return basePrompt + WHATSAPP_FORMATTING_GUIDE + stateContext;
   }
 
   /**
@@ -697,19 +746,31 @@ export class ChatbotService {
   /**
    * Detect user intent from their message
    */
-  detectUserIntent(messageText: string, currentIntent: ConversationState['userIntent']): ConversationState['userIntent'] {
-    const lower = messageText.toLowerCase().trim();
+    detectUserIntent(messageText: string, currentIntent: ConversationState['userIntent']): ConversationState['userIntent'] {
+      const lower = messageText.toLowerCase().trim();
 
-    const declinePatterns = ['not interested', 'no thanks', 'no thank', 'not now', 'later', 'busy', 'stop'];
-    const browsingPatterns = ['just browsing', 'just looking', 'just checking', 'exploring'];
-    const interestPatterns = ['interested', 'tell me more', 'how much', 'price', 'pricing', 'demo', 'show me', 'features', 'yes'];
+      const declinePatterns = ['not interested', 'no thanks', 'no thank', 'not now', 'later', 'busy', 'stop'];
+      const browsingPatterns = ['just browsing', 'just looking', 'just checking', 'exploring'];
+      const bookedPatterns = [
+        'booked',
+        'booking confirmed',
+        'confirm booking',
+        'confirmed booking',
+        'schedule confirmed',
+        'appointment confirmed',
+        'ok book',
+        'yes book',
+        'done book',
+      ];
+      const interestPatterns = ['interested', 'tell me more', 'how much', 'price', 'pricing', 'demo', 'show me', 'features', 'yes'];
 
-    if (declinePatterns.some(p => lower.includes(p))) return 'declined';
-    if (browsingPatterns.some(p => lower.includes(p))) return 'browsing';
-    if (interestPatterns.some(p => lower.includes(p))) return 'interested';
+      if (declinePatterns.some(p => lower.includes(p))) return 'declined';
+      if (browsingPatterns.some(p => lower.includes(p))) return 'browsing';
+      if (bookedPatterns.some(p => lower.includes(p))) return 'booked';
+      if (interestPatterns.some(p => lower.includes(p))) return 'interested';
 
-    return currentIntent;
-  }
+      return currentIntent;
+    }
 
   /**
    * Process a lead message: check cooldown, get context, call RAG with system prompt, send reply
@@ -761,7 +822,8 @@ export class ChatbotService {
         }
       }
 
-      const userIntent = this.detectUserIntent(effectiveMessageText, state.userIntent);
+      const previousIntent = state.userIntent;
+      const userIntent = this.detectUserIntent(effectiveMessageText, previousIntent);
 
       // If user has declined, don't auto-respond unless they show renewed interest
       if (state.userIntent === 'declined' && userIntent === 'declined') {
@@ -774,6 +836,17 @@ export class ChatbotService {
         userIntent,
         messageCount: state.messageCount + 1,
       });
+
+      if (userIntent === 'booked' && previousIntent !== 'booked') {
+        await this.notifyEvent("booking_confirmed", {
+          title: "✅ Booking Confirmed",
+          lines: [
+            `📱 Phone: ${phoneNumber}`,
+            `💬 Message: ${effectiveMessageText.substring(0, 120)}`,
+            `🕒 Time: ${new Date().toLocaleString("en-IN", { timeZone: "Asia/Kolkata" })}`,
+          ],
+        });
+      }
 
       // Get conversation history
       const limit = config.contextMessageCount ?? 5;

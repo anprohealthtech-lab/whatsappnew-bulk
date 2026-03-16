@@ -125,6 +125,20 @@ export async function runMigrations(): Promise<void> {
         "updated_at" timestamp DEFAULT now()
       );
 
+      CREATE TABLE IF NOT EXISTS "user_notification_recipients" (
+        "id" varchar PRIMARY KEY DEFAULT gen_random_uuid() NOT NULL,
+        "organization_id" text NOT NULL,
+        "user_id" text NOT NULL,
+        "phone_number" text NOT NULL,
+        "label" text,
+        "notify_on_lead_created" text DEFAULT 'true' NOT NULL,
+        "notify_on_demo_scheduled" text DEFAULT 'true' NOT NULL,
+        "notify_on_booking_confirmed" text DEFAULT 'true' NOT NULL,
+        "is_active" text DEFAULT 'true' NOT NULL,
+        "created_at" timestamp DEFAULT now(),
+        "updated_at" timestamp DEFAULT now()
+      );
+
       CREATE TABLE IF NOT EXISTS "auto_responses" (
         "id" varchar PRIMARY KEY DEFAULT gen_random_uuid() NOT NULL,
         "keyword" text NOT NULL,
@@ -279,6 +293,19 @@ export async function runMigrations(): Promise<void> {
       ALTER TABLE "user_rag_agents" ADD COLUMN IF NOT EXISTS "context_message_count" integer;
       ALTER TABLE "user_rag_agents" ADD COLUMN IF NOT EXISTS "reply_cooldown_seconds" integer;
       ALTER TABLE "user_rag_agents" ADD COLUMN IF NOT EXISTS "typing_delay_ms" integer;
+
+      ALTER TABLE "user_notification_recipients" ADD COLUMN IF NOT EXISTS "organization_id" text NOT NULL DEFAULT 'default_org';
+      ALTER TABLE "user_notification_recipients" ADD COLUMN IF NOT EXISTS "user_id" text NOT NULL DEFAULT 'default_user';
+      ALTER TABLE "user_notification_recipients" ADD COLUMN IF NOT EXISTS "label" text;
+      ALTER TABLE "user_notification_recipients" ADD COLUMN IF NOT EXISTS "notify_on_lead_created" text DEFAULT 'true' NOT NULL;
+      ALTER TABLE "user_notification_recipients" ADD COLUMN IF NOT EXISTS "notify_on_demo_scheduled" text DEFAULT 'true' NOT NULL;
+      ALTER TABLE "user_notification_recipients" ADD COLUMN IF NOT EXISTS "notify_on_booking_confirmed" text DEFAULT 'true' NOT NULL;
+      ALTER TABLE "user_notification_recipients" ADD COLUMN IF NOT EXISTS "is_active" text DEFAULT 'true' NOT NULL;
+      ALTER TABLE "user_notification_recipients" ADD COLUMN IF NOT EXISTS "created_at" timestamp DEFAULT now();
+      ALTER TABLE "user_notification_recipients" ADD COLUMN IF NOT EXISTS "updated_at" timestamp DEFAULT now();
+
+      CREATE INDEX IF NOT EXISTS idx_user_notification_recipients_tenant
+        ON user_notification_recipients(organization_id, user_id, created_at);
 
       -- Add FK constraints (safe with IF NOT EXISTS pattern via DO blocks)
       DO $$ BEGIN

@@ -107,6 +107,20 @@ export const userRagAgents = pgTable("user_rag_agents", {
   updatedAt: timestamp("updated_at").defaultNow(),
 });
 
+export const userNotificationRecipients = pgTable("user_notification_recipients", {
+  id: varchar("id").primaryKey().default(sql`gen_random_uuid()`),
+  organizationId: text("organization_id").notNull(),
+  userId: text("user_id").notNull(),
+  phoneNumber: text("phone_number").notNull(),
+  label: text("label"),
+  notifyOnLeadCreated: text("notify_on_lead_created").default("true").notNull(),
+  notifyOnDemoScheduled: text("notify_on_demo_scheduled").default("true").notNull(),
+  notifyOnBookingConfirmed: text("notify_on_booking_confirmed").default("true").notNull(),
+  isActive: text("is_active").default("true").notNull(),
+  createdAt: timestamp("created_at").defaultNow(),
+  updatedAt: timestamp("updated_at").defaultNow(),
+});
+
 export const campaignRecipients = pgTable("campaign_recipients", {
   id: varchar("id").primaryKey().default(sql`gen_random_uuid()`),
   campaignId: varchar("campaign_id").notNull().references(() => campaigns.id, { onDelete: 'cascade' }),
@@ -274,6 +288,7 @@ export type HRAdmin = typeof hrAdmins.$inferSelect;
 export type HRChatbotConfig = typeof hrChatbotConfigs.$inferSelect;
 export type DemoSchedule = typeof demoSchedules.$inferSelect;
 export type UserRagAgent = typeof userRagAgents.$inferSelect;
+export type UserNotificationRecipient = typeof userNotificationRecipients.$inferSelect;
 export type WhatsAppSession = typeof whatsappSessions.$inferSelect;
 
 // Additional schemas for API requests
@@ -332,6 +347,15 @@ export const userRagAgentSchema = z.object({
   contextMessageCount: z.number().int().min(1).max(20).optional(),
   replyCooldownSeconds: z.number().int().min(0).max(60).optional(),
   typingDelayMs: z.number().int().min(0).max(10000).optional(),
+  isActive: z.boolean().optional(),
+});
+
+export const userNotificationRecipientSchema = z.object({
+  phoneNumber: z.string().min(10, "Phone number must be at least 10 digits"),
+  label: z.string().optional(),
+  notifyOnLeadCreated: z.boolean().optional(),
+  notifyOnDemoScheduled: z.boolean().optional(),
+  notifyOnBookingConfirmed: z.boolean().optional(),
   isActive: z.boolean().optional(),
 });
 
@@ -397,5 +421,6 @@ export type FlagLeadRequest = z.infer<typeof flagLeadSchema>;
 export type RegisterHRAdminRequest = z.infer<typeof registerHRAdminSchema>;
 export type HRChatbotConfigRequest = z.infer<typeof hrChatbotConfigSchema>;
 export type UserRagAgentRequest = z.infer<typeof userRagAgentSchema>;
+export type UserNotificationRecipientRequest = z.infer<typeof userNotificationRecipientSchema>;
 export type RegisterRequest = z.infer<typeof registerSchema>;
 export type LoginRequest = z.infer<typeof loginSchema>;

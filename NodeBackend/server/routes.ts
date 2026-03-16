@@ -14,7 +14,7 @@ import { campaignService } from "./services/CampaignService";
 import { AutoResponseService } from "./services/AutoResponseService";
 import { ChatbotService } from "./services/ChatbotService";
 import { HRChatbotService } from "./services/HRChatbotService";
-import { sendMessageSchema, sendReportSchema, createCampaignSchema, bulkSendSchema, chatbotConfigSchema, flagLeadSchema, registerHRAdminSchema, hrChatbotConfigSchema, demoSchedules, scheduleCampaignSchema, userRagAgentSchema, userRagAgents, registerSchema, loginSchema } from "@shared/schema";
+import { sendMessageSchema, sendReportSchema, createCampaignSchema, bulkSendSchema, chatbotConfigSchema, flagLeadSchema, registerHRAdminSchema, hrChatbotConfigSchema, demoSchedules, scheduleCampaignSchema, userRagAgentSchema, userRagAgents, userNotificationRecipientSchema, userNotificationRecipients, registerSchema, loginSchema } from "@shared/schema";
 import { log } from "./utils";
 import { getDbHealth, db } from "./db";
 import { sql as drizzleSql, eq, and, desc } from "drizzle-orm";
@@ -25,6 +25,7 @@ import { authService } from "./services/AuthService";
 import { requireAuth, optionalAuth, getTenant, requireSuperAdmin } from "./authMiddleware";
 import { sessionManager } from "./services/WhatsAppSessionManager";
 import { users, messages as messagesTable } from "@shared/schema";
+import { sendNotificationForEvent } from "./services/UserNotificationService";
 
 // Configure CORS
 const corsOptions = {
@@ -1762,6 +1763,90 @@ export async function registerRoutes(app: Express): Promise<Server> {
     }
   });
 
+  app.get('/api/notification-recipients', requireAuth, async (req, res) => {
+    try {
+      const tenant = getTenantFromRequest(req);
+      const recipients = await db.select().from(userNotificationRecipients).where(and(
+        eq(userNotificationRecipients.organizationId, tenant.organizationId),
+        eq(userNotificationRecipients.userId, tenant.userId),
+      )).orderBy(desc(userNotificationRecipients.createdAt));
+
+      res.json({ success: true, data: recipients });
+    } catch (error) {
+      const errorMessage = error instanceof Error ? error.message : 'Unknown error';
+      res.status(500).json({ success: false, error: errorMessage });
+    }
+  });
+
+  app.post('/api/notification-recipients', requireAuth, async (req, res) => {
+    try {
+      const tenant = getTenantFromRequest(req);
+      const validated = userNotificationRecipientSchema.parse(req.body);
+
+      const [created] = await db.insert(userNotificationRecipients).values({
+        organizationId: tenant.organizationId,
+        userId: tenant.userId,
+        phoneNumber: String(validated.phoneNumber).replace(/\D/g, ''),
+        label: validated.label || null,
+        notifyOnLeadCreated: validated.notifyOnLeadCreated === false ? 'false' : 'true',
+        notifyOnDemoScheduled: validated.notifyOnDemoScheduled === false ? 'false' : 'true',
+        notifyOnBookingConfirmed: validated.notifyOnBookingConfirmed === false ? 'false' : 'true',
+        isActive: validated.isActive === false ? 'false' : 'true',
+      }).returning();
+
+      res.json({ success: true, data: created });
+    } catch (error) {
+      const errorMessage = error instanceof Error ? error.message : 'Unknown error';
+      res.status(400).json({ success: false, error: errorMessage });
+    }
+  });
+
+  app.put('/api/notification-recipients/:id', requireAuth, async (req, res) => {
+    try {
+      const tenant = getTenantFromRequest(req);
+      const validated = userNotificationRecipientSchema.partial().parse(req.body);
+
+      const updateData: any = { updatedAt: new Date() };
+      if (validated.phoneNumber !== undefined) updateData.phoneNumber = String(validated.phoneNumber).replace(/\D/g, '');
+      if (validated.label !== undefined) updateData.label = validated.label || null;
+      if (validated.notifyOnLeadCreated !== undefined) updateData.notifyOnLeadCreated = validated.notifyOnLeadCreated ? 'true' : 'false';
+      if (validated.notifyOnDemoScheduled !== undefined) updateData.notifyOnDemoScheduled = validated.notifyOnDemoScheduled ? 'true' : 'false';
+      if (validated.notifyOnBookingConfirmed !== undefined) updateData.notifyOnBookingConfirmed = validated.notifyOnBookingConfirmed ? 'true' : 'false';
+      if (validated.isActive !== undefined) updateData.isActive = validated.isActive ? 'true' : 'false';
+
+      const [updated] = await db.update(userNotificationRecipients).set(updateData).where(and(
+        eq(userNotificationRecipients.id, req.params.id),
+        eq(userNotificationRecipients.organizationId, tenant.organizationId),
+        eq(userNotificationRecipients.userId, tenant.userId),
+      )).returning();
+
+      if (!updated) {
+        return res.status(404).json({ success: false, error: 'Notification recipient not found' });
+      }
+
+      res.json({ success: true, data: updated });
+    } catch (error) {
+      const errorMessage = error instanceof Error ? error.message : 'Unknown error';
+      res.status(400).json({ success: false, error: errorMessage });
+    }
+  });
+
+  app.delete('/api/notification-recipients/:id', requireAuth, async (req, res) => {
+    try {
+      const tenant = getTenantFromRequest(req);
+      await db.delete(userNotificationRecipients).where(and(
+        eq(userNotificationRecipients.id, req.params.id),
+        eq(userNotificationRecipients.organizationId, tenant.organizationId),
+        eq(userNotificationRecipients.userId, tenant.userId),
+      ));
+
+      res.json({ success: true });
+    } catch (error) {
+      const errorMessage = error instanceof Error ? error.message : 'Unknown error';
+      res.status(400).json({ success: false, error: errorMessage });
+    }
+  });
+
   // ====== Knowledge Base / RAG File Management ======
 
   const SUPABASE_URL = process.env.VITE_SUPABASE_URL || '';
@@ -3352,8 +3437,8 @@ export async function registerRoutes(app: Express): Promise<Server> {
       const cleanPhone = phoneNumber.replace(/\D/g, "");
 
       await db.execute(
-        drizzleSql`INSERT INTO demo_schedules (phone_number, contact_name, meeting_link, demo_at)
-          VALUES (${cleanPhone}, ${contactName || null}, ${meetingLink}, ${demoAt.toISOString()})`
+        drizzleSql`INSERT INTO demo_schedules (organization_id, user_id, phone_number, contact_name, meeting_link, demo_at)
+          VALUES (${tenant.organizationId}, ${tenant.userId}, ${cleanPhone}, ${contactName || null}, ${meetingLink}, ${demoAt.toISOString()})`
       );
 
       // Pause chatbot for this lead so they can interact freely around demo time
@@ -3365,6 +3450,21 @@ export async function registerRoutes(app: Express): Promise<Server> {
       }
 
       log(`📅 Demo scheduled: ${cleanPhone} at ${demoAt.toISOString()}`);
+      try {
+        const waSession = await getUserWASession(req);
+        await sendNotificationForEvent(tenant, waSession, "demo_scheduled", {
+          title: "📅 Demo Scheduled",
+          lines: [
+            contactName ? `👤 Name: ${contactName}` : "",
+            `📱 Phone: ${cleanPhone}`,
+            `🕒 Demo Time: ${demoAt.toLocaleString("en-IN", { timeZone: "Asia/Kolkata" })}`,
+            `🔗 Link: ${meetingLink}`,
+          ],
+        });
+      } catch (notificationError: any) {
+        log(`Failed to send demo notification for ${cleanPhone}: ${notificationError.message}`);
+      }
+
       res.json({ success: true, demoAt: demoAt.toISOString() });
     } catch (error) {
       const msg = error instanceof Error ? error.message : "Unknown error";

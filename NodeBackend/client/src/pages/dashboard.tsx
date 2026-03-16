@@ -31,6 +31,7 @@ import { ScheduleCampaignPanel } from "@/components/dashboard/ScheduleCampaignPa
 import { GroupScraperPanel } from "@/components/dashboard/GroupScraperPanel";
 import { UserRagSettingsPanel } from "@/components/dashboard/UserRagSettingsPanel";
 import { KnowledgeBasePanel } from "@/components/dashboard/KnowledgeBasePanel";
+import { NotificationRecipientsPanel } from "@/components/dashboard/NotificationRecipientsPanel";
 import { SuperAdminPanel } from "@/components/dashboard/SuperAdminPanel";
 
 // Form schemas
@@ -479,6 +480,9 @@ export default function Dashboard() {
 
           {/* AI Chatbot / RAG Settings Section */}
           {activeSection === "rag-settings" && <UserRagSettingsPanel />}
+
+          {/* Internal Notifications Section */}
+          {activeSection === "notifications" && <NotificationRecipientsPanel />}
 
           {/* Knowledge Base Section */}
           {activeSection === "knowledge-base" && <KnowledgeBasePanel />}
