@@ -5,10 +5,10 @@ import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Input } from "@/components/ui/input";
 import { Badge } from "@/components/ui/badge";
+import { Alert, AlertDescription } from "@/components/ui/alert";
 import { useToast } from "@/hooks/use-toast";
 import {
   Smartphone,
-  QrCode,
   Wifi,
   WifiOff,
   Plus,
@@ -16,6 +16,7 @@ import {
   RefreshCw,
   Loader2,
   ShieldAlert,
+  AlertTriangle,
 } from "lucide-react";
 
 interface Session {
@@ -40,6 +41,19 @@ export function WhatsAppSessionPanel() {
   const { data: sessions = [], isLoading } = useQuery<Session[]>({
     queryKey: ["/api/whatsapp/sessions"],
     refetchInterval: 10000,
+  });
+
+  // Fetch version info from the first connected session
+  const connectedSession = sessions.find(s => s.status === "connected");
+  const { data: versionInfo } = useQuery<{ waVersion?: number[]; waIsLatest?: boolean }>({
+    queryKey: ["/api/whatsapp/session/status", connectedSession?.sessionName],
+    queryFn: async () => {
+      if (!connectedSession) return {};
+      const res = await apiRequest("GET", `/api/whatsapp/session/status?sessionName=${encodeURIComponent(connectedSession.sessionName)}`);
+      return res.json();
+    },
+    enabled: !!connectedSession,
+    staleTime: 60000,
   });
 
   const initMutation = useMutation({
@@ -156,6 +170,26 @@ export function WhatsAppSessionPanel() {
               {clearSessionsMutation.isPending ? <Loader2 className="w-4 h-4 animate-spin mr-2" /> : <ShieldAlert className="w-4 h-4 mr-2" />}
               Fix "Waiting for Message"
             </Button>
+          )}
+
+          {/* WhatsApp Version Warning */}
+          {versionInfo?.waVersion && (
+            <Alert variant={versionInfo.waIsLatest === false ? "destructive" : "default"} className={versionInfo.waIsLatest === false ? "" : "border-green-300 bg-green-50 text-green-800"}>
+              {versionInfo.waIsLatest === false ? (
+                <AlertTriangle className="h-4 w-4" />
+              ) : (
+                <Smartphone className="h-4 w-4" />
+              )}
+              <AlertDescription className="text-xs">
+                {versionInfo.waIsLatest === false ? (
+                  <>
+                    <strong>Outdated WhatsApp version detected:</strong> v{versionInfo.waVersion.join('.')} — An older version is being used, which increases the risk of being banned during bulk sends. Please update the Baileys library.
+                  </>
+                ) : (
+                  <>WhatsApp version: <strong>v{versionInfo.waVersion.join('.')}</strong> — up to date.</>
+                )}
+              </AlertDescription>
+            </Alert>
           )}
 
           {/* QR Code Display */}

@@ -54,6 +54,18 @@ export function ScheduleCampaignPanel() {
     refetchInterval: 30000,
   });
 
+  const cancelMutation = useMutation({
+    mutationFn: async (scheduleId: string) => {
+      const res = await apiRequest("POST", `/api/campaign-schedules/${scheduleId}/cancel`, {});
+      return res.json();
+    },
+    onSuccess: () => {
+      toast({ title: "Schedule cancelled" });
+      queryClient.invalidateQueries({ queryKey: ["/api/campaign-schedules"] });
+    },
+    onError: (err: any) => toast({ title: "Error", description: err.message, variant: "destructive" }),
+  });
+
   const scheduleMutation = useMutation({
     mutationFn: async () => {
       const campaign = campaigns.find((c) => c.id === selectedCampaign);
@@ -127,7 +139,25 @@ export function ScheduleCampaignPanel() {
                       </p>
                     )}
                   </div>
-                  <Badge variant={getStatusColor(s.status) as any}>{s.status}</Badge>
+                  <div className="flex items-center gap-2 ml-4">
+                    <Badge variant={getStatusColor(s.status) as any}>{s.status}</Badge>
+                    {(s.status === "scheduled" || s.status === "running") && (
+                      <Button
+                        size="sm"
+                        variant="destructive"
+                        disabled={cancelMutation.isPending}
+                        onClick={() => {
+                          if (confirm(`Are you sure you want to ${s.status === "running" ? "stop" : "cancel"} this campaign?`)) {
+                            cancelMutation.mutate(s.id);
+                          }
+                        }}
+                      >
+                        {cancelMutation.isPending ? (
+                          <Loader2 className="w-3 h-3 animate-spin" />
+                        ) : s.status === "running" ? "Stop" : "Cancel"}
+                      </Button>
+                    )}
+                  </div>
                 </div>
               ))}
             </div>

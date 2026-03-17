@@ -1615,6 +1615,65 @@ export async function registerRoutes(app: Express): Promise<Server> {
     }
   });
 
+  // Upload attachment to multi-attachment pool (max 5)
+  app.post('/api/campaigns/:campaignId/attachments', requireAuth, upload.single('file'), async (req, res) => {
+    try {
+      const tenant = getTenantFromRequest(req);
+      const { campaignId } = req.params;
+      if (!req.file) return res.status(400).json({ success: false, error: 'No file provided' });
+
+      const fileInfo = process.env.DATABASE_URL
+        ? await persistentFileService.saveFile(req.file)
+        : await fileService.saveFile(req.file);
+
+      const campaign = await campaignService.addAttachmentToPool(campaignId, fileInfo.filePath, tenant);
+      res.json({ success: true, data: campaign });
+    } catch (error) {
+      const errorMessage = error instanceof Error ? error.message : 'Unknown error';
+      res.status(400).json({ success: false, error: errorMessage });
+    }
+  });
+
+  // Remove attachment from pool by index
+  app.delete('/api/campaigns/:campaignId/attachments/:index', requireAuth, async (req, res) => {
+    try {
+      const tenant = getTenantFromRequest(req);
+      const { campaignId, index } = req.params;
+      const campaign = await campaignService.removeAttachmentFromPool(campaignId, parseInt(index), tenant);
+      res.json({ success: true, data: campaign });
+    } catch (error) {
+      const errorMessage = error instanceof Error ? error.message : 'Unknown error';
+      res.status(400).json({ success: false, error: errorMessage });
+    }
+  });
+
+  // Update custom filenames pool (up to 5)
+  app.put('/api/campaigns/:campaignId/attachment-names', requireAuth, async (req, res) => {
+    try {
+      const tenant = getTenantFromRequest(req);
+      const { campaignId } = req.params;
+      const { fileNames } = req.body;
+      if (!Array.isArray(fileNames)) return res.status(400).json({ success: false, error: 'fileNames must be an array' });
+      const campaign = await campaignService.updateAttachmentFileNames(campaignId, fileNames, tenant);
+      res.json({ success: true, data: campaign });
+    } catch (error) {
+      const errorMessage = error instanceof Error ? error.message : 'Unknown error';
+      res.status(400).json({ success: false, error: errorMessage });
+    }
+  });
+
+  // Stop a running campaign
+  app.post('/api/campaigns/:campaignId/stop', requireAuth, async (req, res) => {
+    try {
+      const { campaignId } = req.params;
+      campaignService.stopCampaign(campaignId);
+      res.json({ success: true, message: 'Stop signal sent' });
+    } catch (error) {
+      const errorMessage = error instanceof Error ? error.message : 'Unknown error';
+      res.status(400).json({ success: false, error: errorMessage });
+    }
+  });
+
   // Schedule campaign for later run
   app.post('/api/campaigns/:campaignId/schedule', requireAuth, async (req, res) => {
     try {
@@ -1637,6 +1696,19 @@ export async function registerRoutes(app: Express): Promise<Server> {
     } catch (error) {
       const errorMessage = error instanceof Error ? error.message : 'Unknown error';
       log(`Schedule campaign error: ${errorMessage}`);
+      res.status(400).json({ success: false, error: errorMessage });
+    }
+  });
+
+  // Cancel a scheduled or running campaign schedule
+  app.post('/api/campaign-schedules/:scheduleId/cancel', requireAuth, async (req, res) => {
+    try {
+      const tenant = getTenantFromRequest(req);
+      const { scheduleId } = req.params;
+      const updated = await campaignService.cancelSchedule(scheduleId, tenant);
+      res.json({ success: true, data: updated });
+    } catch (error) {
+      const errorMessage = error instanceof Error ? error.message : 'Unknown error';
       res.status(400).json({ success: false, error: errorMessage });
     }
   });

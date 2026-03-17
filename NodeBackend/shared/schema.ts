@@ -68,6 +68,8 @@ export const campaigns = pgTable("campaigns", {
   totalContacts: integer("total_contacts").default(0),
   attachmentPath: text("attachment_path"),
   attachmentName: text("attachment_name"),
+  attachmentPaths: jsonb("attachment_paths"), // Array of file paths (up to 5) for random pick
+  attachmentFileNames: jsonb("attachment_file_names"), // Array of custom filenames (up to 5) for random pick
   createdAt: timestamp("created_at").defaultNow(),
   updatedAt: timestamp("updated_at").defaultNow(),
 });

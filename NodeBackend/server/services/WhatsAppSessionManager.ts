@@ -29,7 +29,7 @@ export interface WAServiceInstance {
   on(event: string, listener: (data: any) => void): this;
   initialize(): Promise<void>;
   sendTextMessage(phoneNumber: string, message: string): Promise<any>;
-  sendMediaMessage(phoneNumber: string, filePath: string, caption?: string): Promise<any>;
+  sendMediaMessage(phoneNumber: string, filePath: string, caption?: string, fileName?: string): Promise<any>;
   listGroups(): Promise<Array<{ id: string; subject: string; participantsCount: number }>>;
   scrapeGroupNumbers(groupId: string): Promise<Array<{ phone: string; jid: string; name: string }>>;
   generateQRCode(): Promise<void>;
@@ -57,6 +57,8 @@ class ManagedBaileysSession extends EventEmitter implements WAServiceInstance {
   };
   private currentQR: { qr: string; qrCode?: string; rawQR?: string; timestamp: number } | null = null;
   private browserIdentity = 'LIMS';
+  private waVersion: number[] | null = null;
+  private waIsLatest = true;
 
   constructor(
     private readonly userId: string,
@@ -85,6 +87,8 @@ class ManagedBaileysSession extends EventEmitter implements WAServiceInstance {
 
       const { state, saveCreds } = await useMultiFileAuthState(this.authPath);
       const { version, isLatest } = await fetchLatestBaileysVersion();
+      this.waVersion = version;
+      this.waIsLatest = isLatest;
       log(`[WA] Using WA v${version.join('.')} isLatest=${isLatest} for ${this.userId}/${this.sessionName}`);
 
       this.socket = this.createSocket(state, version, saveCreds);
@@ -471,7 +475,7 @@ class ManagedBaileysSession extends EventEmitter implements WAServiceInstance {
     };
   }
 
-  async sendMediaMessage(phoneNumber: string, filePath: string, caption?: string): Promise<any> {
+  async sendMediaMessage(phoneNumber: string, filePath: string, caption?: string, fileName?: string): Promise<any> {
     if (!this.socket || !this.status.isConnected) {
       throw new Error('WhatsApp not connected');
     }
@@ -497,7 +501,7 @@ class ManagedBaileysSession extends EventEmitter implements WAServiceInstance {
         ptt: ext === '.ogg',
       };
     } else {
-      payload = { document: fileBuffer, fileName: path.basename(filePath), caption };
+      payload = { document: fileBuffer, fileName: fileName || path.basename(filePath), caption };
     }
 
     const result = await this.socket.sendMessage(jid, payload);
@@ -563,8 +567,8 @@ class ManagedBaileysSession extends EventEmitter implements WAServiceInstance {
     return this.currentQR;
   }
 
-  getStatus(): WhatsAppStatus {
-    return { ...this.status };
+  getStatus(): WhatsAppStatus & { waVersion?: number[]; waIsLatest?: boolean } {
+    return { ...this.status, waVersion: this.waVersion ?? undefined, waIsLatest: this.waIsLatest };
   }
 
   async cleanup(): Promise<void> {

@@ -19,6 +19,8 @@ interface Campaign {
   selectedVariation?: string;
   totalContacts: number;
   attachmentName?: string;
+  attachmentPaths?: string[];
+  attachmentFileNames?: string[];
 }
 
 interface MessageVariation {
@@ -69,6 +71,8 @@ export function CampaignMessageVariationPanel({
   const [showButtons, setShowButtons] = useState(false);
   const [includeStopButton, setIncludeStopButton] = useState(false);
   const [attachmentFile, setAttachmentFile] = useState<File | null>(null);
+  const [customFileNames, setCustomFileNames] = useState<string[]>(['', '', '', '', '']);
+  const [isSavingFileNames, setIsSavingFileNames] = useState(false);
 
   // Extract placeholders from message
   const extractPlaceholders = (message: string): string[] => {
@@ -131,6 +135,10 @@ export function CampaignMessageVariationPanel({
       if (data.success) {
         setCampaign(data.data);
         setSelectedVariation(data.data.selectedVariation || '');
+        // Sync custom filenames state
+        const saved: string[] = data.data.attachmentFileNames || [];
+        const padded = [...saved, '', '', '', '', ''].slice(0, 5);
+        setCustomFileNames(padded);
       } else {
         setError(data.error);
       }
@@ -301,6 +309,77 @@ export function CampaignMessageVariationPanel({
       setError('Failed to upload attachment: ' + err.message);
     } finally {
       setIsUploading(false);
+    }
+  };
+
+  const handleAddAttachmentToPool = async (file: File) => {
+    if (!campaignId) return;
+    try {
+      setIsUploading(true);
+      setError('');
+      const formData = new FormData();
+      formData.append('file', file);
+      const response = await fetch(`/api/campaigns/${campaignId}/attachments`, {
+        method: 'POST',
+        headers: { Authorization: `Bearer ${getAuthToken()}` },
+        body: formData,
+      });
+      const data = await response.json();
+      if (data.success) {
+        setSuccess('Image added to pool!');
+        await loadCampaign();
+      } else {
+        setError(data.error);
+      }
+    } catch (err: any) {
+      setError('Failed to upload image: ' + err.message);
+    } finally {
+      setIsUploading(false);
+    }
+  };
+
+  const handleRemoveAttachmentFromPool = async (index: number) => {
+    if (!campaignId) return;
+    try {
+      setError('');
+      const response = await fetch(`/api/campaigns/${campaignId}/attachments/${index}`, {
+        method: 'DELETE',
+        headers: { Authorization: `Bearer ${getAuthToken()}` },
+      });
+      const data = await response.json();
+      if (data.success) {
+        setSuccess('Image removed.');
+        await loadCampaign();
+      } else {
+        setError(data.error);
+      }
+    } catch (err: any) {
+      setError('Failed to remove image: ' + err.message);
+    }
+  };
+
+  const handleSaveFileNames = async () => {
+    if (!campaignId) return;
+    try {
+      setIsSavingFileNames(true);
+      setError('');
+      const filtered = customFileNames.filter(n => n.trim() !== '');
+      const response = await fetch(`/api/campaigns/${campaignId}/attachment-names`, {
+        method: 'PUT',
+        headers: { Authorization: `Bearer ${getAuthToken()}`, 'Content-Type': 'application/json' },
+        body: JSON.stringify({ fileNames: filtered }),
+      });
+      const data = await response.json();
+      if (data.success) {
+        setSuccess('Filenames saved!');
+        await loadCampaign();
+      } else {
+        setError(data.error);
+      }
+    } catch (err: any) {
+      setError('Failed to save filenames: ' + err.message);
+    } finally {
+      setIsSavingFileNames(false);
     }
   };
 
@@ -620,82 +699,89 @@ export function CampaignMessageVariationPanel({
               </div>
             </div>
 
-            <div className="space-y-2 mt-4">
-              <Label className="text-xs uppercase tracking-wider text-muted-foreground">Attachment</Label>
+            {/* Multi-Attachment Pool */}
+            <div className="space-y-4 mt-4 border border-border rounded-xl p-4 bg-accent/10">
+              <div>
+                <Label className="text-sm font-semibold flex items-center gap-2">
+                  <Upload className="w-4 h-4 text-primary" />
+                  Image Pool — Random Pick Per Message
+                  <Badge variant="secondary" className="text-xs">{(campaign.attachmentPaths || []).length}/5</Badge>
+                </Label>
+                <p className="text-xs text-muted-foreground mt-1">Upload up to 5 images. Each message will randomly use one — reduces ban risk.</p>
+              </div>
 
-              {campaign.attachmentName ? (
-                <div className="p-3 bg-muted/50 rounded-xl border border-border text-sm flex items-center justify-between">
-                  <div className="flex items-center overflow-hidden">
-                    <FileText className="w-4 h-4 mr-2 text-primary flex-shrink-0" />
-                    <span className="truncate">{campaign.attachmentName}</span>
-                  </div>
-                  <div className="flex items-center gap-2 flex-shrink-0">
+              <div className="grid grid-cols-2 sm:grid-cols-3 gap-2">
+                {(campaign.attachmentPaths || []).map((p, i) => (
+                  <div key={i} className="relative group flex items-center gap-2 p-2 rounded-lg border bg-muted/50 text-xs">
+                    <FileText className="w-4 h-4 text-primary flex-shrink-0" />
+                    <span className="truncate flex-1">{p.split(/[\\/]/).pop()}</span>
                     <Button
                       variant="ghost"
-                      size="sm"
-                      onClick={() => window.open(`/api/campaigns/${campaignId}/attachment/download`, '_blank')}
-                      className="h-8 px-2"
+                      size="icon"
+                      className="h-6 w-6 flex-shrink-0 opacity-0 group-hover:opacity-100 transition-opacity"
+                      onClick={() => handleRemoveAttachmentFromPool(i)}
                     >
-                      <Download className="w-4 h-4 mr-1" />
-                      Download
+                      <Trash2 className="w-3 h-3 text-destructive" />
                     </Button>
-                    <div className="relative">
-                      <input
-                        type="file"
-                        id="update-attachment"
-                        className="hidden"
-                        onChange={(e) => {
-                          const file = e.target.files?.[0];
-                          if (file) handleAttachmentUpdate(file);
-                        }}
-                      />
-                      <Button
-                        variant="ghost"
-                        size="sm"
-                        className="h-8 px-2"
-                        disabled={isUploading}
-                        onClick={() => document.getElementById('update-attachment')?.click()}
-                      >
-                        {isUploading ? (
-                          <Loader2 className="w-4 h-4 animate-spin" />
-                        ) : (
-                          <>
-                            <Upload className="w-4 h-4 mr-1" />
-                            Update
-                          </>
-                        )}
-                      </Button>
-                    </div>
                   </div>
+                ))}
+                {(campaign.attachmentPaths || []).length < 5 && (
+                  <>
+                    <input
+                      type="file"
+                      id="pool-attachment"
+                      accept="image/*,.pdf,.doc,.docx"
+                      className="hidden"
+                      onChange={(e) => {
+                        const file = e.target.files?.[0];
+                        if (file) { handleAddAttachmentToPool(file); (e.target as HTMLInputElement).value = ''; }
+                      }}
+                    />
+                    <button
+                      type="button"
+                      onClick={() => document.getElementById('pool-attachment')?.click()}
+                      disabled={isUploading}
+                      className="flex flex-col items-center justify-center gap-1 p-3 rounded-lg border-2 border-dashed border-border hover:border-primary/50 hover:bg-primary/5 transition-all cursor-pointer text-muted-foreground hover:text-primary text-xs"
+                    >
+                      {isUploading ? <Loader2 className="w-4 h-4 animate-spin" /> : <Plus className="w-4 h-4" />}
+                      Add Image
+                    </button>
+                  </>
+                )}
+              </div>
+
+              {/* Custom Filenames Pool */}
+              <div className="space-y-2 pt-2 border-t border-border">
+                <Label className="text-sm font-semibold flex items-center gap-2">
+                  <FileText className="w-4 h-4 text-primary" />
+                  Custom Filenames — Random Pick Per Message
+                </Label>
+                <p className="text-xs text-muted-foreground">Add up to 5 display filenames. Each message will randomly show one of these as the file name.</p>
+                <div className="space-y-2">
+                  {customFileNames.map((name, i) => (
+                    <Input
+                      key={i}
+                      placeholder={`Filename ${i + 1} (e.g. offer-${i + 1}.jpg)`}
+                      value={name}
+                      onChange={(e) => {
+                        const updated = [...customFileNames];
+                        updated[i] = e.target.value;
+                        setCustomFileNames(updated);
+                      }}
+                      className="h-8 text-sm"
+                    />
+                  ))}
                 </div>
-              ) : (
-                <div className="border-2 border-dashed border-border rounded-xl p-4 text-center hover:border-primary/50 hover:bg-primary/5 transition-all duration-300 cursor-pointer group bg-background/50">
-                  <input
-                    type="file"
-                    id="add-attachment"
-                    className="hidden"
-                    onChange={(e) => {
-                      const file = e.target.files?.[0];
-                      if (file) handleAttachmentUpdate(file);
-                    }}
-                  />
-                  <label htmlFor="add-attachment" className="cursor-pointer w-full h-full flex flex-col items-center justify-center py-2">
-                    {isUploading ? (
-                      <Loader2 className="w-6 h-6 text-muted-foreground animate-spin" />
-                    ) : (
-                      <>
-                        <Upload className="w-6 h-6 mb-2 text-muted-foreground group-hover:text-primary transition-colors" />
-                        <p className="font-medium text-sm text-foreground">
-                          Upload Attachment
-                        </p>
-                        <p className="text-xs text-muted-foreground">
-                          Click to add a file
-                        </p>
-                      </>
-                    )}
-                  </label>
-                </div>
-              )}
+                <Button
+                  size="sm"
+                  variant="outline"
+                  onClick={handleSaveFileNames}
+                  disabled={isSavingFileNames}
+                >
+                  {isSavingFileNames ? <Loader2 className="w-3 h-3 animate-spin mr-2" /> : null}
+                  Save Filenames
+                </Button>
+              </div>
             </div>
           </CardContent>
         </Card>
