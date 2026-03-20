@@ -69,6 +69,8 @@ export async function runMigrations(): Promise<void> {
         "total_contacts" integer DEFAULT 0,
         "attachment_path" text,
         "attachment_name" text,
+        "attachment_paths" jsonb,
+        "attachment_file_names" jsonb,
         "created_at" timestamp DEFAULT now(),
         "updated_at" timestamp DEFAULT now()
       );
@@ -256,6 +258,8 @@ export async function runMigrations(): Promise<void> {
       ALTER TABLE "campaigns" ADD COLUMN IF NOT EXISTS "organization_id" text DEFAULT 'default_org' NOT NULL;
       ALTER TABLE "campaigns" ADD COLUMN IF NOT EXISTS "user_id" text DEFAULT 'default_user' NOT NULL;
       ALTER TABLE "campaigns" ADD COLUMN IF NOT EXISTS "campaign_type" text DEFAULT 'campaign' NOT NULL;
+      ALTER TABLE "campaigns" ADD COLUMN IF NOT EXISTS "attachment_paths" jsonb;
+      ALTER TABLE "campaigns" ADD COLUMN IF NOT EXISTS "attachment_file_names" jsonb;
 
       -- Multi-user columns on existing tables
       ALTER TABLE "users" ADD COLUMN IF NOT EXISTS "email" text;

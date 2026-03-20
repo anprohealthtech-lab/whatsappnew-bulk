@@ -1,5 +1,5 @@
 import { storage } from '../storage';
-import type { WAServiceInstance } from './WhatsAppSessionManager';
+import type { WhatsAppService } from './WhatsAppService';
 import { type Message, type InsertMessage } from '@shared/schema';
 
 export interface MessageStats {
@@ -11,14 +11,14 @@ export interface MessageStats {
 }
 
 export class MessageService {
-  private whatsAppService: WAServiceInstance | null = null;
+  private whatsAppService: WhatsAppService | null = null;
 
   /** Set the WhatsApp service instance (call before sending messages) */
-  setWhatsAppService(service: WAServiceInstance) {
+  setWhatsAppService(service: WhatsAppService) {
     this.whatsAppService = service;
   }
 
-  private getWA(): WAServiceInstance {
+  private getWA(): WhatsAppService {
     if (!this.whatsAppService) {
       throw new Error('WhatsApp service not set. Call setWhatsAppService() first or use a per-user session.');
     }

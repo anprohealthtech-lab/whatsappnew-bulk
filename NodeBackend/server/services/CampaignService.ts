@@ -2,7 +2,7 @@ import { db } from '../db';
 import { campaigns, campaignRecipients, messageVariations, campaignSchedules } from '@shared/schema';
 import { eq, and, desc, lte } from 'drizzle-orm';
 import { sessionManager } from './WhatsAppSessionManager';
-import type { WAServiceInstance } from './WhatsAppSessionManager';
+import type { WhatsAppService } from './WhatsAppService';
 import { messageService } from './MessageService';
 import { variationService } from './VariationService';
 import { storage } from '../storage';
@@ -139,64 +139,6 @@ export class CampaignService {
     return updated;
   }
 
-  async addAttachmentToPool(campaignId: string, filePath: string, tenant?: Partial<TenantContext>) {
-    const normalizedTenant = this.normalizeTenant(tenant);
-    const campaign = await this.getCampaign(campaignId, normalizedTenant);
-    if (!campaign) throw new Error('Campaign not found');
-
-    const paths: string[] = Array.isArray(campaign.attachmentPaths) ? (campaign.attachmentPaths as string[]) : [];
-    if (paths.length >= 5) throw new Error('Maximum 5 attachments allowed');
-    paths.push(filePath);
-
-    const [updated] = await db
-      .update(campaigns)
-      .set({ attachmentPaths: paths, updatedAt: new Date() })
-      .where(and(
-        eq(campaigns.id, campaignId),
-        eq(campaigns.organizationId, normalizedTenant.organizationId),
-        eq(campaigns.userId, normalizedTenant.userId)
-      ))
-      .returning();
-    return updated;
-  }
-
-  async removeAttachmentFromPool(campaignId: string, index: number, tenant?: Partial<TenantContext>) {
-    const normalizedTenant = this.normalizeTenant(tenant);
-    const campaign = await this.getCampaign(campaignId, normalizedTenant);
-    if (!campaign) throw new Error('Campaign not found');
-
-    const paths: string[] = Array.isArray(campaign.attachmentPaths) ? (campaign.attachmentPaths as string[]) : [];
-    if (index < 0 || index >= paths.length) throw new Error('Invalid attachment index');
-    paths.splice(index, 1);
-
-    const [updated] = await db
-      .update(campaigns)
-      .set({ attachmentPaths: paths, updatedAt: new Date() })
-      .where(and(
-        eq(campaigns.id, campaignId),
-        eq(campaigns.organizationId, normalizedTenant.organizationId),
-        eq(campaigns.userId, normalizedTenant.userId)
-      ))
-      .returning();
-    return updated;
-  }
-
-  async updateAttachmentFileNames(campaignId: string, fileNames: string[], tenant?: Partial<TenantContext>) {
-    const normalizedTenant = this.normalizeTenant(tenant);
-    if (fileNames.length > 5) throw new Error('Maximum 5 filenames allowed');
-
-    const [updated] = await db
-      .update(campaigns)
-      .set({ attachmentFileNames: fileNames, updatedAt: new Date() })
-      .where(and(
-        eq(campaigns.id, campaignId),
-        eq(campaigns.organizationId, normalizedTenant.organizationId),
-        eq(campaigns.userId, normalizedTenant.userId)
-      ))
-      .returning();
-    return updated;
-  }
-
   async updateCampaignAttachment(campaignId: string, filePath: string, fileName: string, tenant?: Partial<TenantContext>) {
     const normalizedTenant = this.normalizeTenant(tenant);
     const [updated] = await db
@@ -317,37 +259,6 @@ export class CampaignService {
   stopCampaign(campaignId: string) {
     this.stopFlags.set(campaignId, true);
     log(`🛑 Stop signal received for campaign ${campaignId}`);
-  }
-
-  async cancelSchedule(scheduleId: string, tenant?: Partial<TenantContext>) {
-    const normalizedTenant = this.normalizeTenant(tenant);
-    const [schedule] = await db
-      .select()
-      .from(campaignSchedules)
-      .where(and(
-        eq(campaignSchedules.id, scheduleId),
-        eq(campaignSchedules.organizationId, normalizedTenant.organizationId),
-        eq(campaignSchedules.userId, normalizedTenant.userId)
-      ));
-
-    if (!schedule) throw new Error('Schedule not found');
-    if (schedule.status === 'completed' || schedule.status === 'failed') {
-      throw new Error(`Cannot cancel a ${schedule.status} schedule`);
-    }
-
-    // If running, send stop signal to the campaign
-    if (schedule.status === 'running') {
-      this.stopCampaign(schedule.campaignId);
-    }
-
-    const [updated] = await db
-      .update(campaignSchedules)
-      .set({ status: 'cancelled', updatedAt: new Date() })
-      .where(eq(campaignSchedules.id, scheduleId))
-      .returning();
-
-    log(`🚫 Schedule ${scheduleId} cancelled`);
-    return updated;
   }
 
   async scheduleCampaign(
@@ -519,7 +430,7 @@ export class CampaignService {
 
       try {
         // Check if number is blocked
-        const isBlocked = await storage.isNumberBlockedForTenant(normalizedTenant, contact.phone);
+        const isBlocked = await storage.isNumberBlocked(contact.phone);
         if (isBlocked) {
           log(`  ⏭️  Skipping blocked number: ${contact.phone}`);
           failed++;
@@ -600,25 +511,13 @@ export class CampaignService {
           fullMessage += 'Reply with: *STOP*\n';
         }
 
-        // Pick attachment: prefer pool (attachmentPaths), fall back to single attachmentPath
-        const poolPaths: string[] = Array.isArray(campaign.attachmentPaths) && (campaign.attachmentPaths as string[]).length > 0
-          ? (campaign.attachmentPaths as string[])
-          : (campaign.attachmentPath ? [campaign.attachmentPath] : []);
-        const poolNames: string[] = Array.isArray(campaign.attachmentFileNames) && (campaign.attachmentFileNames as string[]).length > 0
-          ? (campaign.attachmentFileNames as string[])
-          : (campaign.attachmentName ? [campaign.attachmentName] : []);
-
-        if (poolPaths.length > 0) {
-          const chosenPath = poolPaths[Math.floor(Math.random() * poolPaths.length)];
-          const chosenName = poolNames.length > 0
-            ? poolNames[Math.floor(Math.random() * poolNames.length)]
-            : undefined;
-          log(`  📎 Sending with attachment: ${chosenPath}${chosenName ? ` as "${chosenName}"` : ''}`);
+        // Send message (with attachment if present)
+        if (campaign.attachmentPath) {
+          log(`  📎 Sending with attachment: ${campaign.attachmentPath}`);
           await waService.sendMediaMessage(
             contact.phone,
-            chosenPath,
-            fullMessage.trim(),
-            chosenName
+            campaign.attachmentPath,
+            fullMessage.trim()
           );
         } else {
           // Send text message (already includes buttons formatted as text)

@@ -1,13 +1,14 @@
-import type { IStorage, TenantFilter } from '../storage';
-import type { WAServiceInstance } from './WhatsAppSessionManager';
+import { storage } from '../storage';
+import type { WhatsAppService } from './WhatsAppService';
 import { log } from '../utils';
 
 export class AutoResponseService {
-  constructor(
-    private storage: IStorage,
-    private tenantContext: TenantFilter,
-    private whatsAppService: WAServiceInstance | null = null,
-  ) {}
+  private whatsAppService: WhatsAppService | null = null;
+
+  /** Set the WhatsApp service instance for sending responses */
+  setWhatsAppService(service: WhatsAppService) {
+    this.whatsAppService = service;
+  }
 
   /**
    * Check if incoming message matches any keywords and send auto-response
@@ -19,7 +20,7 @@ export class AutoResponseService {
         return false;
       }
 
-      const autoResponses = await this.storage.getAutoResponsesByTenant(this.tenantContext);
+      const autoResponses = await storage.getAutoResponses();
       
       for (const response of autoResponses) {
         const keyword = response.keyword.toUpperCase();
@@ -33,9 +34,7 @@ export class AutoResponseService {
           await this.whatsAppService.sendTextMessage(phoneNumber, response.response);
           
           // Save auto-response to database
-          await this.storage.createMessage({
-            organizationId: this.tenantContext.organizationId,
-            userId: this.tenantContext.userId,
+          await storage.createMessage({
             phoneNumber,
             content: response.response,
             type: 'text',
@@ -53,3 +52,5 @@ export class AutoResponseService {
     }
   }
 }
+
+export const autoResponseService = new AutoResponseService();
