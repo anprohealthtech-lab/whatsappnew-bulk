@@ -54,6 +54,10 @@ export class PersistentFileService {
       return { exists: false };
     }
   }
+
+  getUploadDirectory(): string {
+    return this.uploadDir;
+  }
 }
 
 export const persistentFileService = new PersistentFileService();

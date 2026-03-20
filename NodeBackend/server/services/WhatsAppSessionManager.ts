@@ -1,6 +1,5 @@
 import makeWASocket, {
   fetchLatestBaileysVersion,
-  useMultiFileAuthState,
   DisconnectReason,
   WASocket,
   downloadMediaMessage,
@@ -17,6 +16,7 @@ import { eq, and } from 'drizzle-orm';
 import { log } from '../utils';
 import type { WhatsAppSession } from '@shared/schema';
 import { ExternalWhatsAppProxy } from './ExternalWhatsAppProxy';
+import { clearDbAuthState, useDbAuthState } from './useDbAuthState';
 
 export interface WhatsAppStatus {
   isConnected: boolean;
@@ -59,6 +59,7 @@ class ManagedBaileysSession extends EventEmitter implements WAServiceInstance {
   private browserIdentity = 'LIMS';
   private waVersion: number[] | null = null;
   private waIsLatest = true;
+  private readonly dbSessionId: string;
 
   constructor(
     private readonly userId: string,
@@ -66,6 +67,7 @@ class ManagedBaileysSession extends EventEmitter implements WAServiceInstance {
     private readonly authPath: string,
   ) {
     super();
+    this.dbSessionId = `${userId}::${sessionName}`;
   }
 
   async initialize(): Promise<void> {
@@ -81,15 +83,13 @@ class ManagedBaileysSession extends EventEmitter implements WAServiceInstance {
         this.socket = null;
       }
 
-      fs.mkdirSync(this.authPath, { recursive: true });
-      await this.validateAuthState();
       await this.loadBrowserIdentity();
 
-      const { state, saveCreds } = await useMultiFileAuthState(this.authPath);
+      const { state, saveCreds } = await useDbAuthState(this.dbSessionId);
       const { version, isLatest } = await fetchLatestBaileysVersion();
       this.waVersion = version;
       this.waIsLatest = isLatest;
-      log(`[WA] Using WA v${version.join('.')} isLatest=${isLatest} for ${this.userId}/${this.sessionName}`);
+      log(`[WA] Using WA v${version.join('.')} isLatest=${isLatest} for ${this.userId}/${this.sessionName} via DB auth`);
 
       this.socket = this.createSocket(state, version, saveCreds);
       this.emit('whatsapp-status', this.getStatus());
@@ -104,7 +104,7 @@ class ManagedBaileysSession extends EventEmitter implements WAServiceInstance {
   }
 
   private createSocket(
-    authState: Awaited<ReturnType<typeof useMultiFileAuthState>>['state'],
+    authState: Awaited<ReturnType<typeof useDbAuthState>>['state'],
     version: any,
     saveCreds: () => Promise<void>,
   ): WASocket {
@@ -319,7 +319,7 @@ class ManagedBaileysSession extends EventEmitter implements WAServiceInstance {
 
       await new Promise((resolve) => setTimeout(resolve, 2000));
       await this.loadBrowserIdentity();
-      const { state, saveCreds } = await useMultiFileAuthState(this.authPath);
+      const { state, saveCreds } = await useDbAuthState(this.dbSessionId);
       const { version } = await fetchLatestBaileysVersion();
       this.socket = this.createSocket(state, version, saveCreds);
     } catch (error: any) {
@@ -663,32 +663,9 @@ class ManagedBaileysSession extends EventEmitter implements WAServiceInstance {
     return null;
   }
 
-  private async validateAuthState(): Promise<boolean> {
-    try {
-      if (!fs.existsSync(this.authPath)) {
-        return true;
-      }
-
-      const { state } = await useMultiFileAuthState(this.authPath);
-      const creds = state.creds;
-      if (!creds?.noiseKey || !creds?.signedIdentityKey || !creds?.signedPreKey) {
-        fs.rmSync(this.authPath, { recursive: true, force: true });
-        fs.mkdirSync(this.authPath, { recursive: true });
-        return false;
-      }
-
-      return true;
-    } catch {
-      if (fs.existsSync(this.authPath)) {
-        fs.rmSync(this.authPath, { recursive: true, force: true });
-      }
-      fs.mkdirSync(this.authPath, { recursive: true });
-      return false;
-    }
-  }
-
   private async clearAuthState(): Promise<void> {
     try {
+      await clearDbAuthState(this.dbSessionId);
       if (fs.existsSync(this.authPath)) {
         fs.rmSync(this.authPath, { recursive: true, force: true });
       }

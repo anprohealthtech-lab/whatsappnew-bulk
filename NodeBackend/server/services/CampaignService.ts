@@ -1,3 +1,5 @@
+import fs from 'fs';
+import path from 'path';
 import { db } from '../db';
 import { campaigns, campaignRecipients, messageVariations, campaignSchedules } from '@shared/schema';
 import { eq, and, desc, lte } from 'drizzle-orm';
@@ -7,6 +9,7 @@ import { messageService } from './MessageService';
 import { variationService } from './VariationService';
 import { storage } from '../storage';
 import { log } from '../utils';
+import { persistentFileService } from './PersistentFileService';
 
 interface ContactRow {
   name: string;
@@ -65,6 +68,26 @@ export class CampaignService {
         path: campaign.attachmentPath,
         fileName: campaign.attachmentName || undefined,
       };
+    }
+
+    return null;
+  }
+
+  private resolveAttachmentPath(filePath: string): string | null {
+    if (fs.existsSync(filePath)) {
+      return filePath;
+    }
+
+    const fileName = path.basename(filePath);
+    const uploadCandidates = [
+      path.join(persistentFileService.getUploadDirectory(), fileName),
+      path.join(process.cwd(), 'uploads', fileName),
+    ];
+
+    for (const candidate of uploadCandidates) {
+      if (fs.existsSync(candidate)) {
+        return candidate;
+      }
     }
 
     return null;
@@ -677,11 +700,17 @@ export class CampaignService {
         }
 
         // Send message (with attachment if present)
-        if (campaign.attachmentPath) {
+        const attachmentToSend = campaign.attachmentPath
+          ? this.resolveAttachmentPath(campaign.attachmentPath)
+          : null;
+        if (campaign.attachmentPath && !attachmentToSend) {
+          throw new Error(`Attachment file not found: ${path.basename(campaign.attachmentPath)}`);
+        }
+        if (attachmentToSend) {
           log(`  📎 Sending with attachment: ${campaign.attachmentPath}`);
           await waService.sendMediaMessage(
             contact.phone,
-            campaign.attachmentPath,
+            attachmentToSend,
             fullMessage.trim()
           );
         } else {

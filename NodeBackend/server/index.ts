@@ -8,12 +8,13 @@ import { runMigrations } from "./migrate";
 import { campaignService } from "./services/CampaignService";
 import { sessionManager } from "./services/WhatsAppSessionManager";
 import { seedSuperAdmin } from "./seedSuperAdmin";
+import { persistentFileService } from "./services/PersistentFileService";
 
 const app = express();
 app.use(express.json());
 app.use(express.urlencoded({ extended: false }));
 
-const uploadsDir = path.resolve(process.cwd(), "uploads");
+const uploadsDir = persistentFileService.getUploadDirectory();
 if (fs.existsSync(uploadsDir)) {
   app.use('/uploads', express.static(uploadsDir));
 }
