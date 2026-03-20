@@ -38,6 +38,38 @@ export class CampaignService {
   private schedulerTimer: NodeJS.Timeout | null = null;
   private schedulerRunning = false;
 
+  private getAttachmentPool(campaign: typeof campaigns.$inferSelect): string[] {
+    if (!Array.isArray(campaign.attachmentPaths)) return [];
+    return campaign.attachmentPaths.filter((value): value is string => typeof value === 'string' && value.trim().length > 0);
+  }
+
+  private getAttachmentFileNamePool(campaign: typeof campaigns.$inferSelect): string[] {
+    if (!Array.isArray(campaign.attachmentFileNames)) return [];
+    return campaign.attachmentFileNames.filter((value): value is string => typeof value === 'string');
+  }
+
+  private pickAttachmentForSend(campaign: typeof campaigns.$inferSelect): { path: string; fileName?: string } | null {
+    const paths = this.getAttachmentPool(campaign);
+    const fileNames = this.getAttachmentFileNamePool(campaign);
+
+    if (paths.length > 0) {
+      const index = Math.floor(Math.random() * paths.length);
+      return {
+        path: paths[index],
+        fileName: fileNames[index],
+      };
+    }
+
+    if (campaign.attachmentPath) {
+      return {
+        path: campaign.attachmentPath,
+        fileName: campaign.attachmentName || undefined,
+      };
+    }
+
+    return null;
+  }
+
   private normalizeTenant(tenant?: Partial<TenantContext>): TenantContext {
     return {
       organizationId: tenant?.organizationId || 'default_org',
@@ -146,6 +178,109 @@ export class CampaignService {
       .set({
         attachmentPath: filePath,
         attachmentName: fileName,
+        updatedAt: new Date(),
+      })
+      .where(and(
+        eq(campaigns.id, campaignId),
+        eq(campaigns.organizationId, normalizedTenant.organizationId),
+        eq(campaigns.userId, normalizedTenant.userId)
+      ))
+      .returning();
+
+    return updated;
+  }
+
+  async addAttachmentToPool(campaignId: string, filePath: string, tenant?: Partial<TenantContext>) {
+    const campaign = await this.getCampaign(campaignId, tenant);
+    if (!campaign) {
+      throw new Error('Campaign not found');
+    }
+
+    const attachmentPaths = this.getAttachmentPool(campaign);
+    if (attachmentPaths.length >= 5) {
+      throw new Error('Maximum 5 attachments allowed per campaign');
+    }
+
+    attachmentPaths.push(filePath);
+    const attachmentFileNames = this.getAttachmentFileNamePool(campaign);
+    while (attachmentFileNames.length < attachmentPaths.length) {
+      attachmentFileNames.push('');
+    }
+
+    const normalizedTenant = this.normalizeTenant(tenant);
+    const [updated] = await db
+      .update(campaigns)
+      .set({
+        attachmentPaths,
+        attachmentFileNames,
+        updatedAt: new Date(),
+      })
+      .where(and(
+        eq(campaigns.id, campaignId),
+        eq(campaigns.organizationId, normalizedTenant.organizationId),
+        eq(campaigns.userId, normalizedTenant.userId)
+      ))
+      .returning();
+
+    return updated;
+  }
+
+  async removeAttachmentFromPool(campaignId: string, index: number, tenant?: Partial<TenantContext>) {
+    const campaign = await this.getCampaign(campaignId, tenant);
+    if (!campaign) {
+      throw new Error('Campaign not found');
+    }
+
+    const attachmentPaths = this.getAttachmentPool(campaign);
+    if (!Number.isInteger(index) || index < 0 || index >= attachmentPaths.length) {
+      throw new Error('Invalid attachment index');
+    }
+
+    const attachmentFileNames = this.getAttachmentFileNamePool(campaign);
+    attachmentPaths.splice(index, 1);
+    if (attachmentFileNames.length > index) {
+      attachmentFileNames.splice(index, 1);
+    }
+
+    const normalizedTenant = this.normalizeTenant(tenant);
+    const [updated] = await db
+      .update(campaigns)
+      .set({
+        attachmentPaths,
+        attachmentFileNames,
+        updatedAt: new Date(),
+      })
+      .where(and(
+        eq(campaigns.id, campaignId),
+        eq(campaigns.organizationId, normalizedTenant.organizationId),
+        eq(campaigns.userId, normalizedTenant.userId)
+      ))
+      .returning();
+
+    return updated;
+  }
+
+  async updateAttachmentFileNames(campaignId: string, fileNames: string[], tenant?: Partial<TenantContext>) {
+    const campaign = await this.getCampaign(campaignId, tenant);
+    if (!campaign) {
+      throw new Error('Campaign not found');
+    }
+
+    const attachmentPaths = this.getAttachmentPool(campaign);
+    if (fileNames.length > attachmentPaths.length) {
+      throw new Error('Cannot set more filenames than attachments');
+    }
+
+    const attachmentFileNames = attachmentPaths.map((_, index) => {
+      const value = fileNames[index];
+      return typeof value === 'string' ? value : '';
+    });
+
+    const normalizedTenant = this.normalizeTenant(tenant);
+    const [updated] = await db
+      .update(campaigns)
+      .set({
+        attachmentFileNames,
         updatedAt: new Date(),
       })
       .where(and(
@@ -296,6 +431,36 @@ export class CampaignService {
         eq(campaignSchedules.userId, normalizedTenant.userId)
       ))
       .orderBy(desc(campaignSchedules.createdAt));
+  }
+
+  async cancelSchedule(scheduleId: string, tenant?: Partial<TenantContext>) {
+    const normalizedTenant = this.normalizeTenant(tenant);
+    const [schedule] = await db.select().from(campaignSchedules).where(and(
+      eq(campaignSchedules.id, scheduleId),
+      eq(campaignSchedules.organizationId, normalizedTenant.organizationId),
+      eq(campaignSchedules.userId, normalizedTenant.userId)
+    ));
+
+    if (!schedule) {
+      throw new Error('Schedule not found');
+    }
+
+    if (schedule.status === 'completed' || schedule.status === 'failed' || schedule.status === 'cancelled') {
+      return schedule;
+    }
+
+    this.stopCampaign(schedule.campaignId);
+
+    const [updated] = await db.update(campaignSchedules)
+      .set({
+        status: 'cancelled',
+        completedAt: new Date(),
+        updatedAt: new Date(),
+      })
+      .where(eq(campaignSchedules.id, scheduleId))
+      .returning();
+
+    return updated;
   }
 
   private async runDueSchedules(): Promise<void> {
