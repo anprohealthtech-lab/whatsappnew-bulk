@@ -93,6 +93,28 @@ export class CampaignService {
     return null;
   }
 
+  private enrichCampaign<T extends typeof campaigns.$inferSelect | undefined>(campaign: T) {
+    if (!campaign) {
+      return campaign;
+    }
+
+    const poolPaths = this.getAttachmentPool(campaign);
+    const missingAttachmentNames = poolPaths
+      .filter((filePath) => !this.resolveAttachmentPath(filePath))
+      .map((filePath) => path.basename(filePath));
+
+    if (campaign.attachmentPath && !this.resolveAttachmentPath(campaign.attachmentPath)) {
+      missingAttachmentNames.push(path.basename(campaign.attachmentPath));
+    }
+
+    return {
+      ...campaign,
+      hasMissingAttachments: missingAttachmentNames.length > 0,
+      missingAttachmentNames,
+      availableAttachmentCount: poolPaths.length - missingAttachmentNames.filter((name) => poolPaths.some((filePath) => path.basename(filePath) === name)).length,
+    };
+  }
+
   private normalizeTenant(tenant?: Partial<TenantContext>): TenantContext {
     return {
       organizationId: tenant?.organizationId || 'default_org',
@@ -151,7 +173,7 @@ export class CampaignService {
 
   async listCampaigns(tenant?: Partial<TenantContext>, campaignType: 'campaign' | 'template' = 'campaign') {
     const normalizedTenant = this.normalizeTenant(tenant);
-    return db
+    const result = await db
       .select()
       .from(campaigns)
       .where(and(
@@ -160,6 +182,8 @@ export class CampaignService {
         eq(campaigns.campaignType, campaignType)
       ))
       .orderBy(desc(campaigns.createdAt));
+
+    return result.map((campaign) => this.enrichCampaign(campaign));
   }
 
   async getCampaign(campaignId: string, tenant?: Partial<TenantContext>) {
@@ -173,7 +197,7 @@ export class CampaignService {
         eq(campaigns.userId, normalizedTenant.userId)
       ));
 
-    return campaign;
+    return this.enrichCampaign(campaign);
   }
 
   async updateCampaignVariation(campaignId: string, variation: string, tenant?: Partial<TenantContext>) {
@@ -210,7 +234,7 @@ export class CampaignService {
       ))
       .returning();
 
-    return updated;
+    return this.enrichCampaign(updated);
   }
 
   async addAttachmentToPool(campaignId: string, filePath: string, tenant?: Partial<TenantContext>) {
@@ -245,7 +269,7 @@ export class CampaignService {
       ))
       .returning();
 
-    return updated;
+    return this.enrichCampaign(updated);
   }
 
   async removeAttachmentFromPool(campaignId: string, index: number, tenant?: Partial<TenantContext>) {
@@ -280,7 +304,7 @@ export class CampaignService {
       ))
       .returning();
 
-    return updated;
+    return this.enrichCampaign(updated);
   }
 
   async updateAttachmentFileNames(campaignId: string, fileNames: string[], tenant?: Partial<TenantContext>) {
@@ -313,7 +337,7 @@ export class CampaignService {
       ))
       .returning();
 
-    return updated;
+    return this.enrichCampaign(updated);
   }
 
   async saveMessageVariation(campaignId: string, variation: string, tenant?: Partial<TenantContext>) {
@@ -483,7 +507,7 @@ export class CampaignService {
       .where(eq(campaignSchedules.id, scheduleId))
       .returning();
 
-    return updated;
+    return this.enrichCampaign(updated);
   }
 
   private async runDueSchedules(): Promise<void> {
@@ -700,18 +724,20 @@ export class CampaignService {
         }
 
         // Send message (with attachment if present)
-        const attachmentToSend = campaign.attachmentPath
-          ? this.resolveAttachmentPath(campaign.attachmentPath)
+        const selectedAttachment = this.pickAttachmentForSend(campaign);
+        const attachmentToSend = selectedAttachment
+          ? this.resolveAttachmentPath(selectedAttachment.path)
           : null;
-        if (campaign.attachmentPath && !attachmentToSend) {
-          throw new Error(`Attachment file not found: ${path.basename(campaign.attachmentPath)}`);
+        if (selectedAttachment && !attachmentToSend) {
+          throw new Error(`Attachment file not found: ${path.basename(selectedAttachment.path)}`);
         }
         if (attachmentToSend) {
           log(`  📎 Sending with attachment: ${campaign.attachmentPath}`);
           await waService.sendMediaMessage(
             contact.phone,
             attachmentToSend,
-            fullMessage.trim()
+            fullMessage.trim(),
+            selectedAttachment?.fileName
           );
         } else {
           // Send text message (already includes buttons formatted as text)
