@@ -6,6 +6,7 @@ import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { Badge } from "@/components/ui/badge";
+import { Progress } from "@/components/ui/progress";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { useToast } from "@/hooks/use-toast";
 import { Dialog, DialogContent, DialogHeader, DialogTitle } from "@/components/ui/dialog";
@@ -33,6 +34,22 @@ interface Schedule {
   jitterSeconds?: number;
 }
 
+interface LiveCampaignRun {
+  campaignId: string;
+  campaignName: string;
+  status: string;
+  total: number;
+  processed: number;
+  pending: number;
+  sent: number;
+  failed: number;
+  startedAt: string;
+  updatedAt: string;
+  lastContactName?: string;
+  lastContactPhone?: string;
+  error?: string;
+}
+
 export function ScheduleCampaignPanel() {
   const [showSchedule, setShowSchedule] = useState(false);
   const [selectedCampaign, setSelectedCampaign] = useState("");
@@ -52,6 +69,12 @@ export function ScheduleCampaignPanel() {
     queryKey: ["/api/campaign-schedules"],
     select: (data: any) => data?.data || data || [],
     refetchInterval: 30000,
+  });
+
+  const { data: liveRuns = [] } = useQuery<LiveCampaignRun[]>({
+    queryKey: ["/api/campaign-runs"],
+    select: (data: any) => data?.data || data || [],
+    refetchInterval: 5000,
   });
 
   const cancelMutation = useMutation({
@@ -98,10 +121,16 @@ export function ScheduleCampaignPanel() {
       case "pending": return "secondary";
       case "running": return "default";
       case "completed": return "outline";
+      case "stopped": return "secondary";
       case "failed": return "destructive";
       default: return "secondary";
     }
   }
+
+  const visibleLiveRuns = liveRuns.filter((run) => {
+    if (run.status === "running") return true;
+    return Date.now() - new Date(run.updatedAt).getTime() < 15 * 60 * 1000;
+  });
 
   return (
     <div className="space-y-6 animate-fade-in-up">
@@ -160,6 +189,37 @@ export function ScheduleCampaignPanel() {
                   </div>
                 </div>
               ))}
+            </div>
+          )}
+
+          {visibleLiveRuns.length > 0 && (
+            <div className="mt-6 space-y-3">
+              <div className="text-sm font-medium text-foreground">Live Campaign Runs</div>
+              {visibleLiveRuns.map((run) => {
+                const progressValue = run.total > 0 ? Math.round((run.processed / run.total) * 100) : 0;
+                return (
+                  <div key={`${run.campaignId}-${run.startedAt}`} className="p-4 rounded-lg border bg-card/50 space-y-3">
+                    <div className="flex items-start justify-between gap-3">
+                      <div className="min-w-0">
+                        <p className="text-sm font-medium truncate">{run.campaignName}</p>
+                        <p className="text-xs text-muted-foreground">
+                          {run.processed}/{run.total} processed • sent {run.sent} • failed {run.failed} • pending {run.pending}
+                        </p>
+                        {run.lastContactName && (
+                          <p className="text-xs text-muted-foreground">
+                            Current: {run.lastContactName} {run.lastContactPhone ? `(${run.lastContactPhone})` : ""}
+                          </p>
+                        )}
+                        {run.error && (
+                          <p className="text-xs text-destructive">Last error: {run.error}</p>
+                        )}
+                      </div>
+                      <Badge variant={getStatusColor(run.status) as any}>{run.status}</Badge>
+                    </div>
+                    <Progress value={progressValue} className="h-2" />
+                  </div>
+                );
+              })}
             </div>
           )}
         </CardContent>

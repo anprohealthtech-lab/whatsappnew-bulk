@@ -26,6 +26,24 @@ interface BulkSendResult {
   failed_list: Array<{ phone: string; name: string; reason: string }>;
 }
 
+interface CampaignRunProgress {
+  campaignId: string;
+  campaignName: string;
+  organizationId: string;
+  userId: string;
+  status: 'running' | 'completed' | 'failed' | 'stopped';
+  total: number;
+  processed: number;
+  pending: number;
+  sent: number;
+  failed: number;
+  startedAt: string;
+  updatedAt: string;
+  lastContactName?: string;
+  lastContactPhone?: string;
+  error?: string;
+}
+
 interface TenantContext {
   organizationId: string;
   userId: string;
@@ -40,6 +58,7 @@ export class CampaignService {
   private stopFlags = new Map<string, boolean>();
   private schedulerTimer: NodeJS.Timeout | null = null;
   private schedulerRunning = false;
+  private liveRuns = new Map<string, CampaignRunProgress>();
 
   private getAttachmentPool(campaign: typeof campaigns.$inferSelect): string[] {
     if (!Array.isArray(campaign.attachmentPaths)) return [];
@@ -91,6 +110,48 @@ export class CampaignService {
     }
 
     return null;
+  }
+
+  private upsertRunProgress(
+    campaignId: string,
+    patch: Partial<CampaignRunProgress> & Pick<CampaignRunProgress, 'campaignId' | 'campaignName' | 'organizationId' | 'userId' | 'total'>
+  ): CampaignRunProgress {
+    const existing = this.liveRuns.get(campaignId);
+    const processed = patch.processed ?? existing?.processed ?? 0;
+    const total = patch.total ?? existing?.total ?? 0;
+    const sent = patch.sent ?? existing?.sent ?? 0;
+    const failed = patch.failed ?? existing?.failed ?? 0;
+
+    const next: CampaignRunProgress = {
+      campaignId,
+      campaignName: patch.campaignName ?? existing?.campaignName ?? campaignId,
+      organizationId: patch.organizationId ?? existing?.organizationId ?? 'default_org',
+      userId: patch.userId ?? existing?.userId ?? 'default_user',
+      status: patch.status ?? existing?.status ?? 'running',
+      total,
+      processed,
+      pending: Math.max(0, total - processed),
+      sent,
+      failed,
+      startedAt: existing?.startedAt ?? new Date().toISOString(),
+      updatedAt: new Date().toISOString(),
+      lastContactName: patch.lastContactName ?? existing?.lastContactName,
+      lastContactPhone: patch.lastContactPhone ?? existing?.lastContactPhone,
+      error: patch.error ?? existing?.error,
+    };
+
+    this.liveRuns.set(campaignId, next);
+    return next;
+  }
+
+  listLiveRuns(tenant?: Partial<TenantContext>): CampaignRunProgress[] {
+    const normalizedTenant = this.normalizeTenant(tenant);
+    return Array.from(this.liveRuns.values())
+      .filter((run) =>
+        run.organizationId === normalizedTenant.organizationId &&
+        run.userId === normalizedTenant.userId
+      )
+      .sort((a, b) => new Date(b.updatedAt).getTime() - new Date(a.updatedAt).getTime());
   }
 
   private enrichCampaign<T extends typeof campaigns.$inferSelect | undefined>(campaign: T) {
@@ -584,6 +645,10 @@ export class CampaignService {
       throw new Error('Campaign not found');
     }
 
+    if (campaign.hasMissingAttachments) {
+      throw new Error(`Attachment missing from storage: ${campaign.missingAttachmentNames.join(', ')}. Please re-upload before sending.`);
+    }
+
     // Get contacts (from input or DB)
     let contacts: ContactRow[];
     if (contactsInput && contactsInput.length > 0) {
@@ -601,8 +666,20 @@ export class CampaignService {
       throw new Error('No contacts found for this campaign');
     }
 
-    // Get user's connected WhatsApp session
     const normalizedTenant = this.normalizeTenant(tenant);
+    this.upsertRunProgress(campaignId, {
+      campaignId,
+      campaignName: campaign.name,
+      organizationId: normalizedTenant.organizationId,
+      userId: normalizedTenant.userId,
+      status: 'running',
+      total: contacts.length,
+      processed: 0,
+      sent: 0,
+      failed: 0,
+    });
+
+    // Get user's connected WhatsApp session
     const userSessions = await sessionManager.listSessions(normalizedTenant.userId);
     const connectedSession = userSessions.find(s => s.status === 'connected');
     if (!connectedSession) {
@@ -627,6 +704,7 @@ export class CampaignService {
 
     let sent = 0;
     let failed = 0;
+    let stoppedByUser = false;
     const failedList: Array<{ phone: string; name: string; reason: string }> = [];
 
     // Send messages with on-demand variation generation
@@ -634,11 +712,21 @@ export class CampaignService {
       // Check for stop signal
       if (this.stopFlags.get(campaignId)) {
         log(`🛑 Campaign ${campaignId} stopped by user request.`);
+        stoppedByUser = true;
         break;
       }
 
       const contact = contacts[i];
       const contactNum = i + 1;
+      this.upsertRunProgress(campaignId, {
+        campaignId,
+        campaignName: campaign.name,
+        organizationId: normalizedTenant.organizationId,
+        userId: normalizedTenant.userId,
+        total: contacts.length,
+        lastContactName: contact.name,
+        lastContactPhone: contact.phone,
+      });
 
       try {
         // Check if number is blocked
@@ -650,6 +738,18 @@ export class CampaignService {
             phone: contact.phone,
             name: contact.name,
             reason: 'Number is blocked (user opted out)',
+          });
+          this.upsertRunProgress(campaignId, {
+            campaignId,
+            campaignName: campaign.name,
+            organizationId: normalizedTenant.organizationId,
+            userId: normalizedTenant.userId,
+            total: contacts.length,
+            processed: sent + failed,
+            sent,
+            failed,
+            lastContactName: contact.name,
+            lastContactPhone: contact.phone,
           });
           continue;
         }
@@ -759,6 +859,18 @@ export class CampaignService {
           );
 
         sent++;
+        this.upsertRunProgress(campaignId, {
+          campaignId,
+          campaignName: campaign.name,
+          organizationId: normalizedTenant.organizationId,
+          userId: normalizedTenant.userId,
+          total: contacts.length,
+          processed: sent + failed,
+          sent,
+          failed,
+          lastContactName: contact.name,
+          lastContactPhone: contact.phone,
+        });
         log(`  ✅ Message sent successfully to ${contact.name}`);
 
         // Add random delay between messages (20-40 seconds)
@@ -781,6 +893,19 @@ export class CampaignService {
           phone: contact.phone,
           name: contact.name,
           reason: errorReason,
+        });
+        this.upsertRunProgress(campaignId, {
+          campaignId,
+          campaignName: campaign.name,
+          organizationId: normalizedTenant.organizationId,
+          userId: normalizedTenant.userId,
+          total: contacts.length,
+          processed: sent + failed,
+          sent,
+          failed,
+          lastContactName: contact.name,
+          lastContactPhone: contact.phone,
+          error: errorReason,
         });
 
         // Update recipient status
@@ -808,6 +933,18 @@ export class CampaignService {
     }
 
     log(`\n✅ Bulk send complete: ${sent}/${contacts.length} sent, ${failed} failed`);
+
+    this.upsertRunProgress(campaignId, {
+      campaignId,
+      campaignName: campaign.name,
+      organizationId: normalizedTenant.organizationId,
+      userId: normalizedTenant.userId,
+      total: contacts.length,
+      status: stoppedByUser ? 'stopped' : 'completed',
+      processed: sent + failed,
+      sent,
+      failed,
+    });
 
     return {
       success: true,

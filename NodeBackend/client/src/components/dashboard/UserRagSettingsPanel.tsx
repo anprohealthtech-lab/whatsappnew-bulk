@@ -64,7 +64,7 @@ export function UserRagSettingsPanel() {
       const isBuiltIn = config.ragBaseUrl === "supabase-knowledge-base";
       setUseBuiltInRag(isBuiltIn);
       setRagBaseUrl(isBuiltIn ? "" : (config.ragBaseUrl || ""));
-      if (!ragAccessKey) setRagAccessKey("");
+      setRagAccessKey(config.ragAccessKey || "");
       setSystemPrompt(config.systemPrompt || "");
       setIsActive(config.isActive !== "false");
       setTriggerKeywords(config.triggerKeywords || []);

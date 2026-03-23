@@ -270,6 +270,10 @@ export class WhatsAppService extends EventEmitter {
     if (!msg?.message) return;
 
     const from = msg.key.remoteJid;
+
+    // Skip group messages and broadcast — chatbot/autoresponse should only handle private DMs
+    if (from?.endsWith('@g.us') || from?.includes('status@broadcast')) return;
+
     const senderPn = (msg.key as any)?.senderPn as string | undefined;
     const phoneNumber = this.resolveIncomingPhoneNumber(from, senderPn);
     this.rememberRecentJid(phoneNumber, from);

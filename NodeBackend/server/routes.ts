@@ -24,7 +24,7 @@ import * as XLSX from 'xlsx';
 import { authService } from "./services/AuthService";
 import { requireAuth, optionalAuth, getTenant, requireSuperAdmin } from "./authMiddleware";
 import { sessionManager } from "./services/WhatsAppSessionManager";
-import { users, messages as messagesTable } from "@shared/schema";
+import { users, messages as messagesTable, chatbotConfigs } from "@shared/schema";
 import { sendNotificationForEvent } from "./services/UserNotificationService";
 
 // Configure CORS
@@ -1819,7 +1819,29 @@ export async function registerRoutes(app: Express): Promise<Server> {
       )).orderBy(desc(userRagAgents.updatedAt)).limit(1);
 
       if (!result[0]) {
-        return res.json({ success: true, data: null });
+        const [fallbackConfig] = await db.select().from(chatbotConfigs)
+          .orderBy(desc(chatbotConfigs.updatedAt))
+          .limit(1);
+
+        if (!fallbackConfig) {
+          return res.json({ success: true, data: null });
+        }
+
+        return res.json({
+          success: true,
+          data: {
+            agentName: fallbackConfig.agentName,
+            ragBaseUrl: fallbackConfig.ragBaseUrl,
+            ragAccessKey: fallbackConfig.ragAccessKey ? `${fallbackConfig.ragAccessKey.slice(0, 4)}...****` : '',
+            systemPrompt: fallbackConfig.systemPrompt,
+            isActive: fallbackConfig.isActive,
+            triggerKeywords: fallbackConfig.triggerKeywords,
+            greetingMessage: fallbackConfig.greetingMessage,
+            contextMessageCount: fallbackConfig.contextMessageCount,
+            replyCooldownSeconds: fallbackConfig.replyCooldownSeconds,
+            typingDelayMs: fallbackConfig.typingDelayMs,
+          }
+        });
       }
 
       res.json({
@@ -2460,9 +2482,25 @@ export async function registerRoutes(app: Express): Promise<Server> {
       )).orderBy(desc(userRagAgents.updatedAt)).limit(1);
 
       if (!config) {
+        const [fallbackConfig] = await db.select().from(chatbotConfigs)
+          .orderBy(desc(chatbotConfigs.updatedAt))
+          .limit(1);
+
+        if (!fallbackConfig) {
+          return res.json({
+            success: true,
+            config: null,
+          });
+        }
+
         return res.json({
           success: true,
-          config: null,
+          config: {
+            ...fallbackConfig,
+            ragAccessKey: fallbackConfig.ragAccessKey
+              ? `${fallbackConfig.ragAccessKey.substring(0, 4)}...${fallbackConfig.ragAccessKey.substring(fallbackConfig.ragAccessKey.length - 4)}`
+              : '',
+          },
         });
       }
 
@@ -2582,6 +2620,17 @@ export async function registerRoutes(app: Express): Promise<Server> {
         success: false,
         message: `Test failed: ${errorMessage}`,
       });
+    }
+  });
+
+  app.get('/api/campaign-runs', requireAuth, async (req, res) => {
+    try {
+      const tenant = getTenantFromRequest(req);
+      const runs = campaignService.listLiveRuns(tenant);
+      res.json({ success: true, data: runs });
+    } catch (error) {
+      const errorMessage = error instanceof Error ? error.message : 'Unknown error';
+      res.status(500).json({ success: false, error: errorMessage });
     }
   });
 

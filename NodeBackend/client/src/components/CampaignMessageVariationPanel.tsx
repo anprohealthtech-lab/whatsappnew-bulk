@@ -21,6 +21,9 @@ interface Campaign {
   attachmentName?: string;
   attachmentPaths?: string[];
   attachmentFileNames?: string[];
+  hasMissingAttachments?: boolean;
+  missingAttachmentNames?: string[];
+  availableAttachmentCount?: number;
 }
 
 interface MessageVariation {
@@ -73,6 +76,8 @@ export function CampaignMessageVariationPanel({
   const [attachmentFile, setAttachmentFile] = useState<File | null>(null);
   const [customFileNames, setCustomFileNames] = useState<string[]>(['', '', '', '', '']);
   const [isSavingFileNames, setIsSavingFileNames] = useState(false);
+  const hasMissingAttachments = !!campaign?.hasMissingAttachments;
+  const missingAttachmentNames = campaign?.missingAttachmentNames || [];
 
   // Extract placeholders from message
   const extractPlaceholders = (message: string): string[] => {
@@ -427,6 +432,11 @@ export function CampaignMessageVariationPanel({
       return;
     }
 
+    if (hasMissingAttachments) {
+      setError(`This campaign has missing attachment files: ${missingAttachmentNames.join(', ')}. Please re-upload them before sending.`);
+      return;
+    }
+
     if (!confirm(`Send campaign to ${contacts.length} contacts? This will take ${Math.ceil(contacts.length * 1.25)} minutes.`)) {
       return;
     }
@@ -699,6 +709,15 @@ export function CampaignMessageVariationPanel({
               </div>
             </div>
 
+            {hasMissingAttachments && (
+              <Alert variant="destructive" className="mt-4">
+                <AlertCircle className="h-4 w-4" />
+                <AlertDescription>
+                  Attachment missing from storage: {missingAttachmentNames.join(', ')}. Re-upload the file to send this campaign with attachments.
+                </AlertDescription>
+              </Alert>
+            )}
+
             {/* Multi-Attachment Pool */}
             <div className="space-y-4 mt-4 border border-border rounded-xl p-4 bg-accent/10">
               <div>
@@ -954,7 +973,7 @@ export function CampaignMessageVariationPanel({
           <div className="flex gap-4">
             <Button
               onClick={sendBulkMessages}
-              disabled={isSending || !selectedVariation || contacts.length === 0}
+              disabled={isSending || !selectedVariation || contacts.length === 0 || hasMissingAttachments}
               className="flex-1 h-12 text-lg bg-primary hover:bg-primary/90 text-primary-foreground shadow-lg shadow-primary/20"
             >
               {isSending ? (
