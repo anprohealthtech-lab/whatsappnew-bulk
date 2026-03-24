@@ -70,6 +70,14 @@ export const campaigns = pgTable("campaigns", {
   attachmentName: text("attachment_name"),
   attachmentPaths: jsonb("attachment_paths"), // Array of file paths (up to 5) for random pick
   attachmentFileNames: jsonb("attachment_file_names"), // Array of custom filenames (up to 5) for random pick
+  runStatus: text("run_status").default("idle").notNull(), // idle | running | paused | completed | failed | stopped
+  defaultIntervalSeconds: integer("default_interval_seconds").default(25),
+  defaultJitterSeconds: integer("default_jitter_seconds").default(0),
+  runStartedAt: timestamp("run_started_at"),
+  runPausedAt: timestamp("run_paused_at"),
+  runCompletedAt: timestamp("run_completed_at"),
+  runUpdatedAt: timestamp("run_updated_at"),
+  lastRunSummary: jsonb("last_run_summary"),
   createdAt: timestamp("created_at").defaultNow(),
   updatedAt: timestamp("updated_at").defaultNow(),
 });

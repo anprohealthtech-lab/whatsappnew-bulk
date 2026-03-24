@@ -16,6 +16,7 @@ export interface IStorage {
   getMessage(id: string): Promise<Message | undefined>;
   getMessages(filters?: { status?: string; phoneNumber?: string; type?: string; limit?: number; offset?: number }): Promise<Message[]>;
   createMessage(message: InsertMessage): Promise<Message>;
+  createMessageForTenant(tenant: TenantFilter, message: InsertMessage): Promise<Message>;
   updateMessage(id: string, updates: Partial<Message>): Promise<Message | undefined>;
   getMessagesCount(filters?: { status?: string; phoneNumber?: string; type?: string }): Promise<number>;
   getMessagesByDateRange(startDate: Date, endDate: Date): Promise<Message[]>;
@@ -58,6 +59,7 @@ export interface IStorage {
   flagAsLeadForTenant(tenant: TenantFilter, phoneNumber: string, keyword: string, name?: string): Promise<Contact>;
   isLeadForTenant(tenant: TenantFilter, phoneNumber: string): Promise<boolean>;
   getLeadsByTenant(tenant: TenantFilter, filters?: { limit?: number; offset?: number }): Promise<Contact[]>;
+  getContactsByTenant(tenant: TenantFilter, filters?: { limit?: number; offset?: number }): Promise<Contact[]>;
   getContactByTenant(tenant: TenantFilter, phoneNumber: string): Promise<Contact | undefined>;
   updateContactByTenant(tenant: TenantFilter, phoneNumber: string, updates: Partial<Contact>): Promise<Contact | undefined>;
   getConversationHistoryByTenant(tenant: TenantFilter, phoneNumber: string, limit?: number): Promise<Message[]>;
@@ -147,6 +149,10 @@ export class MemStorage implements IStorage {
     };
     this.messages.set(id, message);
     return message;
+  }
+
+  async createMessageForTenant(_tenant: TenantFilter, insertMessage: InsertMessage): Promise<Message> {
+    return this.createMessage(insertMessage);
   }
 
   async updateMessage(id: string, updates: Partial<Message>): Promise<Message | undefined> {
@@ -408,6 +414,18 @@ export class MemStorage implements IStorage {
 
   async getLeadsByTenant(_tenant: TenantFilter, filters?: { limit?: number; offset?: number }): Promise<Contact[]> {
     return this.getLeads(filters);
+  }
+
+  async getContactsByTenant(_tenant: TenantFilter, filters?: { limit?: number; offset?: number }): Promise<Contact[]> {
+    let contacts = Array.from(this.contacts.values());
+    contacts.sort((a, b) => {
+      const aTime = a.lastMessageAt ? new Date(a.lastMessageAt).getTime() : 0;
+      const bTime = b.lastMessageAt ? new Date(b.lastMessageAt).getTime() : 0;
+      return bTime - aTime;
+    });
+    const offset = filters?.offset || 0;
+    const limit = filters?.limit || contacts.length;
+    return contacts.slice(offset, offset + limit);
   }
 
   async getContactByTenant(_tenant: TenantFilter, phoneNumber: string): Promise<Contact | undefined> {

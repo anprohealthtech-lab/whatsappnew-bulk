@@ -24,11 +24,14 @@ interface Campaign {
   hasMissingAttachments?: boolean;
   missingAttachmentNames?: string[];
   availableAttachmentCount?: number;
+  runStatus?: string;
+  defaultIntervalSeconds?: number;
+  defaultJitterSeconds?: number;
 }
 
 interface MessageVariation {
   id: string;
-  variation: string;
+  message: string;
   createdAt: string;
 }
 
@@ -36,6 +39,31 @@ interface Contact {
   name: string;
   phone: string;
   extra?: Record<string, any>;
+}
+
+interface CampaignRun {
+  campaignId: string;
+  campaignName: string;
+  status: string;
+  total: number;
+  processed: number;
+  pending: number;
+  sent: number;
+  failed: number;
+  startedAt: string;
+  updatedAt: string;
+  lastContactName?: string;
+  lastContactPhone?: string;
+  error?: string;
+}
+
+interface CampaignHistoryMessage {
+  id: string;
+  phoneNumber: string;
+  content: string;
+  status: string;
+  createdAt: string;
+  metadata?: Record<string, any>;
 }
 
 interface CampaignMessageVariationPanelProps {
@@ -58,10 +86,14 @@ export function CampaignMessageVariationPanel({
   const [campaign, setCampaign] = useState<Campaign | null>(null);
   const [contacts, setContacts] = useState<Contact[]>([]);
   const [variations, setVariations] = useState<MessageVariation[]>([]);
+  const [campaignRun, setCampaignRun] = useState<CampaignRun | null>(null);
+  const [campaignHistory, setCampaignHistory] = useState<CampaignHistoryMessage[]>([]);
   const [selectedVariation, setSelectedVariation] = useState('');
   const [isGenerating, setIsGenerating] = useState(false);
   const [isUploading, setIsUploading] = useState(false);
   const [isSending, setIsSending] = useState(false);
+  const [isPausing, setIsPausing] = useState(false);
+  const [isResuming, setIsResuming] = useState(false);
   const [error, setError] = useState('');
   const [success, setSuccess] = useState('');
   const [uploadFile, setUploadFile] = useState<File | null>(null);
@@ -76,6 +108,8 @@ export function CampaignMessageVariationPanel({
   const [attachmentFile, setAttachmentFile] = useState<File | null>(null);
   const [customFileNames, setCustomFileNames] = useState<string[]>(['', '', '', '', '']);
   const [isSavingFileNames, setIsSavingFileNames] = useState(false);
+  const [intervalSeconds, setIntervalSeconds] = useState('25');
+  const [jitterSeconds, setJitterSeconds] = useState('0');
   const hasMissingAttachments = !!campaign?.hasMissingAttachments;
   const missingAttachmentNames = campaign?.missingAttachmentNames || [];
 
@@ -127,7 +161,20 @@ export function CampaignMessageVariationPanel({
       loadCampaign();
       loadContacts();
       loadVariations();
+      loadCampaignRun();
+      loadCampaignHistory();
     }
+  }, [campaignId]);
+
+  useEffect(() => {
+    if (!campaignId) return;
+
+    const timer = window.setInterval(() => {
+      loadCampaignRun();
+      loadCampaignHistory();
+    }, 5000);
+
+    return () => window.clearInterval(timer);
   }, [campaignId]);
 
   const loadCampaign = async () => {
@@ -140,6 +187,8 @@ export function CampaignMessageVariationPanel({
       if (data.success) {
         setCampaign(data.data);
         setSelectedVariation(data.data.selectedVariation || '');
+        setIntervalSeconds(String(data.data.defaultIntervalSeconds ?? 25));
+        setJitterSeconds(String(data.data.defaultJitterSeconds ?? 0));
         // Sync custom filenames state
         const saved: string[] = data.data.attachmentFileNames || [];
         const padded = [...saved, '', '', '', '', ''].slice(0, 5);
@@ -179,6 +228,37 @@ export function CampaignMessageVariationPanel({
       }
     } catch (err: any) {
       setError('Failed to load variations: ' + err.message);
+    }
+  };
+
+  const loadCampaignRun = async () => {
+    if (!campaignId) return;
+    try {
+      const response = await fetch('/api/campaign-runs', {
+        headers: { Authorization: `Bearer ${getAuthToken()}` },
+      });
+      const data = await response.json();
+      if (data.success) {
+        const activeRun = (data.data || []).find((run: CampaignRun) => run.campaignId === campaignId);
+        setCampaignRun(activeRun || null);
+      }
+    } catch {
+      // Keep current UI state if polling fails.
+    }
+  };
+
+  const loadCampaignHistory = async () => {
+    if (!campaignId) return;
+    try {
+      const response = await fetch(`/api/messages?campaignId=${encodeURIComponent(campaignId)}&limit=50`, {
+        headers: { Authorization: `Bearer ${getAuthToken()}` },
+      });
+      const data = await response.json();
+      if (data.success) {
+        setCampaignHistory(data.data.messages || []);
+      }
+    } catch {
+      // Ignore transient history refresh issues.
     }
   };
 
@@ -450,6 +530,8 @@ export function CampaignMessageVariationPanel({
         headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${getAuthToken()}` },
         body: JSON.stringify({
           variation_message: selectedVariation,
+          intervalSeconds: parseInt(intervalSeconds, 10) || 25,
+          jitterSeconds: parseInt(jitterSeconds, 10) || 0,
         }),
       });
 
@@ -457,6 +539,8 @@ export function CampaignMessageVariationPanel({
 
       if (data.success) {
         setSuccess(`Campaign sent! Total: ${data.total}, Sent: ${data.sent}, Failed: ${data.failed}`);
+        await loadCampaignRun();
+        await loadCampaignHistory();
         if (data.failed > 0) {
           console.log('Failed contacts:', data.failed_list);
         }
@@ -467,6 +551,52 @@ export function CampaignMessageVariationPanel({
       setError('Failed to send campaign: ' + err.message);
     } finally {
       setIsSending(false);
+    }
+  };
+
+  const pauseCampaign = async () => {
+    if (!campaignId) return;
+    try {
+      setIsPausing(true);
+      const response = await fetch(`/api/campaigns/${campaignId}/pause`, {
+        method: 'POST',
+        headers: { Authorization: `Bearer ${getAuthToken()}` },
+      });
+      const data = await response.json();
+      if (data.success) {
+        setSuccess('Campaign paused');
+        await loadCampaign();
+        await loadCampaignRun();
+      } else {
+        setError(data.error || 'Failed to pause campaign');
+      }
+    } catch (err: any) {
+      setError('Failed to pause campaign: ' + err.message);
+    } finally {
+      setIsPausing(false);
+    }
+  };
+
+  const resumeCampaign = async () => {
+    if (!campaignId) return;
+    try {
+      setIsResuming(true);
+      const response = await fetch(`/api/campaigns/${campaignId}/resume`, {
+        method: 'POST',
+        headers: { Authorization: `Bearer ${getAuthToken()}` },
+      });
+      const data = await response.json();
+      if (data.success) {
+        setSuccess('Campaign resumed');
+        await loadCampaign();
+        await loadCampaignRun();
+      } else {
+        setError(data.error || 'Failed to resume campaign');
+      }
+    } catch (err: any) {
+      setError('Failed to resume campaign: ' + err.message);
+    } finally {
+      setIsResuming(false);
     }
   };
 
@@ -709,6 +839,23 @@ export function CampaignMessageVariationPanel({
               </div>
             </div>
 
+            <div className="grid grid-cols-1 md:grid-cols-3 gap-3 mt-4">
+              <div className="p-3 rounded-xl border bg-muted/30">
+                <p className="text-xs uppercase tracking-wider text-muted-foreground">Run Status</p>
+                <p className="font-semibold mt-1 capitalize">{campaignRun?.status || campaign.runStatus || 'idle'}</p>
+              </div>
+              <div className="p-3 rounded-xl border bg-muted/30">
+                <p className="text-xs uppercase tracking-wider text-muted-foreground">Interval</p>
+                <p className="font-semibold mt-1">{intervalSeconds}s</p>
+              </div>
+              <div className="p-3 rounded-xl border bg-muted/30">
+                <p className="text-xs uppercase tracking-wider text-muted-foreground">Progress</p>
+                <p className="font-semibold mt-1">
+                  {campaignRun ? `${campaignRun.processed}/${campaignRun.total}` : `${contacts.length} contacts loaded`}
+                </p>
+              </div>
+            </div>
+
             {hasMissingAttachments && (
               <Alert variant="destructive" className="mt-4">
                 <AlertCircle className="h-4 w-4" />
@@ -917,13 +1064,13 @@ export function CampaignMessageVariationPanel({
                   <div
                     key={v.id}
                     className="text-sm p-3 bg-white dark:bg-zinc-950 rounded-lg border border-border cursor-pointer hover:border-primary/50 hover:shadow-sm transition-all"
-                    onClick={() => setSelectedVariation(v.variation)}
+                    onClick={() => setSelectedVariation(v.message)}
                   >
                     <div className="flex justify-between items-center mb-2">
                       <span className="text-xs font-medium text-primary">Variation</span>
                       <span className="text-[10px] text-muted-foreground">{new Date(v.createdAt).toLocaleString()}</span>
                     </div>
-                    <p className="text-muted-foreground line-clamp-2">{v.variation}</p>
+                    <p className="text-muted-foreground line-clamp-2">{v.message}</p>
                   </div>
                 ))}
               </div>
@@ -970,10 +1117,33 @@ export function CampaignMessageVariationPanel({
             </div>
           </div>
 
+          <div className="grid grid-cols-2 gap-4">
+            <div className="space-y-2">
+              <Label htmlFor="intervalSeconds">Interval Between Messages (seconds)</Label>
+              <Input
+                id="intervalSeconds"
+                type="number"
+                min="1"
+                value={intervalSeconds}
+                onChange={(e) => setIntervalSeconds(e.target.value)}
+              />
+            </div>
+            <div className="space-y-2">
+              <Label htmlFor="jitterSeconds">Random Jitter (seconds)</Label>
+              <Input
+                id="jitterSeconds"
+                type="number"
+                min="0"
+                value={jitterSeconds}
+                onChange={(e) => setJitterSeconds(e.target.value)}
+              />
+            </div>
+          </div>
+
           <div className="flex gap-4">
             <Button
               onClick={sendBulkMessages}
-              disabled={isSending || !selectedVariation || contacts.length === 0 || hasMissingAttachments}
+              disabled={isSending || campaignRun?.status === 'running' || campaignRun?.status === 'paused' || !selectedVariation || contacts.length === 0 || hasMissingAttachments}
               className="flex-1 h-12 text-lg bg-primary hover:bg-primary/90 text-primary-foreground shadow-lg shadow-primary/20"
             >
               {isSending ? (
@@ -983,14 +1153,45 @@ export function CampaignMessageVariationPanel({
               )}
             </Button>
 
-            {isSending && (
+            {(isSending || campaignRun?.status === 'running' || campaignRun?.status === 'paused') && (
+              <>
+                {campaignRun?.status === 'paused' ? (
+                  <Button
+                    onClick={resumeCampaign}
+                    disabled={isResuming}
+                    variant="outline"
+                    className="h-12 px-6"
+                  >
+                    {isResuming ? <Loader2 className="mr-2 h-5 w-5 animate-spin" /> : <RefreshCw className="mr-2 h-5 w-5" />}
+                    Resume
+                  </Button>
+                ) : (
+                  <Button
+                    onClick={pauseCampaign}
+                    disabled={isPausing}
+                    variant="outline"
+                    className="h-12 px-6"
+                  >
+                    {isPausing ? <Loader2 className="mr-2 h-5 w-5 animate-spin" /> : <RefreshCw className="mr-2 h-5 w-5" />}
+                    Pause
+                  </Button>
+                )}
+              </>
+            )}
+
+            {(isSending || campaignRun?.status === 'running' || campaignRun?.status === 'paused') && (
               <Button
                 onClick={async () => {
                   if (confirm('Are you sure you want to stop the campaign?')) {
                     try {
-                      await fetch(`/api/campaigns/${campaignId}/stop`, { method: 'POST' });
+                      await fetch(`/api/campaigns/${campaignId}/stop`, {
+                        method: 'POST',
+                        headers: { Authorization: `Bearer ${getAuthToken()}` },
+                      });
                       setSuccess('Campaign stopped successfully');
                       setIsSending(false);
+                      await loadCampaign();
+                      await loadCampaignRun();
                     } catch (err) {
                       console.error('Failed to stop campaign:', err);
                     }
@@ -1009,6 +1210,37 @@ export function CampaignMessageVariationPanel({
               <>Estimated time: <strong>{Math.ceil(contacts.length * 1.25)} minutes</strong> (approx 1-1.5 min per contact)</>
             )}
           </p>
+        </CardContent>
+      </Card>
+
+      <Card className="border-none shadow-lg bg-white/50 dark:bg-zinc-900/50 backdrop-blur-sm">
+        <CardHeader>
+          <CardTitle className="flex items-center">
+            <MessageSquare className="w-5 h-5 mr-2 text-primary" />
+            Campaign Message History
+          </CardTitle>
+          <CardDescription>Messages sent from this campaign only</CardDescription>
+        </CardHeader>
+        <CardContent>
+          {campaignHistory.length === 0 ? (
+            <p className="text-sm text-muted-foreground">No campaign messages yet.</p>
+          ) : (
+            <div className="space-y-3 max-h-72 overflow-y-auto">
+              {campaignHistory.map((message) => (
+                <div key={message.id} className="rounded-xl border p-3 bg-background/70">
+                  <div className="flex items-center justify-between gap-3">
+                    <div>
+                      <p className="font-medium text-sm">{message.metadata?.contactName || message.phoneNumber}</p>
+                      <p className="text-xs text-muted-foreground">{message.phoneNumber}</p>
+                    </div>
+                    <Badge variant={message.status === 'sent' ? 'default' : 'secondary'}>{message.status}</Badge>
+                  </div>
+                  <p className="text-sm mt-2 whitespace-pre-wrap">{message.content}</p>
+                  <p className="text-[11px] text-muted-foreground mt-2">{new Date(message.createdAt).toLocaleString()}</p>
+                </div>
+              ))}
+            </div>
+          )}
         </CardContent>
       </Card>
     </div >

@@ -71,6 +71,14 @@ export async function runMigrations(): Promise<void> {
         "attachment_name" text,
         "attachment_paths" jsonb,
         "attachment_file_names" jsonb,
+        "run_status" text DEFAULT 'idle' NOT NULL,
+        "default_interval_seconds" integer DEFAULT 25,
+        "default_jitter_seconds" integer DEFAULT 0,
+        "run_started_at" timestamp,
+        "run_paused_at" timestamp,
+        "run_completed_at" timestamp,
+        "run_updated_at" timestamp,
+        "last_run_summary" jsonb,
         "created_at" timestamp DEFAULT now(),
         "updated_at" timestamp DEFAULT now()
       );
@@ -260,6 +268,14 @@ export async function runMigrations(): Promise<void> {
       ALTER TABLE "campaigns" ADD COLUMN IF NOT EXISTS "campaign_type" text DEFAULT 'campaign' NOT NULL;
       ALTER TABLE "campaigns" ADD COLUMN IF NOT EXISTS "attachment_paths" jsonb;
       ALTER TABLE "campaigns" ADD COLUMN IF NOT EXISTS "attachment_file_names" jsonb;
+      ALTER TABLE "campaigns" ADD COLUMN IF NOT EXISTS "run_status" text DEFAULT 'idle' NOT NULL;
+      ALTER TABLE "campaigns" ADD COLUMN IF NOT EXISTS "default_interval_seconds" integer DEFAULT 25;
+      ALTER TABLE "campaigns" ADD COLUMN IF NOT EXISTS "default_jitter_seconds" integer DEFAULT 0;
+      ALTER TABLE "campaigns" ADD COLUMN IF NOT EXISTS "run_started_at" timestamp;
+      ALTER TABLE "campaigns" ADD COLUMN IF NOT EXISTS "run_paused_at" timestamp;
+      ALTER TABLE "campaigns" ADD COLUMN IF NOT EXISTS "run_completed_at" timestamp;
+      ALTER TABLE "campaigns" ADD COLUMN IF NOT EXISTS "run_updated_at" timestamp;
+      ALTER TABLE "campaigns" ADD COLUMN IF NOT EXISTS "last_run_summary" jsonb;
 
       -- Multi-user columns on existing tables
       ALTER TABLE "users" ADD COLUMN IF NOT EXISTS "email" text;
@@ -287,9 +303,20 @@ export async function runMigrations(): Promise<void> {
       -- Indexes for multi-user lookups
       CREATE INDEX IF NOT EXISTS idx_messages_tenant ON messages(organization_id, user_id, created_at);
       CREATE INDEX IF NOT EXISTS idx_contacts_tenant ON contacts(organization_id, user_id);
+      CREATE UNIQUE INDEX IF NOT EXISTS idx_contacts_tenant_phone_unique ON contacts(organization_id, user_id, phone_number);
       CREATE INDEX IF NOT EXISTS idx_auto_responses_tenant ON auto_responses(organization_id, user_id);
       CREATE INDEX IF NOT EXISTS idx_blocked_numbers_tenant ON blocked_numbers(organization_id, user_id);
       CREATE INDEX IF NOT EXISTS idx_whatsapp_sessions_user ON whatsapp_sessions(user_id, session_name);
+
+      DO $$ BEGIN
+        IF EXISTS (
+          SELECT 1 FROM information_schema.table_constraints
+          WHERE constraint_name = 'contacts_phone_number_unique'
+            AND table_name = 'contacts'
+        ) THEN
+          ALTER TABLE "contacts" DROP CONSTRAINT "contacts_phone_number_unique";
+        END IF;
+      END $$;
 
       -- Per-user chatbot config columns on user_rag_agents (0004)
       ALTER TABLE "user_rag_agents" ADD COLUMN IF NOT EXISTS "trigger_keywords" jsonb;

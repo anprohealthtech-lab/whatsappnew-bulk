@@ -24,7 +24,7 @@ import * as XLSX from 'xlsx';
 import { authService } from "./services/AuthService";
 import { requireAuth, optionalAuth, getTenant, requireSuperAdmin } from "./authMiddleware";
 import { sessionManager } from "./services/WhatsAppSessionManager";
-import { users, messages as messagesTable, chatbotConfigs } from "@shared/schema";
+import { users, messages as messagesTable, chatbotConfigs, contacts as contactsTable, campaigns as campaignsTable } from "@shared/schema";
 import { sendNotificationForEvent } from "./services/UserNotificationService";
 
 // Configure CORS
@@ -1060,7 +1060,7 @@ export async function registerRoutes(app: Express): Promise<Server> {
   app.get('/api/messages', requireAuth, async (req, res) => {
     try {
       const tenant = getTenantFromRequest(req);
-      const { status, phoneNumber, type, limit = '50', offset = '0', search } = req.query;
+      const { status, phoneNumber, type, limit = '50', offset = '0', search, campaignId } = req.query;
 
       const conditions = [
         eq(messagesTable.organizationId, tenant.organizationId),
@@ -1075,34 +1075,33 @@ export async function registerRoutes(app: Express): Promise<Server> {
 
       const scopedMessages = await db.select().from(messagesTable)
         .where(and(...conditions))
-        .orderBy(desc(messagesTable.createdAt))
-        .limit(parsedLimit)
-        .offset(parsedOffset);
+        .orderBy(desc(messagesTable.createdAt));
 
-      const totalResult = await db.select({ count: drizzleSql<number>`count(*)` }).from(messagesTable)
-        .where(and(...conditions));
+      let messages = scopedMessages;
+      if (campaignId && typeof campaignId === 'string') {
+        messages = messages.filter((msg) => {
+          const metadata = msg.metadata && typeof msg.metadata === 'object' ? msg.metadata as Record<string, any> : null;
+          return metadata?.campaignId === campaignId;
+        });
+      }
 
-      const result = {
-        messages: scopedMessages,
-        total: Number(totalResult[0]?.count || 0),
-      };
-
-      // Apply search filter if provided
-      let { messages } = result;
       if (search && typeof search === 'string') {
         const searchLower = search.toLowerCase();
         messages = messages.filter(msg =>
           msg.content.toLowerCase().includes(searchLower) ||
           msg.phoneNumber.includes(search) ||
-          (msg.sampleId && msg.sampleId.toLowerCase().includes(searchLower))
+          (msg.sampleId && msg.sampleId.toLowerCase().includes(searchLower)) ||
+          (msg.metadata && typeof msg.metadata === 'object' && JSON.stringify(msg.metadata).toLowerCase().includes(searchLower))
         );
       }
+      const total = messages.length;
+      messages = messages.slice(parsedOffset, parsedOffset + parsedLimit);
 
       res.json({
         success: true,
         data: {
           messages,
-          total: result.total,
+          total,
           limit: parsedLimit,
           offset: parsedOffset,
         }
@@ -1515,6 +1514,38 @@ export async function registerRoutes(app: Express): Promise<Server> {
     }
   });
 
+  app.post('/api/campaigns/:campaignId/contacts/upload-json', requireAuth, async (req, res) => {
+    try {
+      const tenant = getTenantFromRequest(req);
+      const { campaignId } = req.params;
+      const contacts = Array.isArray(req.body?.contacts) ? req.body.contacts : [];
+
+      if (contacts.length === 0) {
+        return res.status(400).json({ success: false, error: 'contacts array is required' });
+      }
+
+      const normalizedContacts = contacts.map((row: any) => {
+        if (!row.phone) {
+          throw new Error('Each contact must include a phone number');
+        }
+
+        const { name, phone, ...extra } = row;
+        return {
+          name: String(name || phone),
+          phone: String(phone),
+          extra,
+        };
+      });
+
+      const result = await campaignService.uploadContacts(campaignId, normalizedContacts, tenant);
+      res.json(result);
+    } catch (error) {
+      const errorMessage = error instanceof Error ? error.message : 'Unknown error';
+      log(`Upload JSON contacts error: ${errorMessage}`);
+      res.status(400).json({ success: false, error: errorMessage });
+    }
+  });
+
   // Get contacts for campaign
   app.get('/api/campaigns/:campaignId/contacts', requireAuth, async (req, res) => {
     try {
@@ -1665,9 +1696,65 @@ export async function registerRoutes(app: Express): Promise<Server> {
   // Stop a running campaign
   app.post('/api/campaigns/:campaignId/stop', requireAuth, async (req, res) => {
     try {
+      const tenant = getTenantFromRequest(req);
       const { campaignId } = req.params;
       campaignService.stopCampaign(campaignId);
+      await db.update(campaignsTable).set({
+        runStatus: 'stopped',
+        runPausedAt: null,
+        runCompletedAt: new Date(),
+        runUpdatedAt: new Date(),
+        updatedAt: new Date(),
+      }).where(and(
+        eq(campaignsTable.id, campaignId),
+        eq(campaignsTable.organizationId, tenant.organizationId),
+        eq(campaignsTable.userId, tenant.userId),
+      ));
       res.json({ success: true, message: 'Stop signal sent' });
+    } catch (error) {
+      const errorMessage = error instanceof Error ? error.message : 'Unknown error';
+      res.status(400).json({ success: false, error: errorMessage });
+    }
+  });
+
+  app.post('/api/campaigns/:campaignId/pause', requireAuth, async (req, res) => {
+    try {
+      const tenant = getTenantFromRequest(req);
+      const { campaignId } = req.params;
+      campaignService.pauseCampaign(campaignId);
+      await db.update(campaignsTable).set({
+        runStatus: 'paused',
+        runPausedAt: new Date(),
+        runUpdatedAt: new Date(),
+        updatedAt: new Date(),
+      }).where(and(
+        eq(campaignsTable.id, campaignId),
+        eq(campaignsTable.organizationId, tenant.organizationId),
+        eq(campaignsTable.userId, tenant.userId),
+      ));
+      res.json({ success: true, message: 'Pause signal sent' });
+    } catch (error) {
+      const errorMessage = error instanceof Error ? error.message : 'Unknown error';
+      res.status(400).json({ success: false, error: errorMessage });
+    }
+  });
+
+  app.post('/api/campaigns/:campaignId/resume', requireAuth, async (req, res) => {
+    try {
+      const tenant = getTenantFromRequest(req);
+      const { campaignId } = req.params;
+      campaignService.resumeCampaign(campaignId);
+      await db.update(campaignsTable).set({
+        runStatus: 'running',
+        runPausedAt: null,
+        runUpdatedAt: new Date(),
+        updatedAt: new Date(),
+      }).where(and(
+        eq(campaignsTable.id, campaignId),
+        eq(campaignsTable.organizationId, tenant.organizationId),
+        eq(campaignsTable.userId, tenant.userId),
+      ));
+      res.json({ success: true, message: 'Resume signal sent' });
     } catch (error) {
       const errorMessage = error instanceof Error ? error.message : 'Unknown error';
       res.status(400).json({ success: false, error: errorMessage });
@@ -2631,6 +2718,56 @@ export async function registerRoutes(app: Express): Promise<Server> {
     } catch (error) {
       const errorMessage = error instanceof Error ? error.message : 'Unknown error';
       res.status(500).json({ success: false, error: errorMessage });
+    }
+  });
+
+  app.get('/api/contacts', requireAuth, async (req, res) => {
+    try {
+      const tenant = getTenantFromRequest(req);
+      const search = String(req.query.search || '').trim().toLowerCase();
+      let result = await storage.getContactsByTenant(tenant);
+
+      if (search) {
+        result = result.filter((contact) =>
+          (contact.name || '').toLowerCase().includes(search) ||
+          contact.phoneNumber.includes(search)
+        );
+      }
+
+      res.json({ success: true, data: result, total: result.length });
+    } catch (error) {
+      const errorMessage = error instanceof Error ? error.message : 'Unknown error';
+      res.status(500).json({ success: false, error: errorMessage });
+    }
+  });
+
+  app.post('/api/contacts/add-to-campaign', requireAuth, async (req, res) => {
+    try {
+      const tenant = getTenantFromRequest(req);
+      const { campaignId, contactIds } = req.body as { campaignId?: string; contactIds?: string[] };
+
+      if (!campaignId || !Array.isArray(contactIds) || contactIds.length === 0) {
+        return res.status(400).json({ success: false, error: 'campaignId and contactIds are required' });
+      }
+
+      const tenantContacts = await storage.getContactsByTenant(tenant);
+      const selectedContacts = tenantContacts
+        .filter((contact) => contactIds.includes(contact.id))
+        .map((contact) => ({
+          name: contact.name || contact.phoneNumber,
+          phone: contact.phoneNumber,
+          extra: {},
+        }));
+
+      if (selectedContacts.length === 0) {
+        return res.status(400).json({ success: false, error: 'No matching contacts found' });
+      }
+
+      const result = await campaignService.uploadContacts(campaignId, selectedContacts, tenant);
+      res.json({ success: true, data: result });
+    } catch (error) {
+      const errorMessage = error instanceof Error ? error.message : 'Unknown error';
+      res.status(400).json({ success: false, error: errorMessage });
     }
   });
 

@@ -120,6 +120,7 @@ export function ScheduleCampaignPanel() {
     switch (status) {
       case "pending": return "secondary";
       case "running": return "default";
+      case "paused": return "secondary";
       case "completed": return "outline";
       case "stopped": return "secondary";
       case "failed": return "destructive";

@@ -33,6 +33,7 @@ export function Sidebar({ activeSection, setActiveSection, setLocation }: Sideba
         { id: "templates", label: "Templates", icon: FileText, action: () => setActiveSection("templates") },
         { id: "schedules", label: "Schedules", icon: Clock, action: () => setActiveSection("schedules") },
         { id: "groups", label: "Group Scraper", icon: Users, action: () => setActiveSection("groups") },
+        { id: "contacts", label: "Contacts", icon: Users, action: () => setActiveSection("contacts") },
         { id: "history", label: "Message History", icon: History, action: () => setActiveSection("history") },
         { id: "auto-responses", label: "Auto-Responses", icon: MessageSquare, action: () => setActiveSection("auto-responses") },
         { id: "leads", label: "Leads", icon: Users, action: () => setActiveSection("leads") },

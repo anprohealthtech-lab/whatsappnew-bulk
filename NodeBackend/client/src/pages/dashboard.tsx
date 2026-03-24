@@ -29,6 +29,7 @@ import { WhatsAppSessionPanel } from "@/components/dashboard/WhatsAppSessionPane
 import { CampaignTemplatesPanel } from "@/components/dashboard/CampaignTemplatesPanel";
 import { ScheduleCampaignPanel } from "@/components/dashboard/ScheduleCampaignPanel";
 import { GroupScraperPanel } from "@/components/dashboard/GroupScraperPanel";
+import { ContactsPanel } from "@/components/dashboard/ContactsPanel";
 import { UserRagSettingsPanel } from "@/components/dashboard/UserRagSettingsPanel";
 import { KnowledgeBasePanel } from "@/components/dashboard/KnowledgeBasePanel";
 import { NotificationRecipientsPanel } from "@/components/dashboard/NotificationRecipientsPanel";
@@ -477,6 +478,9 @@ export default function Dashboard() {
 
           {/* Group Scraper Section */}
           {activeSection === "groups" && <GroupScraperPanel />}
+
+          {/* Contacts Section */}
+          {activeSection === "contacts" && <ContactsPanel />}
 
           {/* AI Chatbot / RAG Settings Section */}
           {activeSection === "rag-settings" && <UserRagSettingsPanel />}

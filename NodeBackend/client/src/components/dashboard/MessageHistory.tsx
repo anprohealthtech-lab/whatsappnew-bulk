@@ -135,7 +135,7 @@ export function MessageHistory({ messages, isLoading, filters, onFilterChange, o
                                             {formatTimestamp(msg.createdAt)}
                                         </td>
                                         <td className="py-4 px-6 font-medium text-foreground">
-                                            {msg.to}
+                                            {msg.phoneNumber}
                                         </td>
                                         <td className="py-4 px-6">
                                             <div className="flex items-center space-x-2">
