@@ -348,6 +348,7 @@ export class ChatbotService {
     const config = await this.getEffectiveChatbotConfig();
 
     if (!config || config.isActive !== "true") {
+      console.log("[ChatbotService] Lead trigger detection skipped because chatbot config is inactive or missing");
       return null;
     }
 
@@ -1278,7 +1279,28 @@ export class ChatbotService {
       ];
 
       const systemPrompt = (config as any).systemPrompt || DEFAULT_SYSTEM_PROMPT;
-      const response = await this.callRagEndpoint(systemPrompt, testMessages, config);
+      let response: string;
+
+      if (config.ragBaseUrl === 'supabase-knowledge-base') {
+        if (!this.tenantContext) {
+          throw new Error('Tenant context is required for built-in knowledge base testing');
+        }
+
+        const supabaseUrl = process.env.VITE_SUPABASE_URL;
+        const supabaseKey = process.env.SUPABASE_SERVICE_ROLE_KEY;
+        if (!supabaseUrl || !supabaseKey) {
+          throw new Error('Supabase environment variables are missing for built-in knowledge base mode');
+        }
+
+        response = await this.callSupabaseRagChat(
+          systemPrompt,
+          testMessages,
+          this.tenantContext.organizationId,
+          this.tenantContext.userId
+        );
+      } else {
+        response = await this.callRagEndpoint(systemPrompt, testMessages, config);
+      }
 
       log(`✅ Test successful, received response: ${response.substring(0, 50)}...`);
 
