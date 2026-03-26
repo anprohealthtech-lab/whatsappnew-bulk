@@ -12,6 +12,7 @@ import { eq, and, sql } from 'drizzle-orm';
 export async function useDbAuthState(sessionId: string): Promise<{
   state: AuthenticationState;
   saveCreds: () => Promise<void>;
+  hasExistingCreds: boolean;
 }> {
   // ---------- low-level helpers ----------
 
@@ -60,8 +61,9 @@ export async function useDbAuthState(sessionId: string): Promise<{
   }
 
   // ---------- load or init credentials ----------
-  const creds: AuthenticationCreds =
-    (await readData('creds', 'creds')) || initAuthCreds();
+  const storedCreds = await readData('creds', 'creds');
+  const hasExistingCreds = !!storedCreds;
+  const creds: AuthenticationCreds = storedCreds || initAuthCreds();
 
   return {
     state: {
@@ -118,6 +120,7 @@ export async function useDbAuthState(sessionId: string): Promise<{
       console.log(`💾 Saving creds to DB for session "${sessionId}"`);
       await writeData('creds', 'creds', creds);
     },
+    hasExistingCreds,
   };
 }
 

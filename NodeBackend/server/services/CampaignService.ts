@@ -584,6 +584,7 @@ export class CampaignService {
 
       for (const schedule of dueSchedules) {
         try {
+          log(`[CampaignScheduler] Starting schedule ${schedule.id} for campaign ${schedule.campaignId} (org=${schedule.organizationId}, user=${schedule.userId}, scheduledAt=${schedule.scheduledAt instanceof Date ? schedule.scheduledAt.toISOString() : String(schedule.scheduledAt)})`);
           await db.update(campaignSchedules)
             .set({ status: 'running', startedAt: new Date(), updatedAt: new Date() })
             .where(eq(campaignSchedules.id, schedule.id));
@@ -602,6 +603,7 @@ export class CampaignService {
             }
           );
 
+          log(`[CampaignScheduler] Completed schedule ${schedule.id} for campaign ${schedule.campaignId}: sent=${result.sent}, failed=${result.failed}, total=${result.total}`);
           await db.update(campaignSchedules)
             .set({
               status: 'completed',
@@ -611,6 +613,11 @@ export class CampaignService {
             })
             .where(eq(campaignSchedules.id, schedule.id));
         } catch (error) {
+          const errorMessage = error instanceof Error ? error.message : 'Unknown error';
+          log(`[CampaignScheduler] Failed schedule ${schedule.id} for campaign ${schedule.campaignId} (org=${schedule.organizationId}, user=${schedule.userId}): ${errorMessage}`);
+          if (error instanceof Error && error.stack) {
+            log(`[CampaignScheduler] Stack for schedule ${schedule.id}: ${error.stack}`);
+          }
           await db.update(campaignSchedules)
             .set({
               status: 'failed',
@@ -618,7 +625,7 @@ export class CampaignService {
               updatedAt: new Date(),
               resultSummary: {
                 success: false,
-                error: error instanceof Error ? error.message : 'Unknown error'
+                error: errorMessage
               }
             })
             .where(eq(campaignSchedules.id, schedule.id));
@@ -683,6 +690,7 @@ export class CampaignService {
     const userSessions = await sessionManager.listSessions(normalizedTenant.userId);
     const connectedSession = userSessions.find(s => s.status === 'connected');
     if (!connectedSession) {
+      log(`[CampaignSend] No connected WhatsApp session for campaign ${campaignId} (org=${normalizedTenant.organizationId}, user=${normalizedTenant.userId}). Sessions: ${JSON.stringify(userSessions.map((session) => ({ sessionName: session.sessionName, status: session.status, phoneNumber: session.phoneNumber ?? null })))}`);
       throw new Error('No connected WhatsApp session. Please connect a session first.');
     }
     const waService = await sessionManager.getSession(normalizedTenant.userId, connectedSession.sessionName);

@@ -58,6 +58,8 @@ class ManagedBaileysSession extends EventEmitter implements WAServiceInstance {
   private waVersion: number[] | null = null;
   private waIsLatest = true;
   private readonly dbSessionId: string;
+  private restoredFromStoredCreds = false;
+  private freshPairingInProgress = false;
 
   constructor(
     private readonly userId: string,
@@ -83,11 +85,15 @@ class ManagedBaileysSession extends EventEmitter implements WAServiceInstance {
 
       await this.loadBrowserIdentity();
 
-      const { state, saveCreds } = await useDbAuthState(this.dbSessionId);
+      const { state, saveCreds, hasExistingCreds } = await useDbAuthState(this.dbSessionId);
+      this.restoredFromStoredCreds = hasExistingCreds;
       const { version, isLatest } = await fetchLatestBaileysVersion();
       this.waVersion = version;
       this.waIsLatest = isLatest;
-      log(`[WA] Using WA v${version.join('.')} isLatest=${isLatest} for ${this.userId}/${this.sessionName} via DB auth`);
+      log(
+        `[WA] Using WA v${version.join('.')} isLatest=${isLatest} for ${this.userId}/${this.sessionName} via DB auth` +
+        ` (${hasExistingCreds ? 'restored stored session' : 'fresh pairing required'})`
+      );
 
       this.socket = this.createSocket(state, version, saveCreds);
       this.emit('whatsapp-status', this.getStatus());
@@ -211,6 +217,7 @@ class ManagedBaileysSession extends EventEmitter implements WAServiceInstance {
       this.currentQR = null;
       this.reconnectAttempts = 0;
       this.isPairing = false;
+      this.freshPairingInProgress = false;
       this.phase = 'connected';
 
       if (this.reconnectTimer) {
@@ -252,12 +259,37 @@ class ManagedBaileysSession extends EventEmitter implements WAServiceInstance {
     const badSession = code === DisconnectReason.badSession || code === 500;
     const shouldReconnect = !loggedOut && !connectionReplaced &&
       (restartRequired || connectionLost || timedOut || serverTerminated || badSession || code === 0);
+    const nextAttempt = this.reconnectAttempts + 1;
+    const shouldForceFreshPairing =
+      loggedOut ||
+      connectionReplaced ||
+      badSession;
 
     this.emit('disconnected', { shouldReconnect, reason: code });
 
+    if (shouldForceFreshPairing) {
+      await this.forceFreshPairing(
+        loggedOut
+          ? `logged_out_${code}`
+          : connectionReplaced
+            ? `connection_replaced_${code}`
+            : badSession
+              ? `bad_session_${code}`
+              : `stale_restored_session_${code}`
+      );
+      return;
+    }
+
     if (shouldReconnect) {
-      const nextAttempt = this.reconnectAttempts + 1;
       if (nextAttempt > this.maxReconnectAttempts) {
+        if (
+          this.restoredFromStoredCreds &&
+          !this.isPairing &&
+          (serverTerminated || restartRequired)
+        ) {
+          await this.forceFreshPairing(`max_reconnects_after_restore_${code}`);
+          return;
+        }
         this.emit('whatsapp-auth-failure', { error: `Max reconnect attempts reached (${code})` });
         return;
       }
@@ -319,7 +351,8 @@ class ManagedBaileysSession extends EventEmitter implements WAServiceInstance {
 
       await new Promise((resolve) => setTimeout(resolve, 2000));
       await this.loadBrowserIdentity();
-      const { state, saveCreds } = await useDbAuthState(this.dbSessionId);
+      const { state, saveCreds, hasExistingCreds } = await useDbAuthState(this.dbSessionId);
+      this.restoredFromStoredCreds = hasExistingCreds;
       const { version } = await fetchLatestBaileysVersion();
       this.socket = this.createSocket(state, version, saveCreds);
     } catch (error: any) {
@@ -688,6 +721,48 @@ class ManagedBaileysSession extends EventEmitter implements WAServiceInstance {
         fs.rmSync(this.authPath, { recursive: true, force: true });
       }
     } catch {}
+  }
+
+  private async forceFreshPairing(reason: string): Promise<void> {
+    if (this.freshPairingInProgress) {
+      return;
+    }
+
+    this.freshPairingInProgress = true;
+    log(
+      `[WA] Session ${this.userId}/${this.sessionName} appears stale or invalid (${reason}). ` +
+      `Clearing stored auth and requesting a fresh QR pairing.`
+    );
+
+    try {
+      if (this.reconnectTimer) {
+        clearTimeout(this.reconnectTimer);
+        this.reconnectTimer = null;
+      }
+
+      if (this.socket) {
+        try {
+          this.socket.end(undefined);
+        } catch {}
+        this.socket = null;
+      }
+
+      this.status.isConnected = false;
+      this.status.isAuthenticated = false;
+      this.currentQR = null;
+      this.isPairing = false;
+      this.phase = 'disconnected';
+      this.reconnectAttempts = 0;
+      this.restoredFromStoredCreds = false;
+
+      await this.clearAuthState();
+      this.emit('whatsapp-auth-failure', {
+        error: `Session expired or invalid (${reason}). Please scan a fresh QR code.`,
+      });
+      await this.initialize();
+    } finally {
+      this.freshPairingInProgress = false;
+    }
   }
 
   private async loadBrowserIdentity(): Promise<void> {
