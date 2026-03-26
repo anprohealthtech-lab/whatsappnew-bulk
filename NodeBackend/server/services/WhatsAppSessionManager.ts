@@ -38,8 +38,6 @@ export interface WAServiceInstance {
   cleanup(): Promise<void>;
 }
 
-const useExternalProxy = !!process.env.EXTERNAL_WA_API_URL;
-
 class ManagedBaileysSession extends EventEmitter implements WAServiceInstance {
   private socket: WASocket | null = null;
   private reconnectTimer: NodeJS.Timeout | null = null;
@@ -170,6 +168,8 @@ class ManagedBaileysSession extends EventEmitter implements WAServiceInstance {
 
     socket.ev.on('messages.upsert', async (payload: any) => {
       try {
+        const count = Array.isArray(payload?.messages) ? payload.messages.length : 0;
+        log(`[WA] messages.upsert for ${this.userId}/${this.sessionName} (${count} message(s), type=${payload?.type || 'unknown'})`);
         await this.handleMessagesUpsert(payload);
       } catch (error: any) {
         if (
@@ -341,18 +341,27 @@ class ManagedBaileysSession extends EventEmitter implements WAServiceInstance {
 
   private async handleMessagesUpsert(payload: { messages?: any[] }): Promise<void> {
     const msg = payload?.messages?.[0];
-    if (!msg?.message) return;
+    if (!msg?.message) {
+      log(`[WA] Ignoring upsert for ${this.userId}/${this.sessionName}: no message payload`);
+      return;
+    }
 
     const from = msg.key.remoteJid;
 
     // Skip group messages and broadcast — chatbot/autoresponse should only handle private DMs
-    if (from?.endsWith('@g.us') || from?.includes('status@broadcast')) return;
+    if (from?.endsWith('@g.us') || from?.includes('status@broadcast')) {
+      log(`[WA] Ignoring incoming event for ${this.userId}/${this.sessionName}: group/broadcast message from ${from}`);
+      return;
+    }
 
     const senderPn = (msg.key as any)?.senderPn as string | undefined;
     const phoneNumber = this.resolveIncomingPhoneNumber(from, senderPn);
     this.rememberRecentJid(phoneNumber, from);
 
-    if (msg.key.fromMe) return;
+    if (msg.key.fromMe) {
+      log(`[WA] Ignoring incoming event for ${this.userId}/${this.sessionName}: message is fromMe (${from})`);
+      return;
+    }
 
     if (msg.message.interactiveResponseMessage) {
       const res = msg.message.interactiveResponseMessage.nativeFlowResponseMessage;
@@ -433,7 +442,12 @@ class ManagedBaileysSession extends EventEmitter implements WAServiceInstance {
     }
 
     const messageText = msg.message.conversation || msg.message.extendedTextMessage?.text || '';
-    if (!messageText) return;
+    if (!messageText) {
+      log(`[WA] Ignoring incoming event for ${this.userId}/${this.sessionName}: no text content for ${from}`);
+      return;
+    }
+
+    log(`[WA] Incoming text message for ${this.userId}/${this.sessionName} from ${phoneNumber}: ${messageText}`);
 
     this.emit('incoming-message', {
       phoneNumber,
@@ -724,6 +738,8 @@ export class WhatsAppSessionManager {
 
     if (externalBaseUrl) {
       log(`[WA] Using working-app proxy for ${userId}/${sessionName} via ${externalBaseUrl}`);
+    } else {
+      log(`[WA] Using local Baileys session for ${userId}/${sessionName}`);
     }
 
     service.on('whatsapp-authenticated', async (data: any) => {
@@ -860,31 +876,7 @@ export class WhatsAppSessionManager {
       this.resolvedExternalBaseUrl = explicit;
       return explicit;
     }
-
-    if (!useExternalProxy) {
-      const candidates = ['http://127.0.0.1:3001', 'http://localhost:3001'];
-      for (const candidate of candidates) {
-        try {
-          const response = await fetch(`${candidate}/api/users/whatsapp/summary`, {
-            method: 'GET',
-            headers: { Accept: 'application/json' },
-          });
-
-          if (!response.ok) {
-            continue;
-          }
-
-          const json = await response.json().catch(() => null);
-          if (json && typeof json === 'object' && json.success === true) {
-            this.resolvedExternalBaseUrl = candidate;
-            return candidate;
-          }
-        } catch {
-          // ignore and try the next candidate
-        }
-      }
-    }
-
+    this.resolvedExternalBaseUrl = null;
     return null;
   }
 
