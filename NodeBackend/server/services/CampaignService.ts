@@ -23,6 +23,7 @@ interface BulkSendResult {
   total: number;
   sent: number;
   failed: number;
+  runStatus: 'completed' | 'stopped';
   failed_list: Array<{ phone: string; name: string; reason: string }>;
 }
 
@@ -31,7 +32,7 @@ interface CampaignRunProgress {
   campaignName: string;
   organizationId: string;
   userId: string;
-  status: 'running' | 'completed' | 'failed' | 'stopped';
+  status: 'running' | 'paused' | 'completed' | 'failed' | 'stopped';
   total: number;
   processed: number;
   pending: number;
@@ -56,6 +57,7 @@ interface SendOptions {
 
 export class CampaignService {
   private stopFlags = new Map<string, boolean>();
+  private pauseFlags = new Map<string, boolean>();
   private schedulerTimer: NodeJS.Timeout | null = null;
   private schedulerRunning = false;
   private liveRuns = new Map<string, CampaignRunProgress>();
@@ -504,6 +506,54 @@ export class CampaignService {
     log(`🛑 Stop signal received for campaign ${campaignId}`);
   }
 
+  pauseCampaign(campaignId: string) {
+    this.pauseFlags.set(campaignId, true);
+
+    const existing = this.liveRuns.get(campaignId);
+    if (existing) {
+      this.upsertRunProgress(campaignId, {
+        campaignId,
+        campaignName: existing.campaignName,
+        organizationId: existing.organizationId,
+        userId: existing.userId,
+        total: existing.total,
+        status: 'paused',
+        processed: existing.processed,
+        sent: existing.sent,
+        failed: existing.failed,
+        lastContactName: existing.lastContactName,
+        lastContactPhone: existing.lastContactPhone,
+        error: existing.error,
+      });
+    }
+
+    log(`â¸ Pause signal received for campaign ${campaignId}`);
+  }
+
+  resumeCampaign(campaignId: string) {
+    this.pauseFlags.set(campaignId, false);
+
+    const existing = this.liveRuns.get(campaignId);
+    if (existing) {
+      this.upsertRunProgress(campaignId, {
+        campaignId,
+        campaignName: existing.campaignName,
+        organizationId: existing.organizationId,
+        userId: existing.userId,
+        total: existing.total,
+        status: 'running',
+        processed: existing.processed,
+        sent: existing.sent,
+        failed: existing.failed,
+        lastContactName: existing.lastContactName,
+        lastContactPhone: existing.lastContactPhone,
+        error: existing.error,
+      });
+    }
+
+    log(`â–¶ Resume signal received for campaign ${campaignId}`);
+  }
+
   async scheduleCampaign(
     campaignId: string,
     variationMessage: string,
@@ -568,7 +618,125 @@ export class CampaignService {
       .where(eq(campaignSchedules.id, scheduleId))
       .returning();
 
-    return this.enrichCampaign(updated);
+    return updated;
+  }
+
+  async pauseSchedule(scheduleId: string, tenant?: Partial<TenantContext>) {
+    const normalizedTenant = this.normalizeTenant(tenant);
+    const [schedule] = await db.select().from(campaignSchedules).where(and(
+      eq(campaignSchedules.id, scheduleId),
+      eq(campaignSchedules.organizationId, normalizedTenant.organizationId),
+      eq(campaignSchedules.userId, normalizedTenant.userId)
+    ));
+
+    if (!schedule) {
+      throw new Error('Schedule not found');
+    }
+
+    if (schedule.status === 'completed' || schedule.status === 'failed' || schedule.status === 'cancelled' || schedule.status === 'paused') {
+      return schedule;
+    }
+
+    if (schedule.status === 'running') {
+      this.pauseCampaign(schedule.campaignId);
+    }
+
+    const [updated] = await db.update(campaignSchedules)
+      .set({
+        status: 'paused',
+        updatedAt: new Date(),
+      })
+      .where(eq(campaignSchedules.id, scheduleId))
+      .returning();
+
+    return updated;
+  }
+
+  async resumeSchedule(scheduleId: string, tenant?: Partial<TenantContext>) {
+    const normalizedTenant = this.normalizeTenant(tenant);
+    const [schedule] = await db.select().from(campaignSchedules).where(and(
+      eq(campaignSchedules.id, scheduleId),
+      eq(campaignSchedules.organizationId, normalizedTenant.organizationId),
+      eq(campaignSchedules.userId, normalizedTenant.userId)
+    ));
+
+    if (!schedule) {
+      throw new Error('Schedule not found');
+    }
+
+    if (schedule.status !== 'paused') {
+      return schedule;
+    }
+
+    const shouldResumeRunning = Boolean(schedule.startedAt);
+    if (shouldResumeRunning) {
+      this.resumeCampaign(schedule.campaignId);
+    }
+
+    const [updated] = await db.update(campaignSchedules)
+      .set({
+        status: shouldResumeRunning ? 'running' : 'scheduled',
+        updatedAt: new Date(),
+      })
+      .where(eq(campaignSchedules.id, scheduleId))
+      .returning();
+
+    return updated;
+  }
+
+  private async waitWhilePaused(
+    campaignId: string,
+    campaignName: string,
+    tenant: TenantContext,
+    total: number,
+    progress?: Partial<CampaignRunProgress>
+  ): Promise<boolean> {
+    let markedPaused = false;
+
+    while (this.pauseFlags.get(campaignId)) {
+      if (!markedPaused) {
+        this.upsertRunProgress(campaignId, {
+          campaignId,
+          campaignName,
+          organizationId: tenant.organizationId,
+          userId: tenant.userId,
+          total,
+          status: 'paused',
+          processed: progress?.processed,
+          sent: progress?.sent,
+          failed: progress?.failed,
+          lastContactName: progress?.lastContactName,
+          lastContactPhone: progress?.lastContactPhone,
+          error: progress?.error,
+        });
+        markedPaused = true;
+      }
+
+      if (this.stopFlags.get(campaignId)) {
+        return false;
+      }
+
+      await this.delay(1000);
+    }
+
+    if (markedPaused) {
+      this.upsertRunProgress(campaignId, {
+        campaignId,
+        campaignName,
+        organizationId: tenant.organizationId,
+        userId: tenant.userId,
+        total,
+        status: 'running',
+        processed: progress?.processed,
+        sent: progress?.sent,
+        failed: progress?.failed,
+        lastContactName: progress?.lastContactName,
+        lastContactPhone: progress?.lastContactPhone,
+        error: progress?.error,
+      });
+    }
+
+    return true;
   }
 
   private async runDueSchedules(): Promise<void> {
@@ -602,6 +770,35 @@ export class CampaignService {
               userId: schedule.userId,
             }
           );
+
+          const [latestSchedule] = await db.select().from(campaignSchedules)
+            .where(eq(campaignSchedules.id, schedule.id));
+
+          if (!latestSchedule) {
+            continue;
+          }
+
+          if (latestSchedule.status === 'cancelled' || latestSchedule.status === 'paused') {
+            await db.update(campaignSchedules)
+              .set({
+                updatedAt: new Date(),
+                resultSummary: result,
+              })
+              .where(eq(campaignSchedules.id, schedule.id));
+            continue;
+          }
+
+          if (result.runStatus === 'stopped') {
+            await db.update(campaignSchedules)
+              .set({
+                status: 'cancelled',
+                completedAt: new Date(),
+                updatedAt: new Date(),
+                resultSummary: result,
+              })
+              .where(eq(campaignSchedules.id, schedule.id));
+            continue;
+          }
 
           log(`[CampaignScheduler] Completed schedule ${schedule.id} for campaign ${schedule.campaignId}: sent=${result.sent}, failed=${result.failed}, total=${result.total}`);
           await db.update(campaignSchedules)
@@ -645,6 +842,7 @@ export class CampaignService {
   ): Promise<BulkSendResult> {
     // Reset stop flag
     this.stopFlags.set(campaignId, false);
+    this.pauseFlags.set(campaignId, false);
 
     // Get campaign
     const campaign = await this.getCampaign(campaignId, tenant);
@@ -720,6 +918,17 @@ export class CampaignService {
       // Check for stop signal
       if (this.stopFlags.get(campaignId)) {
         log(`🛑 Campaign ${campaignId} stopped by user request.`);
+        stoppedByUser = true;
+        break;
+      }
+
+      const canContinue = await this.waitWhilePaused(campaignId, campaign.name, normalizedTenant, contacts.length, {
+        processed: sent + failed,
+        sent,
+        failed,
+      });
+      if (!canContinue) {
+        log(`ðŸ›‘ Campaign ${campaignId} stopped while paused.`);
         stoppedByUser = true;
         break;
       }
@@ -889,7 +1098,22 @@ export class CampaignService {
           // Check for stop signal during delay
           for (let d = 0; d < delaySeconds; d++) {
             if (this.stopFlags.get(campaignId)) break;
+            const stillRunning = await this.waitWhilePaused(campaignId, campaign.name, normalizedTenant, contacts.length, {
+              processed: sent + failed,
+              sent,
+              failed,
+              lastContactName: contact.name,
+              lastContactPhone: contact.phone,
+            });
+            if (!stillRunning) {
+              stoppedByUser = true;
+              break;
+            }
             await this.delay(1000);
+          }
+
+          if (stoppedByUser) {
+            break;
           }
         }
 
@@ -960,6 +1184,7 @@ export class CampaignService {
       total: contacts.length,
       sent,
       failed,
+      runStatus: stoppedByUser ? 'stopped' : 'completed',
       failed_list: failedList,
     };
   }

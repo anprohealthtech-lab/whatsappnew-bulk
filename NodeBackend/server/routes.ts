@@ -1624,6 +1624,21 @@ export async function registerRoutes(app: Express): Promise<Server> {
       const { campaignId } = req.params;
       const validatedData = bulkSendSchema.parse(req.body);
 
+      await db.update(campaignsTable).set({
+        defaultIntervalSeconds: validatedData.intervalSeconds ?? 25,
+        defaultJitterSeconds: validatedData.jitterSeconds ?? 0,
+        runStatus: 'running',
+        runStartedAt: new Date(),
+        runPausedAt: null,
+        runCompletedAt: null,
+        runUpdatedAt: new Date(),
+        updatedAt: new Date(),
+      }).where(and(
+        eq(campaignsTable.id, campaignId),
+        eq(campaignsTable.organizationId, tenant.organizationId),
+        eq(campaignsTable.userId, tenant.userId),
+      ));
+
       const result = await campaignService.sendBulkMessages(
         campaignId,
         validatedData.variation_message,
@@ -1768,6 +1783,16 @@ export async function registerRoutes(app: Express): Promise<Server> {
       const { campaignId } = req.params;
       const payload = scheduleCampaignSchema.parse(req.body);
 
+      await db.update(campaignsTable).set({
+        defaultIntervalSeconds: payload.intervalSeconds ?? 25,
+        defaultJitterSeconds: payload.jitterSeconds ?? 0,
+        updatedAt: new Date(),
+      }).where(and(
+        eq(campaignsTable.id, campaignId),
+        eq(campaignsTable.organizationId, tenant.organizationId),
+        eq(campaignsTable.userId, tenant.userId),
+      ));
+
       const schedule = await campaignService.scheduleCampaign(
         campaignId,
         payload.variation_message,
@@ -1793,6 +1818,30 @@ export async function registerRoutes(app: Express): Promise<Server> {
       const tenant = getTenantFromRequest(req);
       const { scheduleId } = req.params;
       const updated = await campaignService.cancelSchedule(scheduleId, tenant);
+      res.json({ success: true, data: updated });
+    } catch (error) {
+      const errorMessage = error instanceof Error ? error.message : 'Unknown error';
+      res.status(400).json({ success: false, error: errorMessage });
+    }
+  });
+
+  app.post('/api/campaign-schedules/:scheduleId/pause', requireAuth, async (req, res) => {
+    try {
+      const tenant = getTenantFromRequest(req);
+      const { scheduleId } = req.params;
+      const updated = await campaignService.pauseSchedule(scheduleId, tenant);
+      res.json({ success: true, data: updated });
+    } catch (error) {
+      const errorMessage = error instanceof Error ? error.message : 'Unknown error';
+      res.status(400).json({ success: false, error: errorMessage });
+    }
+  });
+
+  app.post('/api/campaign-schedules/:scheduleId/resume', requireAuth, async (req, res) => {
+    try {
+      const tenant = getTenantFromRequest(req);
+      const { scheduleId } = req.params;
+      const updated = await campaignService.resumeSchedule(scheduleId, tenant);
       res.json({ success: true, data: updated });
     } catch (error) {
       const errorMessage = error instanceof Error ? error.message : 'Unknown error';
