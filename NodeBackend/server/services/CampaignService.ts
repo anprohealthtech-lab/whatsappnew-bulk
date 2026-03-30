@@ -187,8 +187,12 @@ export class CampaignService {
 
   private randomDelaySeconds(baseInterval: number, jitter: number): number {
     if (jitter <= 0) return baseInterval;
-    const variance = Math.floor(Math.random() * (jitter * 2 + 1)) - jitter;
-    return Math.max(1, baseInterval + variance);
+    // Cap jitter so the delay never drops below 15% of baseInterval (minimum 30s)
+    const minDelay = Math.max(30, Math.ceil(baseInterval * 0.15));
+    const effectiveJitter = Math.min(jitter, baseInterval - minDelay);
+    if (effectiveJitter <= 0) return baseInterval;
+    const variance = Math.floor(Math.random() * (effectiveJitter * 2 + 1)) - effectiveJitter;
+    return Math.max(minDelay, baseInterval + variance);
   }
 
   startScheduler(): void {
