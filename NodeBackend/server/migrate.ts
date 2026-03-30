@@ -388,6 +388,29 @@ export async function runMigrations(): Promise<void> {
 
       CREATE INDEX IF NOT EXISTS "baileys_auth_keys_session_id"
         ON "baileys_auth_keys" ("session_id");
+
+      -- Session connection history — tracks connect/disconnect events for auditing
+      CREATE TABLE IF NOT EXISTS "session_connection_history" (
+        "id" varchar PRIMARY KEY DEFAULT gen_random_uuid(),
+        "user_id" varchar NOT NULL REFERENCES "users"("id") ON DELETE CASCADE,
+        "session_name" text NOT NULL,
+        "event" text NOT NULL,
+        "reason" text,
+        "status_code" integer,
+        "phone_number" text,
+        "session_duration_seconds" integer,
+        "metadata" jsonb,
+        "created_at" timestamp DEFAULT now()
+      );
+
+      CREATE INDEX IF NOT EXISTS idx_session_history_user_id
+        ON session_connection_history(user_id);
+
+      CREATE INDEX IF NOT EXISTS idx_session_history_user_session
+        ON session_connection_history(user_id, session_name);
+
+      CREATE INDEX IF NOT EXISTS idx_session_history_event
+        ON session_connection_history(event);
     `);
 
     log('✅ Database migrations completed — all tables ready');

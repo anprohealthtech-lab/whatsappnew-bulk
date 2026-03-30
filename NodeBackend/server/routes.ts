@@ -493,6 +493,19 @@ export async function registerRoutes(app: Express): Promise<Server> {
     }
   });
 
+  // Session connection history
+  app.get('/api/whatsapp/session/history', requireAuth, async (req, res) => {
+    try {
+      const userId = req.auth!.userId;
+      const sessionName = req.query.sessionName as string | undefined;
+      const limit = Math.min(Math.max(parseInt(req.query.limit as string) || 50, 1), 200);
+      const history = await sessionManager.getSessionHistory(userId, sessionName, limit);
+      res.json(history);
+    } catch (error: any) {
+      res.status(500).json({ message: error.message });
+    }
+  });
+
   // Restore previously connected WhatsApp sessions (multi-user)
   try {
     await sessionManager.restoreConnectedSessions();

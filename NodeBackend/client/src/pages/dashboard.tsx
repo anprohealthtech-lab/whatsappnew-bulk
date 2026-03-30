@@ -34,6 +34,7 @@ import { UserRagSettingsPanel } from "@/components/dashboard/UserRagSettingsPane
 import { KnowledgeBasePanel } from "@/components/dashboard/KnowledgeBasePanel";
 import { NotificationRecipientsPanel } from "@/components/dashboard/NotificationRecipientsPanel";
 import { SuperAdminPanel } from "@/components/dashboard/SuperAdminPanel";
+import { SessionHistoryPanel } from "@/components/dashboard/SessionHistoryPanel";
 
 // Form schemas
 const messageSchema = z.object({
@@ -469,6 +470,9 @@ export default function Dashboard() {
 
           {/* WhatsApp Sessions Section */}
           {activeSection === "sessions" && <WhatsAppSessionPanel />}
+
+          {/* Session Connection History */}
+          {activeSection === "session-history" && <SessionHistoryPanel />}
 
           {/* Templates Section */}
           {activeSection === "templates" && <CampaignTemplatesPanel />}

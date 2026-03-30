@@ -11,8 +11,8 @@ import fs from 'fs';
 import path from 'path';
 import { db } from '../db';
 import { storage } from '../storage';
-import { whatsappSessions } from '@shared/schema';
-import { eq, and } from 'drizzle-orm';
+import { whatsappSessions, sessionConnectionHistory } from '@shared/schema';
+import { eq, and, desc } from 'drizzle-orm';
 import { log } from '../utils';
 import type { WhatsAppSession } from '@shared/schema';
 import { ExternalWhatsAppProxy } from './ExternalWhatsAppProxy';
@@ -60,6 +60,7 @@ class ManagedBaileysSession extends EventEmitter implements WAServiceInstance {
   private readonly dbSessionId: string;
   private restoredFromStoredCreds = false;
   private freshPairingInProgress = false;
+  private connectedSince: Date | null = null;
 
   constructor(
     private readonly userId: string,
@@ -219,11 +220,18 @@ class ManagedBaileysSession extends EventEmitter implements WAServiceInstance {
       this.isPairing = false;
       this.freshPairingInProgress = false;
       this.phase = 'connected';
+      this.connectedSince = new Date();
 
       if (this.reconnectTimer) {
         clearTimeout(this.reconnectTimer);
         this.reconnectTimer = null;
       }
+
+      this.emit('session-history', {
+        event: 'connected',
+        phoneNumber: (this.socket?.user as any)?.id?.split(':')[0] || null,
+        metadata: { waVersion: this.waVersion, waIsLatest: this.waIsLatest, browser: this.browserIdentity },
+      });
 
       this.emit('whatsapp-authenticated', { status: this.status });
       this.emit('whatsapp-status', this.getStatus());
@@ -245,7 +253,22 @@ class ManagedBaileysSession extends EventEmitter implements WAServiceInstance {
     this.phase = 'disconnected';
     this.emit('whatsapp-status', this.getStatus());
 
+    // Calculate session duration
+    let sessionDurationSeconds: number | null = null;
+    if (this.connectedSince) {
+      sessionDurationSeconds = Math.round((Date.now() - this.connectedSince.getTime()) / 1000);
+      this.connectedSince = null;
+    }
+
+    const reasonLabel = DisconnectReason[code] || 'unknown';
+
     if (this.userRequestedDisconnect) {
+      this.emit('session-history', {
+        event: 'disconnected',
+        reason: 'user_requested_disconnect',
+        statusCode: code,
+        sessionDurationSeconds,
+      });
       this.emit('disconnected', { shouldReconnect: false, reason: 'user_requested_disconnect' });
       return;
     }
@@ -268,6 +291,12 @@ class ManagedBaileysSession extends EventEmitter implements WAServiceInstance {
     this.emit('disconnected', { shouldReconnect, reason: code });
 
     if (shouldForceFreshPairing) {
+      this.emit('session-history', {
+        event: 'disconnected',
+        reason: loggedOut ? 'loggedOut' : connectionReplaced ? 'connectionReplaced' : badSession ? 'badSession' : reasonLabel,
+        statusCode: code,
+        sessionDurationSeconds,
+      });
       await this.forceFreshPairing(
         loggedOut
           ? `logged_out_${code}`
@@ -281,6 +310,14 @@ class ManagedBaileysSession extends EventEmitter implements WAServiceInstance {
     }
 
     if (shouldReconnect) {
+      this.emit('session-history', {
+        event: 'reconnecting',
+        reason: reasonLabel,
+        statusCode: code,
+        sessionDurationSeconds,
+        metadata: { attempt: nextAttempt, maxAttempts: this.maxReconnectAttempts },
+      });
+
       if (nextAttempt > this.maxReconnectAttempts) {
         if (
           this.restoredFromStoredCreds &&
@@ -330,6 +367,12 @@ class ManagedBaileysSession extends EventEmitter implements WAServiceInstance {
       await this.clearAuthState();
     }
 
+    this.emit('session-history', {
+      event: 'auth_failure',
+      reason: reasonLabel,
+      statusCode: code,
+      sessionDurationSeconds,
+    });
     this.emit('whatsapp-auth-failure', { error: 'Logged out or disconnected' });
   }
 
@@ -829,6 +872,9 @@ export class WhatsAppSessionManager {
     service.on('disconnected', async () => {
       await this.updateSessionStatus(userId, sessionName, 'disconnected');
     });
+    service.on('session-history', async (data: any) => {
+      await this.logSessionHistory(userId, sessionName, data);
+    });
 
     this.sessions.set(k, service);
 
@@ -985,6 +1031,34 @@ export class WhatsAppSessionManager {
         eq(whatsappSessions.sessionName, sessionName),
       ));
     } catch {}
+  }
+
+  private async logSessionHistory(userId: string, sessionName: string, data: any): Promise<void> {
+    try {
+      await db.insert(sessionConnectionHistory).values({
+        userId,
+        sessionName,
+        event: data.event,
+        reason: data.reason || null,
+        statusCode: data.statusCode ?? null,
+        phoneNumber: data.phoneNumber || null,
+        sessionDurationSeconds: data.sessionDurationSeconds ?? null,
+        metadata: data.metadata || null,
+      });
+    } catch (err) {
+      log(`[WA] Failed to log session history for ${userId}/${sessionName}: ${err instanceof Error ? err.message : 'Unknown'}`);
+    }
+  }
+
+  async getSessionHistory(userId: string, sessionName?: string, limit = 50): Promise<any[]> {
+    const conditions = [eq(sessionConnectionHistory.userId, userId)];
+    if (sessionName) {
+      conditions.push(eq(sessionConnectionHistory.sessionName, sessionName));
+    }
+    return db.select().from(sessionConnectionHistory)
+      .where(and(...conditions))
+      .orderBy(desc(sessionConnectionHistory.createdAt))
+      .limit(limit);
   }
 }
 

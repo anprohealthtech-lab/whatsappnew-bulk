@@ -250,6 +250,20 @@ export const demoSchedules = pgTable("demo_schedules", {
   createdAt: timestamp("created_at").defaultNow(),
 });
 
+// Connection session history — tracks connect/disconnect events for auditing
+export const sessionConnectionHistory = pgTable("session_connection_history", {
+  id: varchar("id").primaryKey().default(sql`gen_random_uuid()`),
+  userId: varchar("user_id").notNull().references(() => users.id, { onDelete: 'cascade' }),
+  sessionName: text("session_name").notNull(),
+  event: text("event").notNull(), // 'connected' | 'disconnected' | 'qr_pending' | 'auth_failure' | 'reconnecting'
+  reason: text("reason"), // disconnect reason code/label, e.g. 'loggedOut', 'connectionLost', 'user_requested_disconnect'
+  statusCode: integer("status_code"), // Baileys DisconnectReason numeric code
+  phoneNumber: text("phone_number"), // linked WhatsApp number (if known)
+  sessionDurationSeconds: integer("session_duration_seconds"), // duration of the session that just ended
+  metadata: jsonb("metadata"), // extra info (waVersion, browser, etc.)
+  createdAt: timestamp("created_at").defaultNow(),
+});
+
 // Baileys auth state stored in DB (survives ephemeral filesystem deploys)
 export const baileysAuthKeys = pgTable("baileys_auth_keys", {
   id: varchar("id").primaryKey().default(sql`gen_random_uuid()`),
@@ -300,6 +314,7 @@ export type DemoSchedule = typeof demoSchedules.$inferSelect;
 export type UserRagAgent = typeof userRagAgents.$inferSelect;
 export type UserNotificationRecipient = typeof userNotificationRecipients.$inferSelect;
 export type WhatsAppSession = typeof whatsappSessions.$inferSelect;
+export type SessionConnectionHistory = typeof sessionConnectionHistory.$inferSelect;
 
 // Additional schemas for API requests
 export const sendMessageSchema = z.object({

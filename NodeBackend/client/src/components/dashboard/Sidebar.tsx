@@ -13,6 +13,7 @@ import {
     Database,
     ShieldCheck,
     LogOut,
+    Activity,
 } from "lucide-react";
 import { cn } from "@/lib/utils";
 import { useAuth } from "@/lib/AuthContext";
@@ -29,6 +30,7 @@ export function Sidebar({ activeSection, setActiveSection, setLocation }: Sideba
     const menuItems = [
         { id: "dashboard", label: "Dashboard", icon: Gauge, action: () => setActiveSection("dashboard") },
         { id: "sessions", label: "WhatsApp Sessions", icon: Smartphone, action: () => setActiveSection("sessions") },
+        { id: "session-history", label: "Session History", icon: Activity, action: () => setActiveSection("session-history") },
         { id: "campaigns", label: "Campaigns", icon: Megaphone, action: () => setLocation("/campaigns") },
         { id: "templates", label: "Templates", icon: FileText, action: () => setActiveSection("templates") },
         { id: "schedules", label: "Schedules", icon: Clock, action: () => setActiveSection("schedules") },
