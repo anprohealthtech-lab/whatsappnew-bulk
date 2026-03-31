@@ -88,16 +88,20 @@ export function useSocket() {
         break;
         
       case 'disconnected':
-        setWhatsappStatus({
-          isConnected: false,
-          isAuthenticated: false,
-          lastSeen: null,
-        });
-        toast({
-          title: "WhatsApp Disconnected",
-          description: message.data.reason || "WhatsApp connection lost",
-          variant: "destructive",
-        });
+        // If shouldReconnect is true, this is a transient reconnect (e.g. WA server rotation)
+        // Don't flash "Disconnected" in the UI — the session will auto-recover in seconds
+        if (!message.data.shouldReconnect) {
+          setWhatsappStatus({
+            isConnected: false,
+            isAuthenticated: false,
+            lastSeen: null,
+          });
+          toast({
+            title: "WhatsApp Disconnected",
+            description: message.data.reason || "WhatsApp connection lost",
+            variant: "destructive",
+          });
+        }
         break;
         
       case 'message-sent':

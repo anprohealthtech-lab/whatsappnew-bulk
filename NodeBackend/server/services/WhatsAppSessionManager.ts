@@ -274,20 +274,30 @@ class ManagedBaileysSession extends EventEmitter implements WAServiceInstance {
       return;
     }
 
-    this.status.isConnected = false;
-    this.status.isAuthenticated = false;
-    this.phase = 'disconnected';
     this.stopPresenceRefresh();
-    this.emit('whatsapp-status', this.getStatus());
 
     // Calculate session duration
     let sessionDurationSeconds: number | null = null;
     if (this.connectedSince) {
       sessionDurationSeconds = Math.round((Date.now() - this.connectedSince.getTime()) / 1000);
-      this.connectedSince = null;
     }
 
     const reasonLabel = DisconnectReason[code] || 'unknown';
+    const badSession = code === DisconnectReason.badSession || code === 500;
+
+    // For transient badSession reconnects (WA server-side ~50min rotation),
+    // keep status as 'connected' so the UI doesn't flash Disconnected
+    const isTransientBadSession = badSession && this.badSessionRetryCount < 2;
+    if (!isTransientBadSession) {
+      this.status.isConnected = false;
+      this.status.isAuthenticated = false;
+      this.phase = 'disconnected';
+      this.connectedSince = null;
+      this.emit('whatsapp-status', this.getStatus());
+    } else {
+      // Keep phase as 'reconnecting' so UI stays calm
+      this.phase = 'reconnecting' as any;
+    }
 
     // ─── Gather full diagnostics for EVERY disconnect ───
     const dbDiag = getDbAuthDiagnostics(this.dbSessionId);
@@ -318,14 +328,17 @@ class ManagedBaileysSession extends EventEmitter implements WAServiceInstance {
       browser: this.browserIdentity,
     };
 
-    log(
-      `[WA] 🔴 DISCONNECT ${this.userId}/${this.sessionName}: code=${code} (${reasonLabel}) ` +
-      `fullError="${fullErrorMessage}" duration=${sessionDurationSeconds}s ` +
-      `dbOk=${dbHealthy} dbKeys=${keyStats.total} ` +
-      `writeFailures=${dbDiag?.writeFailures || 0} readFailures=${dbDiag?.readFailures || 0} ` +
-      `restoreFromDB=${this.restoredFromStoredCreds} pairing=${this.isPairing} ` +
-      `reconnectAttempt=${this.reconnectAttempts} badSessionRetries=${this.badSessionRetryCount}`
-    );
+    // Only log loud disconnect for non-transient disconnects
+    if (!isTransientBadSession) {
+      log(
+        `[WA] 🔴 DISCONNECT ${this.userId}/${this.sessionName}: code=${code} (${reasonLabel}) ` +
+        `fullError="${fullErrorMessage}" duration=${sessionDurationSeconds}s ` +
+        `dbOk=${dbHealthy} dbKeys=${keyStats.total} ` +
+        `writeFailures=${dbDiag?.writeFailures || 0} readFailures=${dbDiag?.readFailures || 0} ` +
+        `restoreFromDB=${this.restoredFromStoredCreds} pairing=${this.isPairing} ` +
+        `reconnectAttempt=${this.reconnectAttempts} badSessionRetries=${this.badSessionRetryCount}`
+      );
+    }
 
     if (this.userRequestedDisconnect) {
       this.emit('session-history', {
@@ -345,7 +358,7 @@ class ManagedBaileysSession extends EventEmitter implements WAServiceInstance {
     const timedOut = code === DisconnectReason.timedOut;
     const serverTerminated = code === 428;
     const connectionReplaced = code === DisconnectReason.connectionReplaced || code === 440;
-    const badSession = code === DisconnectReason.badSession || code === 500;
+    // badSession already determined above for isTransientBadSession
     const shouldReconnect = !loggedOut && !connectionReplaced &&
       (restartRequired || connectionLost || timedOut || serverTerminated || badSession || code === 0);
     const nextAttempt = this.reconnectAttempts + 1;
@@ -359,24 +372,19 @@ class ManagedBaileysSession extends EventEmitter implements WAServiceInstance {
       connectionReplaced ||
       (badSession && this.badSessionRetryCount >= MAX_BAD_SESSION_RETRIES);
 
-    this.emit('disconnected', { shouldReconnect: shouldReconnect || (badSession && this.badSessionRetryCount < MAX_BAD_SESSION_RETRIES), reason: code });
+    this.emit('disconnected', { shouldReconnect: shouldReconnect || isTransientBadSession, reason: code });
 
-    if (badSession && this.badSessionRetryCount < MAX_BAD_SESSION_RETRIES) {
+    if (isTransientBadSession) {
       this.badSessionRetryCount++;
+      // Routine WA server-side session rotation — log quietly, no session-history noise
       log(
-        `[WA] ⚠️ badSession(${code}) for ${this.userId}/${this.sessionName} — ` +
-        `retry ${this.badSessionRetryCount}/${MAX_BAD_SESSION_RETRIES} with existing creds before fresh pairing. ` +
-        `DB write failures: ${dbDiag?.writeFailures || 0}, last failure: ${JSON.stringify(dbDiag?.lastWriteFailure)}`
+        `[WA] 🔄 Routine session refresh ${this.userId}/${this.sessionName} — ` +
+        `auto-reconnecting (${this.badSessionRetryCount}/${MAX_BAD_SESSION_RETRIES}), session was up ${sessionDurationSeconds}s`
       );
-      this.emit('session-history', {
-        event: 'reconnecting',
-        reason: `badSession_retry_${this.badSessionRetryCount}`,
-        statusCode: code,
-        sessionDurationSeconds,
-        metadata: disconnectDiagnostics,
-      });
+      // No session-history event for routine reconnects — keeps history clean
 
-      const delay = Math.min(10000 * Math.pow(2, this.badSessionRetryCount - 1), 60000);
+      // Fast reconnect (3s) for transient badSession — session almost always recovers
+      const delay = 3000;
       if (this.reconnectTimer) clearTimeout(this.reconnectTimer);
       this.reconnectTimer = setTimeout(() => {
         this.reconnectTimer = null;
