@@ -16,7 +16,8 @@ import { eq, and, desc } from 'drizzle-orm';
 import { log } from '../utils';
 import type { WhatsAppSession } from '@shared/schema';
 import { ExternalWhatsAppProxy } from './ExternalWhatsAppProxy';
-import { clearDbAuthState, useDbAuthState } from './useDbAuthState';
+import { clearDbAuthState, useDbAuthState, getDbAuthDiagnostics, countDbAuthKeys } from './useDbAuthState';
+import { getDbHealth } from '../db';
 
 export interface WhatsAppStatus {
   isConnected: boolean;
@@ -61,6 +62,7 @@ class ManagedBaileysSession extends EventEmitter implements WAServiceInstance {
   private restoredFromStoredCreds = false;
   private freshPairingInProgress = false;
   private connectedSince: Date | null = null;
+  private badSessionRetryCount = 0;
 
   constructor(
     private readonly userId: string,
@@ -167,9 +169,9 @@ class ManagedBaileysSession extends EventEmitter implements WAServiceInstance {
     socket.ev.on('creds.update', async () => {
       try {
         await saveCreds();
-        log(`[WA] Saved auth for ${this.userId}/${this.sessionName} to ${this.authPath}`);
+        log(`[WA] Saved auth for ${this.userId}/${this.sessionName} (dbSession=${this.dbSessionId})`);
       } catch (error: any) {
-        log(`[WA] Failed saving auth for ${this.userId}/${this.sessionName}: ${error?.message || error}`);
+        log(`[WA] 🚨 CRITICAL: Failed saving auth for ${this.userId}/${this.sessionName}: ${error?.message || error}`);
       }
     });
 
@@ -199,6 +201,12 @@ class ManagedBaileysSession extends EventEmitter implements WAServiceInstance {
       (lastDisconnect?.error as any)?.output?.statusCode ??
       (lastDisconnect?.error as any)?.status ??
       0;
+    // Extract the full error message for diagnostics
+    const fullErrorMessage =
+      (lastDisconnect?.error as any)?.output?.payload?.message ??
+      (lastDisconnect?.error as any)?.message ??
+      lastDisconnect?.error?.toString() ??
+      '';
 
     if (qr) {
       this.isPairing = true;
@@ -217,6 +225,7 @@ class ManagedBaileysSession extends EventEmitter implements WAServiceInstance {
       this.status.sessionInfo = this.socket?.user || null;
       this.currentQR = null;
       this.reconnectAttempts = 0;
+      this.badSessionRetryCount = 0;
       this.isPairing = false;
       this.freshPairingInProgress = false;
       this.phase = 'connected';
@@ -227,10 +236,23 @@ class ManagedBaileysSession extends EventEmitter implements WAServiceInstance {
         this.reconnectTimer = null;
       }
 
+      // Gather diagnostic snapshot on successful connect
+      const dbDiag = getDbAuthDiagnostics(this.dbSessionId);
+      const keyStats = await countDbAuthKeys(this.dbSessionId).catch(() => ({ total: -1, byCategory: {} }));
+
       this.emit('session-history', {
         event: 'connected',
         phoneNumber: (this.socket?.user as any)?.id?.split(':')[0] || null,
-        metadata: { waVersion: this.waVersion, waIsLatest: this.waIsLatest, browser: this.browserIdentity },
+        metadata: {
+          waVersion: this.waVersion,
+          waIsLatest: this.waIsLatest,
+          browser: this.browserIdentity,
+          restoredFromStored: this.restoredFromStoredCreds,
+          dbKeyCount: keyStats.total,
+          dbKeysByCategory: keyStats.byCategory,
+          dbWriteFailures: dbDiag?.writeFailures || 0,
+          dbReadFailures: dbDiag?.readFailures || 0,
+        },
       });
 
       this.emit('whatsapp-authenticated', { status: this.status });
@@ -262,12 +284,51 @@ class ManagedBaileysSession extends EventEmitter implements WAServiceInstance {
 
     const reasonLabel = DisconnectReason[code] || 'unknown';
 
+    // ─── Gather full diagnostics for EVERY disconnect ───
+    const dbDiag = getDbAuthDiagnostics(this.dbSessionId);
+    const dbHealthy = await getDbHealth().catch(() => false);
+    const keyStats = await countDbAuthKeys(this.dbSessionId).catch(() => ({ total: -1, byCategory: {} }));
+    const disconnectDiagnostics = {
+      code,
+      reasonLabel,
+      fullErrorMessage,
+      sessionDurationSeconds,
+      phase: this.phase,
+      isPairing: this.isPairing,
+      restoredFromStoredCreds: this.restoredFromStoredCreds,
+      reconnectAttempts: this.reconnectAttempts,
+      badSessionRetryCount: this.badSessionRetryCount,
+      freshPairingInProgress: this.freshPairingInProgress,
+      dbHealthy,
+      dbKeyCount: keyStats.total,
+      dbKeysByCategory: keyStats.byCategory,
+      dbWriteFailures: dbDiag?.writeFailures || 0,
+      dbReadFailures: dbDiag?.readFailures || 0,
+      dbSlowQueries: dbDiag?.slowQueries || 0,
+      dbCredsWriteCount: dbDiag?.credsWriteCount || 0,
+      dbLastCredsWrite: dbDiag?.lastCredsWriteAt || null,
+      dbLastWriteFailure: dbDiag?.lastWriteFailure || null,
+      dbLastReadFailure: dbDiag?.lastReadFailure || null,
+      waVersion: this.waVersion,
+      browser: this.browserIdentity,
+    };
+
+    log(
+      `[WA] 🔴 DISCONNECT ${this.userId}/${this.sessionName}: code=${code} (${reasonLabel}) ` +
+      `fullError="${fullErrorMessage}" duration=${sessionDurationSeconds}s ` +
+      `dbOk=${dbHealthy} dbKeys=${keyStats.total} ` +
+      `writeFailures=${dbDiag?.writeFailures || 0} readFailures=${dbDiag?.readFailures || 0} ` +
+      `restoreFromDB=${this.restoredFromStoredCreds} pairing=${this.isPairing} ` +
+      `reconnectAttempt=${this.reconnectAttempts} badSessionRetries=${this.badSessionRetryCount}`
+    );
+
     if (this.userRequestedDisconnect) {
       this.emit('session-history', {
         event: 'disconnected',
         reason: 'user_requested_disconnect',
         statusCode: code,
         sessionDurationSeconds,
+        metadata: disconnectDiagnostics,
       });
       this.emit('disconnected', { shouldReconnect: false, reason: 'user_requested_disconnect' });
       return;
@@ -283,19 +344,56 @@ class ManagedBaileysSession extends EventEmitter implements WAServiceInstance {
     const shouldReconnect = !loggedOut && !connectionReplaced &&
       (restartRequired || connectionLost || timedOut || serverTerminated || badSession || code === 0);
     const nextAttempt = this.reconnectAttempts + 1;
+
+    // ─── badSession: try reconnecting with existing creds first before nuking ───
+    // Only force fresh pairing after MAX_BAD_SESSION_RETRIES failed attempts,
+    // because badSession can be transient (server hiccup, brief DB issue)
+    const MAX_BAD_SESSION_RETRIES = 2;
     const shouldForceFreshPairing =
       loggedOut ||
       connectionReplaced ||
-      badSession;
+      (badSession && this.badSessionRetryCount >= MAX_BAD_SESSION_RETRIES);
 
-    this.emit('disconnected', { shouldReconnect, reason: code });
+    this.emit('disconnected', { shouldReconnect: shouldReconnect || (badSession && this.badSessionRetryCount < MAX_BAD_SESSION_RETRIES), reason: code });
 
-    if (shouldForceFreshPairing) {
+    if (badSession && this.badSessionRetryCount < MAX_BAD_SESSION_RETRIES) {
+      this.badSessionRetryCount++;
+      log(
+        `[WA] ⚠️ badSession(${code}) for ${this.userId}/${this.sessionName} — ` +
+        `retry ${this.badSessionRetryCount}/${MAX_BAD_SESSION_RETRIES} with existing creds before fresh pairing. ` +
+        `DB write failures: ${dbDiag?.writeFailures || 0}, last failure: ${JSON.stringify(dbDiag?.lastWriteFailure)}`
+      );
       this.emit('session-history', {
-        event: 'disconnected',
-        reason: loggedOut ? 'loggedOut' : connectionReplaced ? 'connectionReplaced' : badSession ? 'badSession' : reasonLabel,
+        event: 'reconnecting',
+        reason: `badSession_retry_${this.badSessionRetryCount}`,
         statusCode: code,
         sessionDurationSeconds,
+        metadata: disconnectDiagnostics,
+      });
+
+      const delay = Math.min(10000 * Math.pow(2, this.badSessionRetryCount - 1), 60000);
+      if (this.reconnectTimer) clearTimeout(this.reconnectTimer);
+      this.reconnectTimer = setTimeout(() => {
+        this.reconnectTimer = null;
+        void this.reconnectInPlace();
+      }, delay);
+      return;
+    }
+
+    if (shouldForceFreshPairing) {
+      const freshPairReason = loggedOut
+        ? 'loggedOut'
+        : connectionReplaced
+          ? 'connectionReplaced'
+          : badSession
+            ? `badSession_after_${this.badSessionRetryCount}_retries`
+            : reasonLabel;
+      this.emit('session-history', {
+        event: 'disconnected',
+        reason: freshPairReason,
+        statusCode: code,
+        sessionDurationSeconds,
+        metadata: disconnectDiagnostics,
       });
       await this.forceFreshPairing(
         loggedOut
@@ -303,7 +401,7 @@ class ManagedBaileysSession extends EventEmitter implements WAServiceInstance {
           : connectionReplaced
             ? `connection_replaced_${code}`
             : badSession
-              ? `bad_session_${code}`
+              ? `bad_session_${code}_after_${this.badSessionRetryCount}_retries`
               : `stale_restored_session_${code}`
       );
       return;
@@ -315,7 +413,11 @@ class ManagedBaileysSession extends EventEmitter implements WAServiceInstance {
         reason: reasonLabel,
         statusCode: code,
         sessionDurationSeconds,
-        metadata: { attempt: nextAttempt, maxAttempts: this.maxReconnectAttempts },
+        metadata: {
+          ...disconnectDiagnostics,
+          attempt: nextAttempt,
+          maxAttempts: this.maxReconnectAttempts,
+        },
       });
 
       if (nextAttempt > this.maxReconnectAttempts) {
@@ -327,6 +429,12 @@ class ManagedBaileysSession extends EventEmitter implements WAServiceInstance {
           await this.forceFreshPairing(`max_reconnects_after_restore_${code}`);
           return;
         }
+        this.emit('session-history', {
+          event: 'auth_failure',
+          reason: `max_reconnect_attempts_${code}`,
+          statusCode: code,
+          metadata: disconnectDiagnostics,
+        });
         this.emit('whatsapp-auth-failure', { error: `Max reconnect attempts reached (${code})` });
         return;
       }
@@ -372,18 +480,25 @@ class ManagedBaileysSession extends EventEmitter implements WAServiceInstance {
       reason: reasonLabel,
       statusCode: code,
       sessionDurationSeconds,
+      metadata: disconnectDiagnostics,
     });
     this.emit('whatsapp-auth-failure', { error: 'Logged out or disconnected' });
   }
 
   private async reconnectInPlace(): Promise<void> {
     if (this.phase === 'connecting' || this.phase === 'restarting' || this.phase === 'connected') {
+      log(`[WA] reconnectInPlace skipped for ${this.userId}/${this.sessionName}: phase=${this.phase}`);
       return;
     }
 
     try {
       this.phase = 'restarting';
       this.reconnectAttempts++;
+
+      log(
+        `[WA] 🔄 reconnectInPlace ${this.userId}/${this.sessionName} attempt=${this.reconnectAttempts} ` +
+        `badSessionRetries=${this.badSessionRetryCount}`
+      );
 
       if (this.socket) {
         try {
@@ -396,6 +511,12 @@ class ManagedBaileysSession extends EventEmitter implements WAServiceInstance {
       await this.loadBrowserIdentity();
       const { state, saveCreds, hasExistingCreds } = await useDbAuthState(this.dbSessionId);
       this.restoredFromStoredCreds = hasExistingCreds;
+
+      log(
+        `[WA] reconnectInPlace ${this.userId}/${this.sessionName}: ` +
+        `hasExistingCreds=${hasExistingCreds}, restoring socket...`
+      );
+
       const { version } = await fetchLatestBaileysVersion();
       this.socket = this.createSocket(state, version, saveCreds);
     } catch (error: any) {
@@ -772,10 +893,34 @@ class ManagedBaileysSession extends EventEmitter implements WAServiceInstance {
     }
 
     this.freshPairingInProgress = true;
+
+    // Capture diagnostics before clearing
+    const dbDiag = getDbAuthDiagnostics(this.dbSessionId);
+    const keyStats = await countDbAuthKeys(this.dbSessionId).catch(() => ({ total: -1, byCategory: {} }));
+
     log(
-      `[WA] Session ${this.userId}/${this.sessionName} appears stale or invalid (${reason}). ` +
-      `Clearing stored auth and requesting a fresh QR pairing.`
+      `[WA] 🚨 FORCE FRESH PAIRING ${this.userId}/${this.sessionName} reason="${reason}" ` +
+      `dbKeys=${keyStats.total} categories=${JSON.stringify(keyStats.byCategory)} ` +
+      `writeFailures=${dbDiag?.writeFailures || 0} readFailures=${dbDiag?.readFailures || 0} ` +
+      `lastWriteFailure=${JSON.stringify(dbDiag?.lastWriteFailure)} ` +
+      `badSessionRetries=${this.badSessionRetryCount}`
     );
+
+    this.emit('session-history', {
+      event: 'force_fresh_pairing',
+      reason,
+      metadata: {
+        dbKeyCount: keyStats.total,
+        dbKeysByCategory: keyStats.byCategory,
+        dbWriteFailures: dbDiag?.writeFailures || 0,
+        dbReadFailures: dbDiag?.readFailures || 0,
+        dbLastWriteFailure: dbDiag?.lastWriteFailure || null,
+        dbLastReadFailure: dbDiag?.lastReadFailure || null,
+        dbCredsWriteCount: dbDiag?.credsWriteCount || 0,
+        dbLastCredsWrite: dbDiag?.lastCredsWriteAt || null,
+        badSessionRetryCount: this.badSessionRetryCount,
+      },
+    });
 
     try {
       if (this.reconnectTimer) {
@@ -796,6 +941,7 @@ class ManagedBaileysSession extends EventEmitter implements WAServiceInstance {
       this.isPairing = false;
       this.phase = 'disconnected';
       this.reconnectAttempts = 0;
+      this.badSessionRetryCount = 0;
       this.restoredFromStoredCreds = false;
 
       await this.clearAuthState();
