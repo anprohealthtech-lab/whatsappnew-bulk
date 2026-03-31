@@ -63,6 +63,7 @@ class ManagedBaileysSession extends EventEmitter implements WAServiceInstance {
   private freshPairingInProgress = false;
   private connectedSince: Date | null = null;
   private badSessionRetryCount = 0;
+  private presenceRefreshTimer: NodeJS.Timeout | null = null;
 
   constructor(
     private readonly userId: string,
@@ -145,11 +146,11 @@ class ManagedBaileysSession extends EventEmitter implements WAServiceInstance {
       getMessage: async (_key: WAMessageKey): Promise<proto.IMessage | undefined> => undefined,
       defaultQueryTimeoutMs: 60000,
       connectTimeoutMs: 60000,
-      keepAliveIntervalMs: 30000,
+      keepAliveIntervalMs: 25000,
       qrTimeout: 60000,
       retryRequestDelayMs: 3000,
       maxMsgRetryCount: 3,
-      markOnlineOnConnect: true,
+      markOnlineOnConnect: false,
       syncFullHistory: false,
       fireInitQueries: true,
       transactionOpts: {
@@ -236,6 +237,9 @@ class ManagedBaileysSession extends EventEmitter implements WAServiceInstance {
         this.reconnectTimer = null;
       }
 
+      // Start presence refresh to prevent WA server from killing idle sessions (~50 min badSession)
+      this.startPresenceRefresh();
+
       // Gather diagnostic snapshot on successful connect
       const dbDiag = getDbAuthDiagnostics(this.dbSessionId);
       const keyStats = await countDbAuthKeys(this.dbSessionId).catch(() => ({ total: -1, byCategory: {} }));
@@ -273,6 +277,7 @@ class ManagedBaileysSession extends EventEmitter implements WAServiceInstance {
     this.status.isConnected = false;
     this.status.isAuthenticated = false;
     this.phase = 'disconnected';
+    this.stopPresenceRefresh();
     this.emit('whatsapp-status', this.getStatus());
 
     // Calculate session duration
@@ -786,8 +791,45 @@ class ManagedBaileysSession extends EventEmitter implements WAServiceInstance {
     return { ...this.status, waVersion: this.waVersion ?? undefined, waIsLatest: this.waIsLatest };
   }
 
+  /**
+   * Periodically send presence updates to prevent WhatsApp server from
+   * killing the session as "idle" (manifests as badSession/500 every ~50 min).
+   * A presence update every 20 minutes signals genuine activity.
+   */
+  private startPresenceRefresh(): void {
+    this.stopPresenceRefresh();
+    const PRESENCE_INTERVAL_MS = 20 * 60 * 1000; // 20 minutes
+    this.presenceRefreshTimer = setInterval(async () => {
+      if (!this.socket || this.phase !== 'connected') {
+        return;
+      }
+      try {
+        await this.socket.sendPresenceUpdate('available');
+        log(`[WA] ♻️ Presence refresh sent for ${this.userId}/${this.sessionName} (anti-idle keepalive)`);
+      } catch (err: any) {
+        log(`[WA] ⚠️ Presence refresh failed for ${this.userId}/${this.sessionName}: ${err?.message || err}`);
+      }
+    }, PRESENCE_INTERVAL_MS);
+    // Also send an initial presence update shortly after connection
+    setTimeout(async () => {
+      if (this.socket && this.phase === 'connected') {
+        try {
+          await this.socket.sendPresenceUpdate('available');
+        } catch {}
+      }
+    }, 5000);
+  }
+
+  private stopPresenceRefresh(): void {
+    if (this.presenceRefreshTimer) {
+      clearInterval(this.presenceRefreshTimer);
+      this.presenceRefreshTimer = null;
+    }
+  }
+
   async cleanup(): Promise<void> {
     this.userRequestedDisconnect = true;
+    this.stopPresenceRefresh();
     if (this.reconnectTimer) {
       clearTimeout(this.reconnectTimer);
       this.reconnectTimer = null;
