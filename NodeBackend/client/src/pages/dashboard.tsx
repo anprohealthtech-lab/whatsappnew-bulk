@@ -78,9 +78,13 @@ export default function Dashboard() {
   });
   const hasConnectedSession = userSessions.some((s: any) => s.status === "connected");
   const isConnected = hasConnectedSession;
+  // Find the most recent lastConnectedAt across all sessions for "last seen" display
+  const lastSeenSession = userSessions
+    .filter((s: any) => s.lastConnectedAt)
+    .sort((a: any, b: any) => new Date(b.lastConnectedAt).getTime() - new Date(a.lastConnectedAt).getTime())[0];
   const whatsappStatus = hasConnectedSession
-    ? { isConnected: true, isAuthenticated: true, lastSeen: userSessions.find((s: any) => s.status === "connected")?.connectedAt || null }
-    : { isConnected: false, isAuthenticated: false, lastSeen: null };
+    ? { isConnected: true, isAuthenticated: true, lastSeen: userSessions.find((s: any) => s.status === "connected")?.lastConnectedAt || null }
+    : { isConnected: false, isAuthenticated: false, lastSeen: lastSeenSession?.lastConnectedAt || null };
 
   // Close sidebar on mobile when section changes
   useEffect(() => {

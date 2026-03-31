@@ -1057,8 +1057,11 @@ export class WhatsAppSessionManager {
     service.on('qr-code', async () => {
       await this.updateSessionStatus(userId, sessionName, 'qr_pending');
     });
-    service.on('disconnected', async () => {
-      await this.updateSessionStatus(userId, sessionName, 'disconnected');
+    service.on('disconnected', async (data: any) => {
+      // Only mark DB as disconnected if not about to reconnect (avoids brief false "Disconnected" in dashboard)
+      if (!data?.shouldReconnect) {
+        await this.updateSessionStatus(userId, sessionName, 'disconnected');
+      }
     });
     service.on('session-history', async (data: any) => {
       await this.logSessionHistory(userId, sessionName, data);
