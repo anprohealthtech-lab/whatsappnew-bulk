@@ -1659,6 +1659,7 @@ export async function registerRoutes(app: Express): Promise<Server> {
         {
           intervalSeconds: validatedData.intervalSeconds,
           jitterSeconds: validatedData.jitterSeconds,
+          startFromContact: validatedData.startFromContact,
         },
         tenant
       );
@@ -1814,6 +1815,7 @@ export async function registerRoutes(app: Express): Promise<Server> {
         {
           intervalSeconds: payload.intervalSeconds,
           jitterSeconds: payload.jitterSeconds,
+          startFromContact: payload.startFromContact,
         }
       );
 

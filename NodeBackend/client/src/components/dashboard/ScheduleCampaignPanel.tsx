@@ -66,6 +66,7 @@ export function ScheduleCampaignPanel() {
   const [scheduleTime, setScheduleTime] = useState("");
   const [intervalSeconds, setIntervalSeconds] = useState("10");
   const [jitterSeconds, setJitterSeconds] = useState("5");
+  const [startFromContact, setStartFromContact] = useState("");
   const { toast } = useToast();
   const queryClient = useQueryClient();
 
@@ -140,6 +141,7 @@ export function ScheduleCampaignPanel() {
         scheduledAt,
         intervalSeconds: parseInt(intervalSeconds, 10) || 10,
         jitterSeconds: parseInt(jitterSeconds, 10) || 5,
+        ...(startFromContact ? { startFromContact: parseInt(startFromContact, 10) } : {}),
       });
       return res.json();
     },
@@ -149,6 +151,7 @@ export function ScheduleCampaignPanel() {
       setSelectedCampaign("");
       setScheduleDate("");
       setScheduleTime("");
+      setStartFromContact("");
       refreshScheduleData();
     },
     onError: (err: any) => toast({ title: "Error", description: err.message, variant: "destructive" }),
@@ -420,6 +423,19 @@ export function ScheduleCampaignPanel() {
             <p className="text-xs text-muted-foreground">
               Messages will be sent with a random delay between (interval - jitter) and (interval + jitter) seconds.
             </p>
+            <div>
+              <Label>Start From Contact # (optional)</Label>
+              <Input
+                type="number"
+                min="1"
+                placeholder="1 (default — start from beginning)"
+                value={startFromContact}
+                onChange={(e) => setStartFromContact(e.target.value)}
+              />
+              <p className="text-xs text-muted-foreground mt-1">
+                Leave empty to send to all contacts. Set to e.g. 100 to skip the first 99.
+              </p>
+            </div>
             <Button
               onClick={() => scheduleMutation.mutate()}
               disabled={!selectedCampaign || !scheduleDate || !scheduleTime || scheduleMutation.isPending}

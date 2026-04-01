@@ -110,6 +110,7 @@ export function CampaignMessageVariationPanel({
   const [isSavingFileNames, setIsSavingFileNames] = useState(false);
   const [intervalSeconds, setIntervalSeconds] = useState('25');
   const [jitterSeconds, setJitterSeconds] = useState('0');
+  const [startFromContact, setStartFromContact] = useState('');
   const hasMissingAttachments = !!campaign?.hasMissingAttachments;
   const missingAttachmentNames = campaign?.missingAttachmentNames || [];
 
@@ -517,7 +518,7 @@ export function CampaignMessageVariationPanel({
       return;
     }
 
-    if (!confirm(`Send campaign to ${contacts.length} contacts? This will take ${Math.ceil(contacts.length * 1.25)} minutes.`)) {
+    if (!confirm(`Send campaign to ${contacts.length} contacts${startFromContact ? ` starting from #${startFromContact}` : ''}? This will take ${Math.ceil(contacts.length * 1.25)} minutes.`)) {
       return;
     }
 
@@ -532,6 +533,7 @@ export function CampaignMessageVariationPanel({
           variation_message: selectedVariation,
           intervalSeconds: parseInt(intervalSeconds, 10) || 25,
           jitterSeconds: parseInt(jitterSeconds, 10) || 0,
+          ...(startFromContact ? { startFromContact: parseInt(startFromContact, 10) } : {}),
         }),
       });
 
@@ -1137,6 +1139,27 @@ export function CampaignMessageVariationPanel({
                 value={jitterSeconds}
                 onChange={(e) => setJitterSeconds(e.target.value)}
               />
+            </div>
+          </div>
+
+          <div className="space-y-2">
+            <Label htmlFor="startFromContact">Start From Contact # (optional)</Label>
+            <div className="flex items-center gap-2">
+              <Input
+                id="startFromContact"
+                type="number"
+                min="1"
+                max={contacts.length || undefined}
+                placeholder={`1 (default — sends to all ${contacts.length} contacts)`}
+                value={startFromContact}
+                onChange={(e) => setStartFromContact(e.target.value)}
+                className="max-w-[300px]"
+              />
+              {startFromContact && parseInt(startFromContact, 10) > 1 && contacts.length > 0 && (
+                <span className="text-xs text-muted-foreground whitespace-nowrap">
+                  Will skip {parseInt(startFromContact, 10) - 1}, send to {Math.max(0, contacts.length - parseInt(startFromContact, 10) + 1)} contacts
+                </span>
+              )}
             </div>
           </div>
 

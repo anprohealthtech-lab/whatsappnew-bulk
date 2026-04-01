@@ -679,9 +679,38 @@ class ManagedBaileysSession extends EventEmitter implements WAServiceInstance {
     }
   }
 
+  /**
+   * Wait for reconnection to complete during transient badSession cycles.
+   * Returns true if connection restored within timeout, false otherwise.
+   */
+  private waitForReconnection(timeoutMs = 15000): Promise<boolean> {
+    if (this.socket && this.status.isConnected) return Promise.resolve(true);
+    if (this.phase !== 'restarting' && this.phase !== 'reconnecting') return Promise.resolve(false);
+
+    return new Promise((resolve) => {
+      const checkInterval = 500;
+      let elapsed = 0;
+      const timer = setInterval(() => {
+        elapsed += checkInterval;
+        if (this.socket && this.status.isConnected) {
+          clearInterval(timer);
+          resolve(true);
+        } else if (elapsed >= timeoutMs || (this.phase !== 'restarting' && this.phase !== 'reconnecting' && this.phase !== 'connecting' && this.phase !== 'connected')) {
+          clearInterval(timer);
+          resolve(false);
+        }
+      }, checkInterval);
+    });
+  }
+
   async sendTextMessage(phoneNumber: string, message: string): Promise<any> {
     if (!this.socket || !this.status.isConnected) {
-      throw new Error('WhatsApp not connected');
+      // If reconnecting, wait briefly instead of failing immediately
+      const reconnected = await this.waitForReconnection();
+      if (!reconnected) {
+        throw new Error('WhatsApp not connected');
+      }
+      log(`[WA] sendTextMessage: waited for reconnection, now connected`);
     }
 
     const jid = await this.resolveOutgoingJid(phoneNumber);
@@ -705,7 +734,11 @@ class ManagedBaileysSession extends EventEmitter implements WAServiceInstance {
 
   async sendMediaMessage(phoneNumber: string, filePath: string, caption?: string, fileName?: string): Promise<any> {
     if (!this.socket || !this.status.isConnected) {
-      throw new Error('WhatsApp not connected');
+      const reconnected = await this.waitForReconnection();
+      if (!reconnected) {
+        throw new Error('WhatsApp not connected');
+      }
+      log(`[WA] sendMediaMessage: waited for reconnection, now connected`);
     }
 
     const jid = await this.resolveOutgoingJid(phoneNumber);

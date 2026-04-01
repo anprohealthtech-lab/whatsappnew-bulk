@@ -91,6 +91,7 @@ export const campaignSchedules = pgTable("campaign_schedules", {
   status: text("status").default("scheduled").notNull(), // scheduled | running | completed | failed | cancelled
   intervalSeconds: integer("interval_seconds").default(25).notNull(),
   jitterSeconds: integer("jitter_seconds").default(0).notNull(),
+  startFromContact: integer("start_from_contact"),
   scheduledAt: timestamp("scheduled_at").notNull(),
   startedAt: timestamp("started_at"),
   completedAt: timestamp("completed_at"),
@@ -345,6 +346,7 @@ export const bulkSendSchema = z.object({
   variation_message: z.string().min(1, "Variation message is required"),
   intervalSeconds: z.number().int().min(1).max(3600).optional(),
   jitterSeconds: z.number().int().min(0).max(300).optional(),
+  startFromContact: z.number().int().min(1).optional(),
   contacts: z.array(z.object({
     name: z.string(),
     phone: z.string(),
@@ -357,6 +359,7 @@ export const scheduleCampaignSchema = z.object({
   scheduledAt: z.string().datetime({ offset: true }),
   intervalSeconds: z.number().int().min(1).max(3600).optional(),
   jitterSeconds: z.number().int().min(0).max(300).optional(),
+  startFromContact: z.number().int().min(1).optional(),
 });
 
 export const userRagAgentSchema = z.object({

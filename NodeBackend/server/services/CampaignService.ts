@@ -53,6 +53,7 @@ interface TenantContext {
 interface SendOptions {
   intervalSeconds?: number;
   jitterSeconds?: number;
+  startFromContact?: number;
 }
 
 export class CampaignService {
@@ -579,6 +580,7 @@ export class CampaignService {
       scheduledAt,
       intervalSeconds: options?.intervalSeconds ?? 25,
       jitterSeconds: options?.jitterSeconds ?? 0,
+      startFromContact: options?.startFromContact ?? null,
       status: 'scheduled',
     }).returning();
 
@@ -768,6 +770,7 @@ export class CampaignService {
             {
               intervalSeconds: schedule.intervalSeconds ?? 25,
               jitterSeconds: schedule.jitterSeconds ?? 0,
+              startFromContact: (schedule as any).startFromContact ?? undefined,
             },
             {
               organizationId: schedule.organizationId,
@@ -873,6 +876,17 @@ export class CampaignService {
 
     if (contacts.length === 0) {
       throw new Error('No contacts found for this campaign');
+    }
+
+    // Apply startFromContact offset (1-based index)
+    const startFrom = options?.startFromContact;
+    if (startFrom && startFrom > 1) {
+      const skipCount = startFrom - 1;
+      if (skipCount >= contacts.length) {
+        throw new Error(`Start from contact #${startFrom} but only ${contacts.length} contacts exist`);
+      }
+      log(`⏭️ Skipping first ${skipCount} contacts, starting from #${startFrom}`);
+      contacts = contacts.slice(skipCount);
     }
 
     const normalizedTenant = this.normalizeTenant(tenant);
