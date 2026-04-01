@@ -411,6 +411,9 @@ export async function runMigrations(): Promise<void> {
 
       CREATE INDEX IF NOT EXISTS idx_session_history_event
         ON session_connection_history(event);
+
+      -- 0007: Start from contact support for campaign schedules
+      ALTER TABLE "campaign_schedules" ADD COLUMN IF NOT EXISTS "start_from_contact" integer;
     `);
 
     log('✅ Database migrations completed — all tables ready');
