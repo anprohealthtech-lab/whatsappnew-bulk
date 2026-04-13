@@ -34,6 +34,7 @@ export interface WAServiceInstance {
   listGroups(): Promise<Array<{ id: string; subject: string; participantsCount: number }>>;
   scrapeGroupNumbers(groupId: string): Promise<Array<{ phone: string; jid: string; name: string }>>;
   generateQRCode(): Promise<void>;
+  disconnect(): Promise<void>;
   getCurrentQR(): { qr: string; qrCode?: string; rawQR?: string; timestamp: number } | null;
   getStatus(): WhatsAppStatus;
   cleanup(): Promise<void>;
@@ -824,6 +825,20 @@ class ManagedBaileysSession extends EventEmitter implements WAServiceInstance {
     await this.initialize();
   }
 
+  async disconnect(): Promise<void> {
+    this.userRequestedDisconnect = true;
+    if (this.socket) {
+      try {
+        await this.socket.logout();
+      } catch {}
+    }
+
+    await this.cleanup();
+    await this.clearAuthState();
+    this.emit('disconnected', { shouldReconnect: false, reason: 'user_requested_disconnect' });
+    this.emit('whatsapp-auth-failure', { error: 'Disconnected' });
+  }
+
   getCurrentQR(): { qr: string; qrCode?: string; rawQR?: string; timestamp: number } | null {
     return this.currentQR;
   }
@@ -1062,6 +1077,28 @@ export class WhatsAppSessionManager {
     return `${userId}::${sessionName}`;
   }
 
+  private buildSessionDir(userId: string, sessionName: string): string {
+    return `server/sessions/user_${userId}/${sessionName}`;
+  }
+
+  private buildAuthPath(userId: string, sessionName: string): string {
+    const sessionDir = this.buildSessionDir(userId, sessionName);
+    return path.join(
+      process.env.AUTH_BASE_DIR || path.join(process.cwd(), 'auth'),
+      sessionDir.replace(/^server[\\/]+sessions[\\/]+/i, ''),
+    );
+  }
+
+  private async clearPersistedSessionAuth(userId: string, sessionName: string): Promise<void> {
+    const dbSessionId = this.key(userId, sessionName);
+    const authPath = this.buildAuthPath(userId, sessionName);
+
+    await clearDbAuthState(dbSessionId);
+    if (fs.existsSync(authPath)) {
+      fs.rmSync(authPath, { recursive: true, force: true });
+    }
+  }
+
   onSessionEvent(event: string, handler: (userId: string, sessionName: string, data: any) => void) {
     this.sessionEventHandlers.push({ event, handler });
     this.sessions.forEach((service, key) => {
@@ -1076,8 +1113,8 @@ export class WhatsAppSessionManager {
       return this.sessions.get(k)!;
     }
 
-    const sessionDir = `server/sessions/user_${userId}/${sessionName}`;
-    const authPath = path.join(process.env.AUTH_BASE_DIR || path.join(process.cwd(), 'auth'), sessionDir.replace(/^server[\\/]+sessions[\\/]+/i, ''));
+    const sessionDir = this.buildSessionDir(userId, sessionName);
+    const authPath = this.buildAuthPath(userId, sessionName);
     const externalBaseUrl = await this.resolveExternalBaseUrl();
     const service: WAServiceInstance = externalBaseUrl
       ? new ExternalWhatsAppProxy(sessionDir, userId, externalBaseUrl)
@@ -1179,10 +1216,20 @@ export class WhatsAppSessionManager {
   async removeSession(userId: string, sessionName = 'default'): Promise<void> {
     const k = this.key(userId, sessionName);
     const service = this.sessions.get(k);
-    if (service) {
-      await service.cleanup();
+
+    try {
+      if (service) {
+        await service.disconnect();
+        this.sessions.delete(k);
+      } else {
+        await this.clearPersistedSessionAuth(userId, sessionName);
+      }
+    } catch (error: any) {
+      log(`[WA] Explicit disconnect cleanup failed for ${userId}/${sessionName}: ${error?.message || error}`);
+      await this.clearPersistedSessionAuth(userId, sessionName);
       this.sessions.delete(k);
     }
+
     await this.updateSessionStatus(userId, sessionName, 'disconnected');
   }
 
