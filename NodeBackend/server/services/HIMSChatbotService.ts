@@ -58,10 +58,12 @@ Convert natural language dates to YYYY-MM-DD:
 
 ## IMPORTANT RULES
 1. ALWAYS use the provided organizationId in ALL function calls
-2. Be concise — WhatsApp messages should be short
-3. Use formatting — *bold* for headings, • for bullets
-4. If no slots are available, suggest alternative dates
-5. Always confirm booking details with the patient before calling book_appointment`;
+2. NEVER guess or fabricate doctor IDs — ALWAYS call get_doctors FIRST to get real doctor IDs before calling get_available_slots or book_appointment
+3. If the patient asks for a doctor by name, call get_doctors with searchQuery to find the exact ID, then use that ID
+4. Be concise — WhatsApp messages should be short
+5. Use formatting — *bold* for headings, • for bullets
+6. If no slots are available, suggest alternative dates
+7. Always confirm booking details with the patient before calling book_appointment`;
 
 // ───────────────────── Anthropic tool definitions ─────────────────────
 const TOOLS: Anthropic.Tool[] = [
@@ -103,7 +105,7 @@ const TOOLS: Anthropic.Tool[] = [
         doctorId: {
           type: "string",
           description:
-            "The doctor's ID. Use get_doctors first if you don't have it.",
+            "The doctor's ID — MUST be a real ID obtained from get_doctors. NEVER guess or fabricate this value.",
         },
         date: {
           type: "string",
@@ -126,7 +128,7 @@ const TOOLS: Anthropic.Tool[] = [
         },
         doctorId: {
           type: "string",
-          description: "The doctor's ID",
+          description: "The doctor's ID — MUST be a real ID obtained from get_doctors. NEVER guess.",
         },
         date: {
           type: "string",
