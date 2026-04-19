@@ -6,7 +6,7 @@ interface User {
   email?: string;
   organizationId: string;
   role: string;
-  enabledFeatures?: { taskManagement?: boolean; himsChatbot?: boolean };
+  enabledFeatures?: { taskManagement?: boolean; himsChatbot?: boolean; himsClinicId?: string; himsTriggerKeywords?: string[]; himsGreetingMessage?: string };
 }
 
 interface AuthContextType {

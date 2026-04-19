@@ -297,6 +297,7 @@ export async function registerRoutes(app: Express): Promise<Server> {
         email: users.email,
         organizationId: users.organizationId,
         role: users.role,
+        enabledFeatures: users.enabledFeatures,
         lastLoginAt: users.lastLoginAt,
         createdAt: users.createdAt,
       }).from(users).orderBy(desc(users.createdAt));
@@ -854,6 +855,62 @@ export async function registerRoutes(app: Express): Promise<Server> {
         broadcast('hims-chatbot-response-sent', { phoneNumber: data.phoneNumber });
         broadcast('incoming-message', data);
         return;
+      }
+
+      // ========================================
+      // PRIORITY 1.6: HIMS Auto-Registration via Trigger Keywords
+      // If the session owner has HIMS enabled and message matches HIMS keywords,
+      // auto-register the sender as a HIMS patient and route to HIMS bot.
+      // ========================================
+      if (!isHIMSPatient) {
+        try {
+          const ownerRow = await db.select().from(users).where(eq(users.id, ownerUserId)).limit(1);
+          const ownerFeatures = (ownerRow[0]?.enabledFeatures as any) || {};
+
+          if (ownerFeatures.himsChatbot) {
+            const himsKeywords = Array.isArray(ownerFeatures.himsTriggerKeywords) && ownerFeatures.himsTriggerKeywords.length > 0
+              ? ownerFeatures.himsTriggerKeywords
+              : ['appointment', 'book', 'doctor', 'slot', 'opd', 'schedule', 'cancel appointment'];
+
+            const normalised = (data.content || '').toLowerCase().replace(/[^\w\s]/g, '').trim();
+            const matchedKeyword = himsKeywords.find((kw: string) => {
+              const re = new RegExp(`\\b${kw.toLowerCase().replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}\\b`, 'i');
+              return re.test(normalised);
+            });
+
+            if (matchedKeyword) {
+              console.log(`🏥 HIMS trigger keyword "${matchedKeyword}" from ${data.phoneNumber} — auto-registering`);
+
+              const clinicId = ownerFeatures.himsClinicId || ownerRow[0]?.organizationId || 'default_org';
+              const greetingMsg = ownerFeatures.himsGreetingMessage || undefined;
+
+              // Auto-register as HIMS patient
+              await withRetry(() => storage.createHIMSPatient({
+                phoneNumber: data.phoneNumber,
+                name: undefined,
+                organizationId: clinicId,
+                greetingMessage: greetingMsg,
+              }));
+
+              console.log(`✅ HIMS patient auto-registered: ${data.phoneNumber} → clinic ${clinicId}`);
+
+              // Send greeting
+              const newPatient = await withRetry(() => storage.getHIMSPatient(data.phoneNumber));
+              if (newPatient) {
+                await himsChatbotService.sendWelcomeMessage(newPatient);
+              }
+
+              // Process the original message through HIMS bot
+              const replyTo = data.from || data.phoneNumber;
+              await himsChatbotService.processHIMSMessage(data.phoneNumber, data.content, undefined, replyTo);
+              broadcast('hims-chatbot-response-sent', { phoneNumber: data.phoneNumber });
+              broadcast('incoming-message', data);
+              return;
+            }
+          }
+        } catch (err: any) {
+          console.error(`⚠️ HIMS auto-registration check failed: ${err.message}`);
+        }
       }
 
       // ========================================

@@ -1,0 +1,26 @@
+packages:
+  - name: default
+    environment:
+      HIMS_SUPABASE_URL: ${HIMS_SUPABASE_URL}
+      HIMS_BOT_SECRET: ${HIMS_BOT_SECRET}
+    actions:
+      - name: hims-get-doctors
+        runtime: nodejs:18
+        web: true
+        function: hims/hims-get-doctors/index.js
+      - name: hims-get-slots
+        runtime: nodejs:18
+        web: true
+        function: hims/hims-get-slots/index.js
+      - name: hims-book-appointment
+        runtime: nodejs:18
+        web: true
+        function: hims/hims-book-appointment/index.js
+      - name: hims-get-appointments
+        runtime: nodejs:18
+        web: true
+        function: hims/hims-get-appointments/index.js
+      - name: hims-cancel-appointment
+        runtime: nodejs:18
+        web: true
+        function: hims/hims-cancel-appointment/index.js

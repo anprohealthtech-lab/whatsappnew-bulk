@@ -11,7 +11,7 @@
  *   1. Patient texts on WhatsApp
  *   2. routes.ts detects phone in `hims_patients` table → routes here
  *   3. Claude decides: appointment tool  OR  general Q&A
- *      • Appointment tool → callDOFunction → DO Serverless → HIMS Supabase Edge Function
+ *      • Appointment tool → callHIMSEdgeFunction → HIMS Supabase Edge Function (direct)
  *      • General Q&A → callSupabaseRagChat (existing knowledge-base vector search)
  *   4. Final response sent back via WhatsApp
  */
@@ -20,10 +20,10 @@ import Anthropic from "@anthropic-ai/sdk";
 import type { IStorage } from "../storage";
 import type { HIMSPatient } from "@shared/schema";
 
-// ───────────────────── DO Functions base URL ─────────────────────
-const DO_FUNCTIONS_BASE =
-  process.env.DO_FUNCTIONS_BASE_URL ||
-  "https://faas-blr1-8177d592.doserverless.co/api/v1/web/fn-90be8014-1769-44c7-8b81-46179614f63a/default";
+// ───────────────────── HIMS Supabase Edge Functions (direct) ─────────────────────
+const HIMS_SUPABASE_URL =
+  process.env.HIMS_SUPABASE_URL || "https://nxbzrpmlnlvknmutyher.supabase.co";
+const HIMS_BOT_SECRET = process.env.HIMS_BOT_SECRET || "";
 
 // ───────────────────── Default system prompt ─────────────────────
 const DEFAULT_SYSTEM_PROMPT = `You are a friendly and professional hospital appointment assistant on WhatsApp.
@@ -334,38 +334,49 @@ export class HIMSChatbotService {
     conversationCache.set(phoneNumber, history);
   }
 
-  // ─── DO Function caller (same pattern as HRChatbotService) ───
+  // ─── HIMS Edge Function caller (direct to HIMS Supabase) ───
 
-  private async callDOFunction(
+  private async callHIMSEdgeFunction(
     functionName: string,
-    params: Record<string, any>,
+    body: Record<string, any>,
   ): Promise<any> {
     const tag = "[HIMSChatbotService]";
 
-    // Remap organizationId → orgId (DO reserved word workaround)
-    const mapped = { ...params };
+    if (!HIMS_BOT_SECRET) {
+      return { success: false, error: "HIMS_BOT_SECRET not configured" };
+    }
+
+    // Map organizationId → clinicId for HIMS Edge Functions
+    const mapped = { ...body };
     if (mapped.organizationId) {
-      mapped.orgId = mapped.organizationId;
+      mapped.clinicId = mapped.organizationId;
       delete mapped.organizationId;
     }
 
-    const url = new URL(`${DO_FUNCTIONS_BASE}/${functionName}`);
-    Object.entries(mapped).forEach(([k, v]) => {
-      if (v !== undefined && v !== null) url.searchParams.set(k, String(v));
-    });
-
-    console.log(`${tag} 📡 Calling DO: ${functionName}`);
-    console.log(`${tag}    URL: ${url.toString().substring(0, 120)}...`);
+    const url = `${HIMS_SUPABASE_URL}/functions/v1/${functionName}`;
+    console.log(`${tag} 📡 Calling HIMS Edge: ${functionName}`);
 
     try {
-      const resp = await fetch(url.toString(), { method: "GET" });
+      const resp = await fetch(url, {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+          "x-hims-bot-secret": HIMS_BOT_SECRET,
+        },
+        body: JSON.stringify(mapped),
+      });
+
       const data = await resp.json();
       console.log(
         `${tag}    Response: ${JSON.stringify(data).substring(0, 150)}...`,
       );
-      return data;
+
+      if (!resp.ok) {
+        return { success: false, error: data.error || `Edge function error: ${resp.status}` };
+      }
+      return { success: true, ...data };
     } catch (err: any) {
-      console.log(`${tag} ❌ DO error: ${err.message}`);
+      console.log(`${tag} ❌ HIMS Edge error: ${err.message}`);
       throw err;
     }
   }
@@ -440,7 +451,7 @@ export class HIMSChatbotService {
     try {
       switch (toolName) {
         case "get_doctors": {
-          const result = await this.callDOFunction("hims-get-doctors", {
+          const result = await this.callHIMSEdgeFunction("hims-get-doctors", {
             organizationId,
             specialization: toolInput.specialization,
             searchQuery: toolInput.searchQuery,
@@ -458,7 +469,7 @@ export class HIMSChatbotService {
         }
 
         case "get_available_slots": {
-          const result = await this.callDOFunction("hims-get-slots", {
+          const result = await this.callHIMSEdgeFunction("hims-get-slots", {
             organizationId,
             doctorId: toolInput.doctorId,
             date: toolInput.date,
@@ -478,7 +489,7 @@ export class HIMSChatbotService {
         }
 
         case "book_appointment": {
-          const result = await this.callDOFunction("hims-book-appointment", {
+          const result = await this.callHIMSEdgeFunction("hims-book-appointment", {
             organizationId,
             doctorId: toolInput.doctorId,
             date: toolInput.date,
@@ -506,7 +517,7 @@ export class HIMSChatbotService {
         }
 
         case "get_appointments": {
-          const result = await this.callDOFunction("hims-get-appointments", {
+          const result = await this.callHIMSEdgeFunction("hims-get-appointments", {
             organizationId,
             patientPhone: toolInput.patientPhone,
             date: toolInput.date,
@@ -525,7 +536,7 @@ export class HIMSChatbotService {
         }
 
         case "cancel_appointment": {
-          const result = await this.callDOFunction(
+          const result = await this.callHIMSEdgeFunction(
             "hims-cancel-appointment",
             {
               organizationId,

@@ -15,11 +15,15 @@ import {
   X,
   ClipboardList,
   Stethoscope,
+  Settings2,
 } from "lucide-react";
 
 interface EnabledFeatures {
   taskManagement?: boolean;
   himsChatbot?: boolean;
+  himsClinicId?: string;
+  himsTriggerKeywords?: string[];
+  himsGreetingMessage?: string;
 }
 
 interface AdminUser {
@@ -47,6 +51,12 @@ export function SuperAdminPanel() {
   const [showCreateUser, setShowCreateUser] = useState(false);
   const [showResetPassword, setShowResetPassword] = useState<string | null>(null);
   const [newPassword, setNewPassword] = useState("");
+  const [himsConfigUser, setHimsConfigUser] = useState<AdminUser | null>(null);
+  const [himsConfigForm, setHimsConfigForm] = useState({
+    himsClinicId: "",
+    himsTriggerKeywords: "",
+    himsGreetingMessage: "",
+  });
 
   // Create user form state
   const [createForm, setCreateForm] = useState({
@@ -309,10 +319,13 @@ export function SuperAdminPanel() {
                         </button>
                         <button
                           onClick={() => {
+                            // Open HIMS config dialog
                             const current = u.enabledFeatures || {};
-                            toggleFeatureMutation.mutate({
-                              userId: u.id,
-                              features: { ...current, himsChatbot: !current.himsChatbot },
+                            setHimsConfigUser(u);
+                            setHimsConfigForm({
+                              himsClinicId: current.himsClinicId || u.organizationId || "",
+                              himsTriggerKeywords: (current.himsTriggerKeywords || ["appointment", "book", "doctor", "slot", "opd"]).join(", "),
+                              himsGreetingMessage: current.himsGreetingMessage || "",
                             });
                           }}
                           className={`flex items-center gap-1 px-2 py-1 rounded text-xs font-medium transition-colors ${
@@ -320,10 +333,11 @@ export function SuperAdminPanel() {
                               ? "bg-blue-100 text-blue-700 dark:bg-blue-900/30 dark:text-blue-400"
                               : "bg-gray-100 text-gray-400 dark:bg-gray-800 dark:text-gray-500"
                           }`}
-                          title={u.enabledFeatures?.himsChatbot ? "Disable OPD Bot" : "Enable OPD Bot"}
+                          title={u.enabledFeatures?.himsChatbot ? "Configure OPD Bot" : "Enable OPD Bot"}
                         >
                           <Stethoscope className="w-3 h-3" />
                           OPD
+                          {u.enabledFeatures?.himsChatbot && <Settings2 className="w-3 h-3 ml-0.5" />}
                         </button>
                       </div>
                       {/* Role selector */}
@@ -387,6 +401,103 @@ export function SuperAdminPanel() {
               </div>
             </div>
           ))}
+        </div>
+      )}
+
+      {/* HIMS OPD Config Dialog */}
+      {himsConfigUser && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/50">
+          <div className="bg-card rounded-xl border shadow-xl w-full max-w-md p-6 space-y-4">
+            <div className="flex items-center justify-between">
+              <div>
+                <h3 className="font-semibold text-lg flex items-center gap-2">
+                  <Stethoscope className="w-5 h-5" /> OPD Bot Config
+                </h3>
+                <p className="text-sm text-muted-foreground">{himsConfigUser.username}</p>
+              </div>
+              <button onClick={() => setHimsConfigUser(null)}><X className="w-5 h-5" /></button>
+            </div>
+
+            <div>
+              <label className="block text-sm font-medium mb-1">HIMS Clinic ID</label>
+              <input
+                type="text"
+                className="w-full px-3 py-2 border rounded-lg text-sm font-mono"
+                placeholder={himsConfigUser.organizationId}
+                value={himsConfigForm.himsClinicId}
+                onChange={(e) => setHimsConfigForm({ ...himsConfigForm, himsClinicId: e.target.value })}
+              />
+              <p className="text-xs text-muted-foreground mt-1">
+                Defaults to user's org ID: {himsConfigUser.organizationId}
+              </p>
+            </div>
+
+            <div>
+              <label className="block text-sm font-medium mb-1">Trigger Keywords</label>
+              <input
+                type="text"
+                className="w-full px-3 py-2 border rounded-lg text-sm"
+                placeholder="appointment, book, doctor, slot, opd"
+                value={himsConfigForm.himsTriggerKeywords}
+                onChange={(e) => setHimsConfigForm({ ...himsConfigForm, himsTriggerKeywords: e.target.value })}
+              />
+              <p className="text-xs text-muted-foreground mt-1">
+                Comma-separated. Patient messages with these words auto-register for OPD bot.
+              </p>
+            </div>
+
+            <div>
+              <label className="block text-sm font-medium mb-1">Greeting Message</label>
+              <textarea
+                className="w-full px-3 py-2 border rounded-lg text-sm h-24 resize-none"
+                placeholder="Welcome to our clinic! I can help you book appointments..."
+                value={himsConfigForm.himsGreetingMessage}
+                onChange={(e) => setHimsConfigForm({ ...himsConfigForm, himsGreetingMessage: e.target.value })}
+              />
+            </div>
+
+            <div className="flex gap-2">
+              {himsConfigUser.enabledFeatures?.himsChatbot && (
+                <Button
+                  variant="outline"
+                  className="text-destructive border-destructive/30"
+                  onClick={() => {
+                    const current = himsConfigUser.enabledFeatures || {};
+                    toggleFeatureMutation.mutate({
+                      userId: himsConfigUser.id,
+                      features: { ...current, himsChatbot: false },
+                    });
+                    setHimsConfigUser(null);
+                  }}
+                >
+                  Disable OPD
+                </Button>
+              )}
+              <Button
+                className="flex-1"
+                onClick={() => {
+                  const current = himsConfigUser.enabledFeatures || {};
+                  const keywords = himsConfigForm.himsTriggerKeywords
+                    .split(",")
+                    .map((k) => k.trim())
+                    .filter(Boolean);
+                  toggleFeatureMutation.mutate({
+                    userId: himsConfigUser.id,
+                    features: {
+                      ...current,
+                      himsChatbot: true,
+                      himsClinicId: himsConfigForm.himsClinicId || himsConfigUser.organizationId,
+                      himsTriggerKeywords: keywords.length > 0 ? keywords : undefined,
+                      himsGreetingMessage: himsConfigForm.himsGreetingMessage || undefined,
+                    },
+                  });
+                  setHimsConfigUser(null);
+                }}
+              >
+                {himsConfigUser.enabledFeatures?.himsChatbot ? "Save Config" : "Enable & Save"}
+              </Button>
+            </div>
+          </div>
         </div>
       )}
     </div>

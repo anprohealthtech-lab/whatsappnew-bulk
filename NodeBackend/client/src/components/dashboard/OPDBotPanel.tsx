@@ -149,7 +149,8 @@ export function OPDBotPanel() {
             <Stethoscope className="w-6 h-6" /> OPD Bot Management
           </h2>
           <p className="text-muted-foreground">
-            Register WhatsApp numbers for the HIMS appointment chatbot
+            Register WhatsApp numbers for the HIMS appointment chatbot.
+            Patients are also <strong>auto-registered</strong> when they send a trigger keyword (e.g. "appointment", "doctor").
           </p>
         </div>
         <Dialog open={isDialogOpen} onOpenChange={setIsDialogOpen}>
