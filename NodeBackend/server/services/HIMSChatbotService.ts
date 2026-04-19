@@ -56,14 +56,20 @@ Convert natural language dates to YYYY-MM-DD:
 - "next Monday" → calculate it
 - "today" → current date
 
+## HIMS API RULES (STRICT — follow exactly)
+- All dates MUST be in "YYYY-MM-DD" format (e.g. "2026-04-20")
+- All timeSlots MUST be in 24-hour "HH:MM" format (e.g. "14:00", "09:30", "17:00") — NEVER use AM/PM like "2:00 PM" or "02:00 PM"
+- ALWAYS call get_doctors FIRST to get the real doctorId UUID before calling get_available_slots or book_appointment
+- NEVER guess or fabricate a doctorId — it must be the exact UUID returned by get_doctors
+- patientPhone MUST always include country code without + (e.g. "919909249725", not "+919909249725" or "9909249725")
+
 ## IMPORTANT RULES
 1. ALWAYS use the provided organizationId in ALL function calls
-2. NEVER guess or fabricate doctor IDs — ALWAYS call get_doctors FIRST to get real doctor IDs before calling get_available_slots or book_appointment
-3. If the patient asks for a doctor by name, call get_doctors with searchQuery to find the exact ID, then use that ID
-4. Be concise — WhatsApp messages should be short
-5. Use formatting — *bold* for headings, • for bullets
-6. If no slots are available, suggest alternative dates
-7. Always confirm booking details with the patient before calling book_appointment`;
+2. If the patient asks for a doctor by name, call get_doctors with searchQuery to find the exact ID, then use that ID
+3. Be concise — WhatsApp messages should be short
+4. Use formatting — *bold* for headings, • for bullets
+5. If no slots are available, suggest alternative dates
+6. Always confirm booking details with the patient before calling book_appointment`;
 
 // ───────────────────── Anthropic tool definitions ─────────────────────
 const TOOLS: Anthropic.Tool[] = [
@@ -105,11 +111,11 @@ const TOOLS: Anthropic.Tool[] = [
         doctorId: {
           type: "string",
           description:
-            "The doctor's ID — MUST be a real ID obtained from get_doctors. NEVER guess or fabricate this value.",
+            "The doctor's UUID from get_doctors response. MUST call get_doctors first to obtain this. NEVER guess or fabricate.",
         },
         date: {
           type: "string",
-          description: "Date in YYYY-MM-DD format",
+          description: "Date in YYYY-MM-DD format (e.g. '2026-04-20')",
         },
       },
       required: ["organizationId", "doctorId", "date"],
@@ -128,15 +134,15 @@ const TOOLS: Anthropic.Tool[] = [
         },
         doctorId: {
           type: "string",
-          description: "The doctor's ID — MUST be a real ID obtained from get_doctors. NEVER guess.",
+          description: "The doctor's UUID from get_doctors response. MUST call get_doctors first. NEVER guess.",
         },
         date: {
           type: "string",
-          description: "Appointment date in YYYY-MM-DD format",
+          description: "Appointment date in YYYY-MM-DD format (e.g. '2026-04-20')",
         },
         timeSlot: {
           type: "string",
-          description: "Appointment time in HH:MM format (24h)",
+          description: "Appointment time in 24-hour HH:MM format ONLY (e.g. '14:00', '09:30'). NEVER use AM/PM format.",
         },
         patientName: {
           type: "string",
@@ -144,7 +150,7 @@ const TOOLS: Anthropic.Tool[] = [
         },
         patientPhone: {
           type: "string",
-          description: "Patient's phone number (from context)",
+          description: "Patient's phone number with country code, no + prefix (e.g. '919909249725')",
         },
         reason: {
           type: "string",

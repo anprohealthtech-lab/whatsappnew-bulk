@@ -23,6 +23,7 @@ import {
 import { Skeleton } from "@/components/ui/skeleton";
 import { UserPlus, Pause, Play, Trash2, Stethoscope, MessageSquare } from "lucide-react";
 import { useToast } from "@/hooks/use-toast";
+import { useAuth } from "@/lib/AuthContext";
 
 const registerPatientSchema = z.object({
   phoneNumber: z.string().min(10, "Phone number must be at least 10 digits"),
@@ -38,25 +39,31 @@ export function OPDBotPanel() {
   const [deleteTarget, setDeleteTarget] = useState<string | null>(null);
   const [conversationPhone, setConversationPhone] = useState<string | null>(null);
   const { toast } = useToast();
+  const { user } = useAuth();
   const queryClient = useQueryClient();
+
+  const clinicId = user?.enabledFeatures?.himsClinicId || "";
 
   const form = useForm<RegisterPatientFormData>({
     resolver: zodResolver(registerPatientSchema),
-    defaultValues: { phoneNumber: "", name: "", organizationId: "", greetingMessage: "" },
+    defaultValues: { phoneNumber: "", name: "", organizationId: clinicId, greetingMessage: "" },
   });
 
   // Fetch HIMS patients
-  const { data: patientsData, isLoading } = useQuery<{ himsPatients: any[] }>({
-    queryKey: ["/api/hims-patients"],
+  const { data: patientsData, isLoading } = useQuery<{ patients: any[]; count: number }>({
+    queryKey: ["/api/hims-patients", clinicId],
     queryFn: async () => {
-      const res = await fetch("/api/hims-patients", {
+      const url = clinicId
+        ? `/api/hims-patients?organizationId=${encodeURIComponent(clinicId)}`
+        : "/api/hims-patients";
+      const res = await fetch(url, {
         headers: { Authorization: `Bearer ${localStorage.getItem("wa_auth_token")}` },
       });
       if (!res.ok) throw new Error("Failed to load");
       return res.json();
     },
   });
-  const patients = patientsData?.himsPatients || (Array.isArray(patientsData) ? patientsData : []);
+  const patients = patientsData?.patients || [];
 
   // Fetch conversation
   const { data: conversationData } = useQuery<{ messages: any[] }>({
@@ -178,9 +185,9 @@ export function OPDBotPanel() {
               </div>
               <div>
                 <Label>Clinic ID (Organization ID) *</Label>
-                <Input {...form.register("organizationId")} placeholder="clinic-uuid" />
-                {form.formState.errors.organizationId && (
-                  <p className="text-xs text-destructive mt-1">{form.formState.errors.organizationId.message}</p>
+                <Input {...form.register("organizationId")} placeholder="clinic-uuid" readOnly={!!clinicId} className={clinicId ? "bg-muted" : ""} />
+                {!clinicId && (
+                  <p className="text-xs text-muted-foreground mt-1">Set in Super Admin → OPD Config to auto-fill</p>
                 )}
               </div>
               <div>
