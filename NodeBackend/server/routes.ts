@@ -14,7 +14,8 @@ import { campaignService } from "./services/CampaignService";
 import { AutoResponseService } from "./services/AutoResponseService";
 import { ChatbotService } from "./services/ChatbotService";
 import { HRChatbotService } from "./services/HRChatbotService";
-import { sendMessageSchema, sendReportSchema, createCampaignSchema, bulkSendSchema, chatbotConfigSchema, flagLeadSchema, registerHRAdminSchema, hrChatbotConfigSchema, demoSchedules, scheduleCampaignSchema, userRagAgentSchema, userRagAgents, userNotificationRecipientSchema, userNotificationRecipients, registerSchema, loginSchema } from "@shared/schema";
+import { HIMSChatbotService } from "./services/HIMSChatbotService";
+import { sendMessageSchema, sendReportSchema, createCampaignSchema, bulkSendSchema, chatbotConfigSchema, flagLeadSchema, registerHRAdminSchema, hrChatbotConfigSchema, demoSchedules, scheduleCampaignSchema, userRagAgentSchema, userRagAgents, userNotificationRecipientSchema, userNotificationRecipients, registerSchema, loginSchema, registerHIMSPatientSchema } from "@shared/schema";
 import { log } from "./utils";
 import { getDbHealth, db } from "./db";
 import { sql as drizzleSql, eq, and, desc } from "drizzle-orm";
@@ -344,7 +345,7 @@ export async function registerRoutes(app: Express): Promise<Server> {
   app.patch('/api/admin/users/:userId', requireSuperAdmin, async (req, res) => {
     try {
       const { userId } = req.params;
-      const { role, organizationId, email } = req.body;
+      const { role, organizationId, email, enabledFeatures } = req.body;
 
       const updateData: any = { updatedAt: new Date() };
       if (role) {
@@ -354,6 +355,7 @@ export async function registerRoutes(app: Express): Promise<Server> {
       }
       if (organizationId) updateData.organizationId = organizationId;
       if (email !== undefined) updateData.email = email || null;
+      if (enabledFeatures !== undefined) updateData.enabledFeatures = enabledFeatures;
 
       const result = await db.update(users).set(updateData).where(eq(users.id, userId)).returning();
       if (result.length === 0) return res.status(404).json({ message: 'User not found' });
@@ -789,6 +791,67 @@ export async function registerRoutes(app: Express): Promise<Server> {
         const replyTo = data.from || data.phoneNumber;
         await hrChatbotService.processHRMessage(data.phoneNumber, data.content, undefined, replyTo);
         broadcast('hr-chatbot-response-sent', { phoneNumber: data.phoneNumber });
+        broadcast('incoming-message', data);
+        return;
+      }
+
+      // ========================================
+      // PRIORITY 1.5: Check if HIMS Patient
+      // ========================================
+      const himsChatbotService = new HIMSChatbotService(storage, waSession);
+      const isHIMSPatient = await withRetry(() => himsChatbotService.isHIMSPatient(data.phoneNumber));
+
+      if (isHIMSPatient) {
+        console.log(`🏥 HIMS Patient detected: ${data.phoneNumber} (messageType: ${data.messageType || 'text'})`);
+
+        const himsPatient = await withRetry(() => storage.getHIMSPatient(data.phoneNumber));
+        console.log(`🔍 HIMS Chatbot status for ${data.phoneNumber}: ${himsPatient?.chatbotActive === 'false' ? 'PAUSED ⏸️' : 'ACTIVE ✅'}`);
+
+        if (himsPatient?.chatbotActive === 'false') {
+          console.log(`⏸️ HIMS Chatbot paused for ${data.phoneNumber} - skipping`);
+          broadcast('incoming-message', data);
+          return;
+        }
+
+        const messageType = data.messageType || 'text';
+
+        if (messageType === 'voice_note' || messageType === 'audio') {
+          if (data.audioData) {
+            console.log(`🎤 Processing voice note from HIMS Patient ${data.phoneNumber}`);
+            const audioPayload = { base64: data.audioData, mimetype: data.mediaInfo?.mimetype || 'audio/ogg' };
+            const replyTo = data.from || data.phoneNumber;
+            await himsChatbotService.processHIMSMessage(data.phoneNumber, '[Voice Note]', audioPayload, replyTo);
+            broadcast('hims-chatbot-response-sent', { phoneNumber: data.phoneNumber, type: 'voice_processed' });
+            broadcast('incoming-message', data);
+            return;
+          } else {
+            console.log(`🎤 Voice note from HIMS Patient ${data.phoneNumber} - no audio data`);
+            await waSession.sendTextMessage(
+              data.from || data.phoneNumber,
+              "🎤 I received your voice note but couldn't process it. Please try again or type your message."
+            );
+            broadcast('hims-chatbot-response-sent', { phoneNumber: data.phoneNumber, type: 'voice_failed' });
+            broadcast('incoming-message', data);
+            return;
+          }
+        }
+
+        if (messageType === 'image' || messageType === 'video' || messageType === 'document') {
+          console.log(`📎 Media (${messageType}) from HIMS Patient ${data.phoneNumber}`);
+          await waSession.sendTextMessage(
+            data.from || data.phoneNumber,
+            `📎 I received your ${messageType}! I can only process text messages at the moment.\n\nPlease type your request and I'll be happy to help. 🏥`
+          );
+          broadcast('hims-chatbot-response-sent', { phoneNumber: data.phoneNumber, type: 'media_acknowledgment' });
+          broadcast('incoming-message', data);
+          return;
+        }
+
+        // Process text message through HIMS chatbot
+        console.log(`🏥 Processing HIMS message from ${data.phoneNumber} (org: ${himsPatient?.organizationId})`);
+        const replyTo = data.from || data.phoneNumber;
+        await himsChatbotService.processHIMSMessage(data.phoneNumber, data.content, undefined, replyTo);
+        broadcast('hims-chatbot-response-sent', { phoneNumber: data.phoneNumber });
         broadcast('incoming-message', data);
         return;
       }
@@ -3407,6 +3470,146 @@ export async function registerRoutes(app: Express): Promise<Server> {
   });
 
   // ==================== END HR ADMIN API ====================
+
+  // ==================== HIMS PATIENT API ====================
+
+  // List all HIMS patients
+  app.get('/api/hims-patients', requireAuth, async (req, res) => {
+    try {
+      const orgId = req.query.organizationId as string | undefined;
+      const patients = orgId
+        ? await withRetry(() => storage.getHIMSPatientsByOrganization(orgId))
+        : await withRetry(() => storage.getAllHIMSPatients());
+
+      res.json({ success: true, patients, count: patients.length });
+    } catch (error) {
+      const errorMessage = error instanceof Error ? error.message : 'Unknown error';
+      log(`Get HIMS patients error: ${errorMessage}`);
+      res.status(500).json({ success: false, error: errorMessage });
+    }
+  });
+
+  // Register a new HIMS patient (link WhatsApp number to HIMS org)
+  app.post('/api/hims-patients', requireAuth, async (req, res) => {
+    try {
+      const validation = registerHIMSPatientSchema.safeParse(req.body);
+      if (!validation.success) {
+        return res.status(400).json({ success: false, error: validation.error.errors[0].message });
+      }
+
+      const { phoneNumber, name, organizationId, systemPrompt, triggerKeywords, greetingMessage } = validation.data;
+
+      const patient = await withRetry(() => storage.createHIMSPatient({
+        phoneNumber,
+        name,
+        organizationId,
+        systemPrompt,
+        triggerKeywords,
+        greetingMessage,
+      }));
+
+      // Optionally send welcome message
+      try {
+        const waSession = await getUserWASession(req);
+        const himsChatbotService = new HIMSChatbotService(storage, waSession);
+        await himsChatbotService.sendWelcomeMessage(patient);
+      } catch (welcomeError) {
+        console.log(`⚠️ Failed to send HIMS welcome message: ${welcomeError}`);
+      }
+
+      res.json({ success: true, patient });
+    } catch (error) {
+      const errorMessage = error instanceof Error ? error.message : 'Unknown error';
+      log(`Register HIMS patient error: ${errorMessage}`);
+      res.status(400).json({ success: false, error: errorMessage });
+    }
+  });
+
+  // Get HIMS patient conversation history
+  app.get('/api/hims-patients/:phoneNumber/conversation', requireAuth, async (req, res) => {
+    try {
+      const { phoneNumber } = req.params;
+      const limit = parseInt(req.query.limit as string) || 20;
+
+      const patient = await withRetry(() => storage.getHIMSPatient(phoneNumber));
+      const conversation = await withRetry(() => storage.getConversationHistory(phoneNumber, limit));
+
+      res.json({
+        success: true,
+        patient,
+        conversation: conversation.reverse(),
+      });
+    } catch (error) {
+      const errorMessage = error instanceof Error ? error.message : 'Unknown error';
+      log(`Get HIMS patient conversation error: ${errorMessage}`);
+      res.status(500).json({ success: false, error: errorMessage });
+    }
+  });
+
+  // Delete HIMS patient
+  app.delete('/api/hims-patients/:phoneNumber', requireAuth, async (req, res) => {
+    try {
+      const { phoneNumber } = req.params;
+      await withRetry(() => storage.deleteHIMSPatient(phoneNumber));
+      res.json({ success: true, message: 'HIMS patient removed successfully' });
+    } catch (error) {
+      const errorMessage = error instanceof Error ? error.message : 'Unknown error';
+      log(`Delete HIMS patient error: ${errorMessage}`);
+      res.status(400).json({ success: false, error: errorMessage });
+    }
+  });
+
+  // Toggle HIMS chatbot active status
+  app.patch('/api/hims-patients/:phoneNumber/chatbot-status', requireAuth, async (req, res) => {
+    try {
+      const { phoneNumber } = req.params;
+      const { active } = req.body;
+
+      if (typeof active !== 'boolean') {
+        return res.status(400).json({ success: false, error: 'active field must be a boolean' });
+      }
+
+      await withRetry(() => storage.updateHIMSPatient(phoneNumber, {
+        chatbotActive: active ? 'true' : 'false',
+      }));
+
+      res.json({
+        success: true,
+        message: `HIMS Chatbot ${active ? 'enabled' : 'paused'} for this patient`,
+      });
+    } catch (error) {
+      const errorMessage = error instanceof Error ? error.message : 'Unknown error';
+      log(`Toggle HIMS chatbot status error: ${errorMessage}`);
+      res.status(400).json({ success: false, error: errorMessage });
+    }
+  });
+
+  // Update HIMS patient details (system prompt, keywords, greeting)
+  app.patch('/api/hims-patients/:phoneNumber', requireAuth, async (req, res) => {
+    try {
+      const { phoneNumber } = req.params;
+      const { name, systemPrompt, triggerKeywords, greetingMessage } = req.body;
+
+      const updated = await withRetry(() => storage.updateHIMSPatient(phoneNumber, {
+        ...(name !== undefined && { name }),
+        ...(systemPrompt !== undefined && { systemPrompt }),
+        ...(triggerKeywords !== undefined && { triggerKeywords }),
+        ...(greetingMessage !== undefined && { greetingMessage }),
+      }));
+
+      if (!updated) {
+        return res.status(404).json({ success: false, error: 'HIMS patient not found' });
+      }
+
+      res.json({ success: true, patient: updated });
+    } catch (error) {
+      const errorMessage = error instanceof Error ? error.message : 'Unknown error';
+      log(`Update HIMS patient error: ${errorMessage}`);
+      res.status(400).json({ success: false, error: errorMessage });
+    }
+  });
+
+  // ==================== END HIMS PATIENT API ====================
 
   // ==================== NOTIFICATION API ====================
 

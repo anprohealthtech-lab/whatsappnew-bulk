@@ -414,6 +414,29 @@ export async function runMigrations(): Promise<void> {
 
       -- 0007: Start from contact support for campaign schedules
       ALTER TABLE "campaign_schedules" ADD COLUMN IF NOT EXISTS "start_from_contact" integer;
+
+      -- 0008: HIMS (Hospital Information Management System) patient registration
+      CREATE TABLE IF NOT EXISTS "hims_patients" (
+        "id" varchar PRIMARY KEY DEFAULT gen_random_uuid(),
+        "phone_number" text NOT NULL UNIQUE,
+        "name" text,
+        "organization_id" text NOT NULL,
+        "system_prompt" text,
+        "trigger_keywords" jsonb,
+        "greeting_message" text,
+        "chatbot_active" text NOT NULL DEFAULT 'true',
+        "created_at" timestamp DEFAULT now(),
+        "updated_at" timestamp DEFAULT now()
+      );
+
+      CREATE INDEX IF NOT EXISTS idx_hims_patients_phone
+        ON hims_patients(phone_number);
+
+      CREATE INDEX IF NOT EXISTS idx_hims_patients_org
+        ON hims_patients(organization_id);
+
+      -- 0009: Per-user feature flags (Task Management, HIMS Chatbot)
+      ALTER TABLE "users" ADD COLUMN IF NOT EXISTS "enabled_features" jsonb DEFAULT '{"taskManagement": false, "himsChatbot": false}'::jsonb;
     `);
 
     log('✅ Database migrations completed — all tables ready');

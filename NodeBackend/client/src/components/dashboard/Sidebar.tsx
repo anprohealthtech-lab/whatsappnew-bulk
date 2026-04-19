@@ -14,6 +14,8 @@ import {
     ShieldCheck,
     LogOut,
     Activity,
+    ClipboardList,
+    Stethoscope,
 } from "lucide-react";
 import { cn } from "@/lib/utils";
 import { useAuth } from "@/lib/AuthContext";
@@ -26,6 +28,8 @@ interface SidebarProps {
 
 export function Sidebar({ activeSection, setActiveSection, setLocation }: SidebarProps) {
     const { user, logout } = useAuth();
+
+    const features = user?.enabledFeatures as { taskManagement?: boolean; himsChatbot?: boolean } | undefined;
 
     const menuItems = [
         { id: "dashboard", label: "Dashboard", icon: Gauge, action: () => setActiveSection("dashboard") },
@@ -42,6 +46,12 @@ export function Sidebar({ activeSection, setActiveSection, setLocation }: Sideba
         { id: "rag-settings", label: "AI Chatbot", icon: Bot, action: () => setActiveSection("rag-settings") },
         { id: "notifications", label: "Notifications", icon: BellRing, action: () => setActiveSection("notifications") },
         { id: "knowledge-base", label: "Knowledge Base", icon: Database, action: () => setActiveSection("knowledge-base") },
+        ...(features?.taskManagement || user?.role === 'super_admin' ? [
+            { id: "task-management", label: "Task Management", icon: ClipboardList, action: () => setActiveSection("task-management") },
+        ] : []),
+        ...(features?.himsChatbot || user?.role === 'super_admin' ? [
+            { id: "opd-bot", label: "OPD Bot", icon: Stethoscope, action: () => setActiveSection("opd-bot") },
+        ] : []),
         ...(user?.role === 'super_admin' ? [
             { id: "super-admin", label: "Super Admin", icon: ShieldCheck, action: () => setActiveSection("super-admin") },
         ] : []),

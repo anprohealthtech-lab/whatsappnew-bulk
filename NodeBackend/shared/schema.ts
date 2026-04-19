@@ -10,6 +10,7 @@ export const users = pgTable("users", {
   email: text("email").unique(),
   organizationId: text("organization_id").default("default_org").notNull(),
   role: text("role").default("user").notNull(), // 'super_admin' | 'admin' | 'user'
+  enabledFeatures: jsonb("enabled_features").default({ taskManagement: false, himsChatbot: false }),
   lastLoginAt: timestamp("last_login_at"),
   createdAt: timestamp("created_at").defaultNow(),
   updatedAt: timestamp("updated_at").defaultNow(),
@@ -276,6 +277,21 @@ export const baileysAuthKeys = pgTable("baileys_auth_keys", {
   updatedAt: timestamp("updated_at").defaultNow(),
 });
 
+// HIMS patient users — links WhatsApp number to HIMS (Hospital Information Management System)
+// organizationId is the HIMS org ID, used for all DO→Edge function calls (get appointments, doctors, etc.)
+export const himsPatients = pgTable("hims_patients", {
+  id: varchar("id").primaryKey().default(sql`gen_random_uuid()`),
+  phoneNumber: text("phone_number").notNull().unique(),
+  name: text("name"),
+  organizationId: text("organization_id").notNull(), // HIMS organization ID — same as HIMS app org
+  systemPrompt: text("system_prompt"),               // Optional per-org/doctor system prompt override
+  triggerKeywords: jsonb("trigger_keywords"),         // Keywords that trigger HIMS chatbot (e.g. ["appointment", "book", "doctor"])
+  greetingMessage: text("greeting_message"),          // Greeting sent when patient first triggers chatbot
+  chatbotActive: text("chatbot_active").default("true").notNull(), // "true" or "false"
+  createdAt: timestamp("created_at").defaultNow(),
+  updatedAt: timestamp("updated_at").defaultNow(),
+});
+
 export const insertUserSchema = createInsertSchema(users).pick({
   username: true,
   password: true,
@@ -316,6 +332,7 @@ export type UserRagAgent = typeof userRagAgents.$inferSelect;
 export type UserNotificationRecipient = typeof userNotificationRecipients.$inferSelect;
 export type WhatsAppSession = typeof whatsappSessions.$inferSelect;
 export type SessionConnectionHistory = typeof sessionConnectionHistory.$inferSelect;
+export type HIMSPatient = typeof himsPatients.$inferSelect;
 
 // Additional schemas for API requests
 export const sendMessageSchema = z.object({
@@ -426,6 +443,16 @@ export const hrChatbotConfigSchema = z.object({
   isActive: z.boolean().optional(),
 });
 
+// HIMS patient registration schema
+export const registerHIMSPatientSchema = z.object({
+  phoneNumber: z.string().min(1, "Phone number is required"),
+  name: z.string().optional(),
+  organizationId: z.string().min(1, "HIMS Organization ID is required"),
+  systemPrompt: z.string().optional(),
+  triggerKeywords: z.array(z.string()).optional(),
+  greetingMessage: z.string().optional(),
+});
+
 // Auth schemas
 export const registerSchema = z.object({
   username: z.string().min(3, "Username must be at least 3 characters"),
@@ -450,5 +477,6 @@ export type RegisterHRAdminRequest = z.infer<typeof registerHRAdminSchema>;
 export type HRChatbotConfigRequest = z.infer<typeof hrChatbotConfigSchema>;
 export type UserRagAgentRequest = z.infer<typeof userRagAgentSchema>;
 export type UserNotificationRecipientRequest = z.infer<typeof userNotificationRecipientSchema>;
+export type RegisterHIMSPatientRequest = z.infer<typeof registerHIMSPatientSchema>;
 export type RegisterRequest = z.infer<typeof registerSchema>;
 export type LoginRequest = z.infer<typeof loginSchema>;

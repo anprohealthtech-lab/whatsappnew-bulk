@@ -35,6 +35,8 @@ import { KnowledgeBasePanel } from "@/components/dashboard/KnowledgeBasePanel";
 import { NotificationRecipientsPanel } from "@/components/dashboard/NotificationRecipientsPanel";
 import { SuperAdminPanel } from "@/components/dashboard/SuperAdminPanel";
 import { SessionHistoryPanel } from "@/components/dashboard/SessionHistoryPanel";
+import { HRAdminsPanel } from "@/components/dashboard/HRAdminsPanel";
+import { OPDBotPanel } from "@/components/dashboard/OPDBotPanel";
 
 // Form schemas
 const messageSchema = z.object({
@@ -498,6 +500,10 @@ export default function Dashboard() {
 
           {/* Knowledge Base Section */}
           {activeSection === "knowledge-base" && <KnowledgeBasePanel />}
+
+          {activeSection === "task-management" && <HRAdminsPanel />}
+
+          {activeSection === "opd-bot" && <OPDBotPanel />}
 
           {activeSection === "super-admin" && <SuperAdminPanel />}
         </main>

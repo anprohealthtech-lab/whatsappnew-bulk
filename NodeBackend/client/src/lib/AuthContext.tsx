@@ -6,6 +6,7 @@ interface User {
   email?: string;
   organizationId: string;
   role: string;
+  enabledFeatures?: { taskManagement?: boolean; himsChatbot?: boolean };
 }
 
 interface AuthContextType {

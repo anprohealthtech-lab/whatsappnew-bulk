@@ -13,7 +13,14 @@ import {
   ShieldCheck,
   User,
   X,
+  ClipboardList,
+  Stethoscope,
 } from "lucide-react";
+
+interface EnabledFeatures {
+  taskManagement?: boolean;
+  himsChatbot?: boolean;
+}
 
 interface AdminUser {
   id: string;
@@ -21,6 +28,7 @@ interface AdminUser {
   email: string | null;
   organizationId: string;
   role: string;
+  enabledFeatures: EnabledFeatures | null;
   lastLoginAt: string | null;
   createdAt: string;
 }
@@ -116,6 +124,20 @@ export function SuperAdminPanel() {
     },
     onError: (err: Error) => {
       toast({ title: "Failed to reset password", description: err.message, variant: "destructive" });
+    },
+  });
+
+  const toggleFeatureMutation = useMutation({
+    mutationFn: async ({ userId, features }: { userId: string; features: EnabledFeatures }) => {
+      const res = await apiRequest("PATCH", `/api/admin/users/${userId}`, { enabledFeatures: features });
+      return res.json();
+    },
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ["/api/admin/users"] });
+      toast({ title: "Feature updated" });
+    },
+    onError: (err: Error) => {
+      toast({ title: "Failed to update feature", description: err.message, variant: "destructive" });
     },
   });
 
@@ -265,6 +287,45 @@ export function SuperAdminPanel() {
                       </div>
                     </div>
                     <div className="flex items-center gap-2 flex-shrink-0">
+                      {/* Feature toggles */}
+                      <div className="flex items-center gap-1 mr-2">
+                        <button
+                          onClick={() => {
+                            const current = u.enabledFeatures || {};
+                            toggleFeatureMutation.mutate({
+                              userId: u.id,
+                              features: { ...current, taskManagement: !current.taskManagement },
+                            });
+                          }}
+                          className={`flex items-center gap-1 px-2 py-1 rounded text-xs font-medium transition-colors ${
+                            u.enabledFeatures?.taskManagement
+                              ? "bg-emerald-100 text-emerald-700 dark:bg-emerald-900/30 dark:text-emerald-400"
+                              : "bg-gray-100 text-gray-400 dark:bg-gray-800 dark:text-gray-500"
+                          }`}
+                          title={u.enabledFeatures?.taskManagement ? "Disable Task Management" : "Enable Task Management"}
+                        >
+                          <ClipboardList className="w-3 h-3" />
+                          Tasks
+                        </button>
+                        <button
+                          onClick={() => {
+                            const current = u.enabledFeatures || {};
+                            toggleFeatureMutation.mutate({
+                              userId: u.id,
+                              features: { ...current, himsChatbot: !current.himsChatbot },
+                            });
+                          }}
+                          className={`flex items-center gap-1 px-2 py-1 rounded text-xs font-medium transition-colors ${
+                            u.enabledFeatures?.himsChatbot
+                              ? "bg-blue-100 text-blue-700 dark:bg-blue-900/30 dark:text-blue-400"
+                              : "bg-gray-100 text-gray-400 dark:bg-gray-800 dark:text-gray-500"
+                          }`}
+                          title={u.enabledFeatures?.himsChatbot ? "Disable OPD Bot" : "Enable OPD Bot"}
+                        >
+                          <Stethoscope className="w-3 h-3" />
+                          OPD
+                        </button>
+                      </div>
                       {/* Role selector */}
                       <select
                         className="text-xs px-2 py-1 border rounded"

@@ -1,7 +1,7 @@
 import { eq, desc, and, gte, lte, sql, or } from 'drizzle-orm';
 import { db } from '../db';
-import { users, messages, systemLogs, blockedNumbers, autoResponses, contacts, hrAdmins, hrChatbotConfigs } from '@shared/schema';
-import type { User, InsertUser, Message, InsertMessage, SystemLog, InsertSystemLog, BlockedNumber, AutoResponse, Contact, HRAdmin, HRChatbotConfig } from '@shared/schema';
+import { users, messages, systemLogs, blockedNumbers, autoResponses, contacts, hrAdmins, hrChatbotConfigs, himsPatients } from '@shared/schema';
+import type { User, InsertUser, Message, InsertMessage, SystemLog, InsertSystemLog, BlockedNumber, AutoResponse, Contact, HRAdmin, HRChatbotConfig, HIMSPatient } from '@shared/schema';
 import type { IStorage, TenantFilter } from '../storage';
 
 export class DatabaseStorage implements IStorage {
@@ -644,6 +644,132 @@ export class DatabaseStorage implements IStorage {
         .returning();
       
       return result[0];
+    }
+  }
+
+  // ============================================================================
+  // HIMS Patient methods
+  // ============================================================================
+
+  async getHIMSPatient(phoneNumber: string): Promise<HIMSPatient | undefined> {
+    const variants = this.getPhoneVariants(phoneNumber);
+    console.log(`[DatabaseStorage] getHIMSPatient: input=${phoneNumber}, variants=${JSON.stringify(variants)}`);
+
+    for (const variant of variants) {
+      const result = await db.select()
+        .from(himsPatients)
+        .where(eq(himsPatients.phoneNumber, variant))
+        .limit(1);
+
+      if (result[0]) {
+        console.log(`[DatabaseStorage] getHIMSPatient: found with variant=${variant} (org=${result[0].organizationId})`);
+        return result[0];
+      }
+    }
+
+    // Fuzzy match on last 10 digits
+    const cleaned = this.normalizeHRPhone(phoneNumber);
+    if (cleaned.length >= 10) {
+      const all = await db.select().from(himsPatients);
+      for (const p of all) {
+        const storedCleaned = this.normalizeHRPhone(p.phoneNumber);
+        if (storedCleaned.slice(-10) === cleaned.slice(-10) ||
+            cleaned.slice(-10) === storedCleaned.slice(-10)) {
+          console.log(`[DatabaseStorage] getHIMSPatient: fuzzy match (stored=${p.phoneNumber}, input=${phoneNumber})`);
+          return p;
+        }
+      }
+    }
+
+    console.log(`[DatabaseStorage] getHIMSPatient: not found`);
+    return undefined;
+  }
+
+  async getAllHIMSPatients(): Promise<HIMSPatient[]> {
+    return await db.select().from(himsPatients);
+  }
+
+  async getHIMSPatientsByOrganization(organizationId: string): Promise<HIMSPatient[]> {
+    return await db.select()
+      .from(himsPatients)
+      .where(eq(himsPatients.organizationId, organizationId));
+  }
+
+  async createHIMSPatient(data: {
+    phoneNumber: string;
+    name?: string;
+    organizationId: string;
+    systemPrompt?: string;
+    triggerKeywords?: string[];
+    greetingMessage?: string;
+  }): Promise<HIMSPatient> {
+    let phoneToStore = data.phoneNumber.replace(/[\s\-\(\)]/g, '');
+    if (!phoneToStore.includes('@')) {
+      if (phoneToStore.length >= 15) {
+        phoneToStore = `${phoneToStore}@lid`;
+      } else {
+        const cleaned = phoneToStore.replace(/\D/g, '');
+        phoneToStore = cleaned.length === 10 ? `91${cleaned}` : cleaned;
+      }
+    }
+
+    console.log(`[DatabaseStorage] createHIMSPatient: input=${data.phoneNumber}, storing=${phoneToStore}`);
+
+    const existing = await this.getHIMSPatient(data.phoneNumber);
+
+    if (existing) {
+      const result = await db.update(himsPatients)
+        .set({
+          name: data.name || existing.name,
+          organizationId: data.organizationId,
+          systemPrompt: data.systemPrompt ?? existing.systemPrompt,
+          triggerKeywords: data.triggerKeywords ?? existing.triggerKeywords,
+          greetingMessage: data.greetingMessage ?? existing.greetingMessage,
+          chatbotActive: 'true',
+          updatedAt: new Date(),
+        })
+        .where(eq(himsPatients.id, existing.id))
+        .returning();
+      return result[0];
+    } else {
+      const result = await db.insert(himsPatients)
+        .values({
+          phoneNumber: phoneToStore,
+          name: data.name || null,
+          organizationId: data.organizationId,
+          systemPrompt: data.systemPrompt || null,
+          triggerKeywords: data.triggerKeywords || null,
+          greetingMessage: data.greetingMessage || null,
+          chatbotActive: 'true',
+        })
+        .returning();
+      return result[0];
+    }
+  }
+
+  async updateHIMSPatient(phoneNumber: string, updates: Partial<HIMSPatient>): Promise<HIMSPatient | undefined> {
+    const existing = await this.getHIMSPatient(phoneNumber);
+    if (!existing) {
+      console.log(`[DatabaseStorage] updateHIMSPatient: not found for ${phoneNumber}`);
+      return undefined;
+    }
+
+    const updateData: any = { ...updates, updatedAt: new Date() };
+    if (typeof updates.chatbotActive === 'boolean') {
+      updateData.chatbotActive = updates.chatbotActive ? 'true' : 'false';
+    }
+
+    const result = await db.update(himsPatients)
+      .set(updateData)
+      .where(eq(himsPatients.id, existing.id))
+      .returning();
+    return result[0];
+  }
+
+  async deleteHIMSPatient(phoneNumber: string): Promise<void> {
+    const existing = await this.getHIMSPatient(phoneNumber);
+    if (existing) {
+      await db.delete(himsPatients).where(eq(himsPatients.id, existing.id));
     }
   }
 

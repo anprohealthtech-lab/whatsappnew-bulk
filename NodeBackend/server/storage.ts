@@ -1,4 +1,4 @@
-import { type User, type InsertUser, type Message, type InsertMessage, type SystemLog, type InsertSystemLog, type BlockedNumber, type AutoResponse, type Contact, type HRAdmin, type HRChatbotConfig } from "@shared/schema";
+import { type User, type InsertUser, type Message, type InsertMessage, type SystemLog, type InsertSystemLog, type BlockedNumber, type AutoResponse, type Contact, type HRAdmin, type HRChatbotConfig, type HIMSPatient } from "@shared/schema";
 import { randomUUID } from "crypto";
 
 export interface TenantFilter {
@@ -77,6 +77,14 @@ export interface IStorage {
   // HR Chatbot config methods
   getHRChatbotConfig(): Promise<HRChatbotConfig | undefined>;
   updateHRChatbotConfig(config: Partial<HRChatbotConfig> & { agentName: string }): Promise<HRChatbotConfig>;
+
+  // HIMS Patient methods
+  getHIMSPatient(phoneNumber: string): Promise<HIMSPatient | undefined>;
+  getAllHIMSPatients(): Promise<HIMSPatient[]>;
+  getHIMSPatientsByOrganization(organizationId: string): Promise<HIMSPatient[]>;
+  createHIMSPatient(data: { phoneNumber: string; name?: string; organizationId: string; systemPrompt?: string; triggerKeywords?: string[]; greetingMessage?: string }): Promise<HIMSPatient>;
+  updateHIMSPatient(phoneNumber: string, updates: Partial<HIMSPatient>): Promise<HIMSPatient | undefined>;
+  deleteHIMSPatient(phoneNumber: string): Promise<void>;
 }
 
 export class MemStorage implements IStorage {
@@ -557,6 +565,86 @@ export class MemStorage implements IStorage {
       };
     }
     return this.hrChatbotConfig;
+  }
+
+  // HIMS Patient methods (MemStorage stub)
+  private himsPatients: Map<string, HIMSPatient> = new Map();
+
+  private normalizeHIMSPhone(phone: string): string {
+    if (phone.includes('@')) return phone.split('@')[0].replace(/\D/g, '');
+    return phone.replace(/\D/g, '');
+  }
+
+  async getHIMSPatient(phoneNumber: string): Promise<HIMSPatient | undefined> {
+    if (this.himsPatients.has(phoneNumber)) return this.himsPatients.get(phoneNumber);
+    const cleaned = this.normalizeHIMSPhone(phoneNumber);
+    for (const [, patient] of this.himsPatients) {
+      const stored = this.normalizeHIMSPhone(patient.phoneNumber);
+      if (stored === cleaned || stored.slice(-10) === cleaned.slice(-10)) return patient;
+    }
+    return undefined;
+  }
+
+  async getAllHIMSPatients(): Promise<HIMSPatient[]> {
+    return Array.from(this.himsPatients.values());
+  }
+
+  async getHIMSPatientsByOrganization(organizationId: string): Promise<HIMSPatient[]> {
+    return Array.from(this.himsPatients.values()).filter(p => p.organizationId === organizationId);
+  }
+
+  async createHIMSPatient(data: { phoneNumber: string; name?: string; organizationId: string; systemPrompt?: string; triggerKeywords?: string[]; greetingMessage?: string }): Promise<HIMSPatient> {
+    let phoneToStore = data.phoneNumber.replace(/[\s\-\(\)]/g, '');
+    if (!phoneToStore.includes('@')) {
+      if (phoneToStore.length >= 15) {
+        phoneToStore = `${phoneToStore}@lid`;
+      }
+    }
+    const existing = await this.getHIMSPatient(data.phoneNumber);
+    if (existing) {
+      const updated: HIMSPatient = {
+        ...existing,
+        name: data.name || existing.name,
+        organizationId: data.organizationId,
+        systemPrompt: data.systemPrompt ?? existing.systemPrompt,
+        triggerKeywords: data.triggerKeywords ?? existing.triggerKeywords,
+        greetingMessage: data.greetingMessage ?? existing.greetingMessage,
+        chatbotActive: 'true',
+        updatedAt: new Date(),
+      };
+      this.himsPatients.set(existing.phoneNumber, updated);
+      return updated;
+    }
+    const patient: HIMSPatient = {
+      id: randomUUID(),
+      phoneNumber: phoneToStore,
+      name: data.name || null,
+      organizationId: data.organizationId,
+      systemPrompt: data.systemPrompt || null,
+      triggerKeywords: data.triggerKeywords || null,
+      greetingMessage: data.greetingMessage || null,
+      chatbotActive: 'true',
+      createdAt: new Date(),
+      updatedAt: new Date(),
+    };
+    this.himsPatients.set(phoneToStore, patient);
+    return patient;
+  }
+
+  async updateHIMSPatient(phoneNumber: string, updates: Partial<HIMSPatient>): Promise<HIMSPatient | undefined> {
+    const existing = await this.getHIMSPatient(phoneNumber);
+    if (!existing) return undefined;
+    const updated = { ...existing, ...updates, updatedAt: new Date() };
+    if (typeof updates.chatbotActive === 'boolean') {
+      (updated as any).chatbotActive = updates.chatbotActive ? 'true' : 'false';
+    }
+    this.himsPatients.set(existing.phoneNumber, updated);
+    return updated;
+  }
+
+  async deleteHIMSPatient(phoneNumber: string): Promise<void> {
+    const existing = await this.getHIMSPatient(phoneNumber);
+    if (existing) this.himsPatients.delete(existing.phoneNumber);
   }
 }
 
