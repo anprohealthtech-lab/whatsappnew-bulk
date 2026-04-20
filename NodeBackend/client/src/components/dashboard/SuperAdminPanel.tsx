@@ -54,8 +54,6 @@ export function SuperAdminPanel() {
   const [himsConfigUser, setHimsConfigUser] = useState<AdminUser | null>(null);
   const [himsConfigForm, setHimsConfigForm] = useState({
     himsClinicId: "",
-    himsTriggerKeywords: "",
-    himsGreetingMessage: "",
   });
 
   // Create user form state
@@ -324,8 +322,6 @@ export function SuperAdminPanel() {
                             setHimsConfigUser(u);
                             setHimsConfigForm({
                               himsClinicId: current.himsClinicId || u.organizationId || "",
-                              himsTriggerKeywords: (current.himsTriggerKeywords || ["appointment", "book", "doctor", "slot", "opd"]).join(", "),
-                              himsGreetingMessage: current.himsGreetingMessage || "",
                             });
                           }}
                           className={`flex items-center gap-1 px-2 py-1 rounded text-xs font-medium transition-colors ${
@@ -432,29 +428,9 @@ export function SuperAdminPanel() {
               </p>
             </div>
 
-            <div>
-              <label className="block text-sm font-medium mb-1">Trigger Keywords</label>
-              <input
-                type="text"
-                className="w-full px-3 py-2 border rounded-lg text-sm"
-                placeholder="appointment, book, doctor, slot, opd"
-                value={himsConfigForm.himsTriggerKeywords}
-                onChange={(e) => setHimsConfigForm({ ...himsConfigForm, himsTriggerKeywords: e.target.value })}
-              />
-              <p className="text-xs text-muted-foreground mt-1">
-                Comma-separated. Patient messages with these words auto-register for OPD bot.
-              </p>
-            </div>
-
-            <div>
-              <label className="block text-sm font-medium mb-1">Greeting Message</label>
-              <textarea
-                className="w-full px-3 py-2 border rounded-lg text-sm h-24 resize-none"
-                placeholder="Welcome to our clinic! I can help you book appointments..."
-                value={himsConfigForm.himsGreetingMessage}
-                onChange={(e) => setHimsConfigForm({ ...himsConfigForm, himsGreetingMessage: e.target.value })}
-              />
-            </div>
+            <p className="text-xs text-muted-foreground">
+              Trigger keywords, greeting message, and system prompt can be configured by the user in their OPD Bot panel.
+            </p>
 
             <div className="flex gap-2">
               {himsConfigUser.enabledFeatures?.himsChatbot && (
@@ -477,18 +453,12 @@ export function SuperAdminPanel() {
                 className="flex-1"
                 onClick={() => {
                   const current = himsConfigUser.enabledFeatures || {};
-                  const keywords = himsConfigForm.himsTriggerKeywords
-                    .split(",")
-                    .map((k) => k.trim())
-                    .filter(Boolean);
                   toggleFeatureMutation.mutate({
                     userId: himsConfigUser.id,
                     features: {
                       ...current,
                       himsChatbot: true,
                       himsClinicId: himsConfigForm.himsClinicId || himsConfigUser.organizationId,
-                      himsTriggerKeywords: keywords.length > 0 ? keywords : undefined,
-                      himsGreetingMessage: himsConfigForm.himsGreetingMessage || undefined,
                     },
                   });
                   setHimsConfigUser(null);

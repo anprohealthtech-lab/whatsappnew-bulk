@@ -19,6 +19,9 @@
 import Anthropic from "@anthropic-ai/sdk";
 import type { IStorage } from "../storage";
 import type { HIMSPatient } from "@shared/schema";
+import { db } from "../db";
+import { users } from "@shared/schema";
+import { sql as drizzleSql } from "drizzle-orm";
 
 // ───────────────────── HIMS Supabase Edge Functions (direct) ─────────────────────
 const HIMS_SUPABASE_URL =
@@ -590,6 +593,7 @@ export class HIMSChatbotService {
     patient: HIMSPatient,
     conversationHistory: ConversationMessage[],
     audioData?: { base64: string; mimetype: string },
+    ownerSystemPrompt?: string,
   ): Promise<string> {
     const tag = "[HIMSChatbotService]";
 
@@ -599,7 +603,7 @@ export class HIMSChatbotService {
       );
     }
 
-    const basePrompt = patient.systemPrompt || DEFAULT_SYSTEM_PROMPT;
+    const basePrompt = patient.systemPrompt || ownerSystemPrompt || DEFAULT_SYSTEM_PROMPT;
 
     const contextInfo = `
 ## CURRENT CONTEXT
@@ -776,6 +780,21 @@ IMPORTANT: Always use organizationId="${patient.organizationId}" and patientPhon
       const history = this.getConversationFromCache(phoneNumber);
       console.log(`${tag}    ${history.length} cached messages`);
 
+      // Look up owner's custom system prompt from enabledFeatures
+      let ownerSystemPrompt: string | undefined;
+      try {
+        const ownerRows = await db.select({ enabledFeatures: users.enabledFeatures })
+          .from(users)
+          .where(drizzleSql`${users.enabledFeatures}->>'himsClinicId' = ${patient.organizationId}`)
+          .limit(1);
+        if (ownerRows.length > 0) {
+          const features = ownerRows[0].enabledFeatures as any;
+          ownerSystemPrompt = features?.himsSystemPrompt;
+        }
+      } catch (e) {
+        console.log(`${tag} ⚠️ Could not look up owner prompt: ${(e as Error).message}`);
+      }
+
       const displayText = audioData
         ? "[Voice Note - processing...]"
         : messageText;
@@ -786,6 +805,7 @@ IMPORTANT: Always use organizationId="${patient.organizationId}" and patientPhon
         patient,
         history,
         audioData,
+        ownerSystemPrompt,
       );
 
       if (audioData) {

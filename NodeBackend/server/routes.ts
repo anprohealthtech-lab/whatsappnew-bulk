@@ -3528,6 +3528,46 @@ export async function registerRoutes(app: Express): Promise<Server> {
 
   // ==================== END HR ADMIN API ====================
 
+  // ==================== OPD BOT SETTINGS (user-facing) ====================
+
+  // Get current user's OPD settings
+  app.get('/api/opd-settings', requireAuth, async (req, res) => {
+    try {
+      const user = await authService.getUser(req.auth!.userId);
+      if (!user) return res.status(404).json({ message: 'User not found' });
+      const features = (user.enabledFeatures as any) || {};
+      res.json({
+        himsTriggerKeywords: features.himsTriggerKeywords || ['appointment', 'book', 'doctor', 'slot', 'opd'],
+        himsGreetingMessage: features.himsGreetingMessage || '',
+        himsSystemPrompt: features.himsSystemPrompt || '',
+      });
+    } catch (error: any) {
+      res.status(500).json({ message: error.message });
+    }
+  });
+
+  // Update current user's OPD settings (trigger keywords, greeting, prompt)
+  app.patch('/api/opd-settings', requireAuth, async (req, res) => {
+    try {
+      const user = await authService.getUser(req.auth!.userId);
+      if (!user) return res.status(404).json({ message: 'User not found' });
+
+      const { himsTriggerKeywords, himsGreetingMessage, himsSystemPrompt } = req.body;
+      const current = (user.enabledFeatures as any) || {};
+      const updated = { ...current };
+
+      if (himsTriggerKeywords !== undefined) updated.himsTriggerKeywords = himsTriggerKeywords;
+      if (himsGreetingMessage !== undefined) updated.himsGreetingMessage = himsGreetingMessage;
+      if (himsSystemPrompt !== undefined) updated.himsSystemPrompt = himsSystemPrompt;
+
+      await db.update(users).set({ enabledFeatures: updated }).where(eq(users.id, req.auth!.userId));
+
+      res.json({ success: true, message: 'OPD settings updated' });
+    } catch (error: any) {
+      res.status(500).json({ message: error.message });
+    }
+  });
+
   // ==================== HIMS PATIENT API ====================
 
   // List all HIMS patients

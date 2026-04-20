@@ -21,9 +21,10 @@ import {
   AlertDialogTitle,
 } from "@/components/ui/alert-dialog";
 import { Skeleton } from "@/components/ui/skeleton";
-import { UserPlus, Pause, Play, Trash2, Stethoscope, MessageSquare } from "lucide-react";
+import { UserPlus, Pause, Play, Trash2, Stethoscope, MessageSquare, Settings, Save } from "lucide-react";
 import { useToast } from "@/hooks/use-toast";
 import { useAuth } from "@/lib/AuthContext";
+import { Textarea } from "@/components/ui/textarea";
 
 const registerPatientSchema = z.object({
   phoneNumber: z.string().min(10, "Phone number must be at least 10 digits"),
@@ -38,6 +39,12 @@ export function OPDBotPanel() {
   const [isDialogOpen, setIsDialogOpen] = useState(false);
   const [deleteTarget, setDeleteTarget] = useState<string | null>(null);
   const [conversationPhone, setConversationPhone] = useState<string | null>(null);
+  const [showSettings, setShowSettings] = useState(false);
+  const [settingsForm, setSettingsForm] = useState({
+    himsTriggerKeywords: "",
+    himsGreetingMessage: "",
+    himsSystemPrompt: "",
+  });
   const { toast } = useToast();
   const { user } = useAuth();
   const queryClient = useQueryClient();
@@ -148,6 +155,45 @@ export function OPDBotPanel() {
     },
   });
 
+  // OPD Settings
+  const { data: opdSettings } = useQuery<{
+    himsTriggerKeywords: string[];
+    himsGreetingMessage: string;
+    himsSystemPrompt: string;
+  }>({
+    queryKey: ["/api/opd-settings"],
+    queryFn: async () => {
+      const res = await fetch("/api/opd-settings", {
+        headers: { Authorization: `Bearer ${localStorage.getItem("wa_auth_token")}` },
+      });
+      if (!res.ok) throw new Error("Failed to load settings");
+      return res.json();
+    },
+  });
+
+  const saveSettingsMutation = useMutation({
+    mutationFn: async (data: { himsTriggerKeywords?: string[]; himsGreetingMessage?: string; himsSystemPrompt?: string }) => {
+      const res = await fetch("/api/opd-settings", {
+        method: "PATCH",
+        headers: {
+          "Content-Type": "application/json",
+          Authorization: `Bearer ${localStorage.getItem("wa_auth_token")}`,
+        },
+        body: JSON.stringify(data),
+      });
+      if (!res.ok) throw new Error("Failed to save");
+      return res.json();
+    },
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ["/api/opd-settings"] });
+      toast({ title: "OPD settings saved" });
+      setShowSettings(false);
+    },
+    onError: (err: Error) => {
+      toast({ title: "Failed to save settings", description: err.message, variant: "destructive" });
+    },
+  });
+
   return (
     <div className="space-y-6">
       <div className="flex items-center justify-between">
@@ -160,10 +206,23 @@ export function OPDBotPanel() {
             Patients are also <strong>auto-registered</strong> when they send a trigger keyword (e.g. "appointment", "doctor").
           </p>
         </div>
-        <Dialog open={isDialogOpen} onOpenChange={setIsDialogOpen}>
-          <DialogTrigger asChild>
-            <Button><UserPlus className="w-4 h-4 mr-2" /> Register Patient</Button>
-          </DialogTrigger>
+        <div className="flex items-center gap-2">
+          <Button variant="outline" onClick={() => {
+            setShowSettings(!showSettings);
+            if (!showSettings && opdSettings) {
+              setSettingsForm({
+                himsTriggerKeywords: (opdSettings.himsTriggerKeywords || []).join(", "),
+                himsGreetingMessage: opdSettings.himsGreetingMessage || "",
+                himsSystemPrompt: opdSettings.himsSystemPrompt || "",
+              });
+            }
+          }}>
+            <Settings className="w-4 h-4 mr-2" /> Bot Settings
+          </Button>
+          <Dialog open={isDialogOpen} onOpenChange={setIsDialogOpen}>
+            <DialogTrigger asChild>
+              <Button><UserPlus className="w-4 h-4 mr-2" /> Register Patient</Button>
+            </DialogTrigger>
           <DialogContent>
             <DialogHeader>
               <DialogTitle>Register Patient for OPD Bot</DialogTitle>
@@ -200,7 +259,74 @@ export function OPDBotPanel() {
             </form>
           </DialogContent>
         </Dialog>
+        </div>
       </div>
+
+      {/* OPD Bot Settings */}
+      {showSettings && (
+        <Card>
+          <CardHeader>
+            <CardTitle className="text-lg flex items-center gap-2">
+              <Settings className="w-5 h-5" /> OPD Bot Settings
+            </CardTitle>
+            <CardDescription>Configure trigger keywords, greeting message, and optional system prompt</CardDescription>
+          </CardHeader>
+          <CardContent className="space-y-4">
+            <div>
+              <Label>Trigger Keywords</Label>
+              <Input
+                value={settingsForm.himsTriggerKeywords}
+                onChange={(e) => setSettingsForm({ ...settingsForm, himsTriggerKeywords: e.target.value })}
+                placeholder="appointment, book, doctor, slot, opd"
+              />
+              <p className="text-xs text-muted-foreground mt-1">
+                Comma-separated. When someone sends a message with these words, they are auto-registered as an OPD patient.
+              </p>
+            </div>
+            <div>
+              <Label>Greeting Message</Label>
+              <Textarea
+                value={settingsForm.himsGreetingMessage}
+                onChange={(e) => setSettingsForm({ ...settingsForm, himsGreetingMessage: e.target.value })}
+                placeholder="Welcome to our clinic! I can help you book appointments with our doctors. Just tell me which doctor or date you prefer."
+                rows={3}
+              />
+              <p className="text-xs text-muted-foreground mt-1">
+                Sent to the patient when they first trigger the bot.
+              </p>
+            </div>
+            <div>
+              <Label>Custom System Prompt (Optional)</Label>
+              <Textarea
+                value={settingsForm.himsSystemPrompt}
+                onChange={(e) => setSettingsForm({ ...settingsForm, himsSystemPrompt: e.target.value })}
+                placeholder="Leave empty to use default. Override to customize bot personality, clinic-specific instructions, etc."
+                rows={5}
+              />
+              <p className="text-xs text-muted-foreground mt-1">
+                Advanced: Override the AI bot's system prompt. Leave empty for default behavior.
+              </p>
+            </div>
+            <Button
+              onClick={() => {
+                const keywords = settingsForm.himsTriggerKeywords
+                  .split(",")
+                  .map((k) => k.trim())
+                  .filter(Boolean);
+                saveSettingsMutation.mutate({
+                  himsTriggerKeywords: keywords.length > 0 ? keywords : undefined,
+                  himsGreetingMessage: settingsForm.himsGreetingMessage || undefined,
+                  himsSystemPrompt: settingsForm.himsSystemPrompt || undefined,
+                });
+              }}
+              disabled={saveSettingsMutation.isPending}
+            >
+              <Save className="w-4 h-4 mr-2" />
+              {saveSettingsMutation.isPending ? "Saving..." : "Save Settings"}
+            </Button>
+          </CardContent>
+        </Card>
+      )}
 
       {/* Stats */}
       <div className="grid grid-cols-2 md:grid-cols-3 gap-4">
