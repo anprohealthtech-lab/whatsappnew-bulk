@@ -429,7 +429,7 @@ export class HIMSChatbotService {
       }
 
       console.log(
-        `${tag} 📚 KB search org=${organizationId} user=${knowledgeBaseUserId} query="${query}"`,
+        `${tag} 📚 KB search user=${knowledgeBaseUserId} query="${query}"`,
       );
 
       const resp = await fetch(`${supabaseUrl}/functions/v1/rag-chat`, {
@@ -439,7 +439,6 @@ export class HIMSChatbotService {
           Authorization: `Bearer ${supabaseKey}`,
         },
         body: JSON.stringify({
-          organization_id: organizationId,
           user_id: knowledgeBaseUserId,
           message: query,
           conversation_history: [],
