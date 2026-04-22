@@ -567,7 +567,8 @@ class ManagedBaileysSession extends EventEmitter implements WAServiceInstance {
 
     const senderPn = (msg.key as any)?.senderPn as string | undefined;
     const phoneNumber = this.resolveIncomingPhoneNumber(from, senderPn);
-    this.rememberRecentJid(phoneNumber, from);
+    const replyTo = this.resolveReplyTarget(from, senderPn);
+    this.rememberRecentJid(phoneNumber, from, senderPn);
 
     if (msg.key.fromMe) {
       log(`[WA] Ignoring incoming event for ${this.userId}/${this.sessionName}: message is fromMe (${from})`);
@@ -580,6 +581,7 @@ class ManagedBaileysSession extends EventEmitter implements WAServiceInstance {
       this.emit('button-clicked', {
         buttonId,
         from,
+        replyTo,
         phoneNumber,
         senderPn,
         timestamp: Date.now(),
@@ -602,6 +604,7 @@ class ManagedBaileysSession extends EventEmitter implements WAServiceInstance {
         phoneNumber,
         content: isVoiceNote ? '[Voice Note]' : '[Audio Message]',
         from,
+        replyTo,
         senderPn,
         timestamp: Date.now(),
         messageType: isVoiceNote ? 'voice_note' : 'audio',
@@ -621,6 +624,7 @@ class ManagedBaileysSession extends EventEmitter implements WAServiceInstance {
         phoneNumber,
         content: msg.message.imageMessage.caption || '[Image]',
         from,
+        replyTo,
         senderPn,
         timestamp: Date.now(),
         messageType: 'image',
@@ -633,6 +637,7 @@ class ManagedBaileysSession extends EventEmitter implements WAServiceInstance {
         phoneNumber,
         content: `[Document: ${msg.message.documentMessage.fileName || 'file'}]`,
         from,
+        replyTo,
         senderPn,
         timestamp: Date.now(),
         messageType: 'document',
@@ -645,6 +650,7 @@ class ManagedBaileysSession extends EventEmitter implements WAServiceInstance {
         phoneNumber,
         content: msg.message.videoMessage.caption || '[Video]',
         from,
+        replyTo,
         senderPn,
         timestamp: Date.now(),
         messageType: 'video',
@@ -664,6 +670,7 @@ class ManagedBaileysSession extends EventEmitter implements WAServiceInstance {
       phoneNumber,
       content: messageText,
       from,
+      replyTo,
       senderPn,
       timestamp: Date.now(),
       messageType: 'text',
@@ -673,6 +680,7 @@ class ManagedBaileysSession extends EventEmitter implements WAServiceInstance {
       this.emit('button-clicked', {
         buttonId: 'STOP_MESSAGES',
         from,
+        replyTo,
         phoneNumber,
         senderPn,
         timestamp: Date.now(),
@@ -938,6 +946,23 @@ class ManagedBaileysSession extends EventEmitter implements WAServiceInstance {
     return fromDigits || from || '';
   }
 
+  private resolveReplyTarget(from?: string | null, senderPn?: string | null): string | null {
+    const fromValue = from || '';
+    const senderDigits = (senderPn || '').replace(/\D/g, '');
+
+    if (senderDigits.length >= 10) {
+      if (fromValue.endsWith('@lid')) {
+        return `${this.formatPhoneNumber(senderDigits)}@s.whatsapp.net`;
+      }
+
+      if (!fromValue || !fromValue.includes('@')) {
+        return `${this.formatPhoneNumber(senderDigits)}@s.whatsapp.net`;
+      }
+    }
+
+    return fromValue || null;
+  }
+
   private formatPhoneNumber(phoneNumber: string): string {
     let cleaned = phoneNumber.replace(/\D/g, '');
     if (!cleaned.startsWith('91') && cleaned.length === 10) {
@@ -946,14 +971,15 @@ class ManagedBaileysSession extends EventEmitter implements WAServiceInstance {
     return cleaned;
   }
 
-  private rememberRecentJid(phoneNumber: string, from?: string | null): void {
-    if (!from || !from.includes('@') || from.endsWith('@g.us') || from.includes('status@broadcast')) {
+  private rememberRecentJid(phoneNumber: string, from?: string | null, senderPn?: string | null): void {
+    const replyTo = this.resolveReplyTarget(from, senderPn);
+    if (!replyTo || !replyTo.includes('@') || replyTo.endsWith('@g.us') || replyTo.includes('status@broadcast')) {
       return;
     }
 
     const digits = this.formatPhoneNumber(phoneNumber);
     if (!digits) return;
-    this.recentJidByPhone.set(digits, { jid: from, updatedAt: Date.now() });
+    this.recentJidByPhone.set(digits, { jid: replyTo, updatedAt: Date.now() });
   }
 
   private async findStoredJidForPhone(phoneNumber: string): Promise<string | null> {

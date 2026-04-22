@@ -276,7 +276,8 @@ export class WhatsAppService extends EventEmitter {
 
     const senderPn = (msg.key as any)?.senderPn as string | undefined;
     const phoneNumber = this.resolveIncomingPhoneNumber(from, senderPn);
-    this.rememberRecentJid(phoneNumber, from);
+    const replyTo = this.resolveReplyTarget(from, senderPn);
+    this.rememberRecentJid(phoneNumber, from, senderPn);
 
     if (msg.key.fromMe) return;
 
@@ -286,6 +287,7 @@ export class WhatsAppService extends EventEmitter {
       this.emit('button-clicked', {
         buttonId,
         from,
+        replyTo,
         phoneNumber,
         senderPn,
         timestamp: Date.now(),
@@ -310,6 +312,7 @@ export class WhatsAppService extends EventEmitter {
         phoneNumber,
         content: isVoiceNote ? '[Voice Note]' : '[Audio Message]',
         from,
+        replyTo,
         senderPn,
         timestamp: Date.now(),
         messageType: isVoiceNote ? 'voice_note' : 'audio',
@@ -329,6 +332,7 @@ export class WhatsAppService extends EventEmitter {
         phoneNumber,
         content: msg.message.imageMessage.caption || '[Image]',
         from,
+        replyTo,
         senderPn,
         timestamp: Date.now(),
         messageType: 'image',
@@ -341,6 +345,7 @@ export class WhatsAppService extends EventEmitter {
         phoneNumber,
         content: `[Document: ${msg.message.documentMessage.fileName || 'file'}]`,
         from,
+        replyTo,
         senderPn,
         timestamp: Date.now(),
         messageType: 'document',
@@ -353,6 +358,7 @@ export class WhatsAppService extends EventEmitter {
         phoneNumber,
         content: msg.message.videoMessage.caption || '[Video]',
         from,
+        replyTo,
         senderPn,
         timestamp: Date.now(),
         messageType: 'video',
@@ -367,6 +373,7 @@ export class WhatsAppService extends EventEmitter {
       phoneNumber,
       content: messageText,
       from,
+      replyTo,
       senderPn,
       timestamp: Date.now(),
       messageType: 'text',
@@ -376,6 +383,7 @@ export class WhatsAppService extends EventEmitter {
       this.emit('button-clicked', {
         buttonId: 'STOP_MESSAGES',
         from,
+        replyTo,
         phoneNumber,
         senderPn,
         timestamp: Date.now(),
@@ -595,6 +603,23 @@ export class WhatsAppService extends EventEmitter {
     return fromValue;
   }
 
+  private resolveReplyTarget(from?: string | null, senderPn?: string | null): string | null {
+    const fromValue = from || '';
+    const senderDigits = (senderPn || '').replace(/\D/g, '');
+
+    if (senderDigits.length >= 10) {
+      if (fromValue.endsWith('@lid')) {
+        return `${this.formatPhoneNumber(senderDigits)}@s.whatsapp.net`;
+      }
+
+      if (!fromValue || !fromValue.includes('@')) {
+        return `${this.formatPhoneNumber(senderDigits)}@s.whatsapp.net`;
+      }
+    }
+
+    return fromValue || null;
+  }
+
   private formatPhoneNumber(phoneNumber: string): string {
     let cleaned = phoneNumber.replace(/\D/g, '');
     if (!cleaned.startsWith('91') && cleaned.length === 10) {
@@ -603,8 +628,9 @@ export class WhatsAppService extends EventEmitter {
     return cleaned;
   }
 
-  private rememberRecentJid(phoneNumber: string, from?: string | null): void {
-    if (!from || !from.includes('@') || from.endsWith('@g.us') || from.includes('status@broadcast')) {
+  private rememberRecentJid(phoneNumber: string, from?: string | null, senderPn?: string | null): void {
+    const replyTo = this.resolveReplyTarget(from, senderPn);
+    if (!replyTo || !replyTo.includes('@') || replyTo.endsWith('@g.us') || replyTo.includes('status@broadcast')) {
       return;
     }
 
@@ -614,7 +640,7 @@ export class WhatsAppService extends EventEmitter {
     }
 
     this.recentJidByPhone.set(digits, {
-      jid: from,
+      jid: replyTo,
       updatedAt: Date.now(),
     });
   }

@@ -755,8 +755,7 @@ export async function registerRoutes(app: Express): Promise<Server> {
               base64: data.audioData,
               mimetype: data.mediaInfo?.mimetype || 'audio/ogg'
             };
-            // Use data.from to preserve @lid format for proper message delivery
-            const replyTo = data.from || data.phoneNumber;
+            const replyTo = data.replyTo || data.from || data.phoneNumber;
             await hrChatbotService.processHRMessage(data.phoneNumber, '[Voice Note]', audioPayload, replyTo);
             broadcast('hr-chatbot-response-sent', { phoneNumber: data.phoneNumber, type: 'voice_processed' });
             broadcast('incoming-message', data);
@@ -765,7 +764,7 @@ export async function registerRoutes(app: Express): Promise<Server> {
             // No audio data available (download failed)
             console.log(`🎤 Voice note from HR Admin ${data.phoneNumber} - no audio data, sending acknowledgment`);
             await waSession.sendTextMessage(
-              data.from || data.phoneNumber,
+              data.replyTo || data.from || data.phoneNumber,
               "🎤 I received your voice note but couldn't process it. Please try again or type your message."
             );
             broadcast('hr-chatbot-response-sent', { phoneNumber: data.phoneNumber, type: 'voice_failed' });
@@ -778,7 +777,7 @@ export async function registerRoutes(app: Express): Promise<Server> {
           // For media, acknowledge but can't process
           console.log(`📎 Media (${messageType}) from HR Admin ${data.phoneNumber} - sending acknowledgment`);
           await waSession.sendTextMessage(
-            data.from || data.phoneNumber,
+            data.replyTo || data.from || data.phoneNumber,
             `📎 I received your ${messageType}! However, I can only process text messages at the moment.\n\nPlease type your request and I'll be happy to help.`
           );
           broadcast('hr-chatbot-response-sent', { phoneNumber: data.phoneNumber, type: 'media_acknowledgment' });
@@ -788,8 +787,7 @@ export async function registerRoutes(app: Express): Promise<Server> {
 
         // Process text message through HR chatbot
         console.log(`🤖 Processing HR message from ${data.phoneNumber} (org: ${hrAdmin?.organizationName || hrAdmin?.organizationId})`);
-        // Use data.from to preserve @lid format for proper message delivery
-        const replyTo = data.from || data.phoneNumber;
+        const replyTo = data.replyTo || data.from || data.phoneNumber;
         await hrChatbotService.processHRMessage(data.phoneNumber, data.content, undefined, replyTo);
         broadcast('hr-chatbot-response-sent', { phoneNumber: data.phoneNumber });
         broadcast('incoming-message', data);
@@ -820,7 +818,7 @@ export async function registerRoutes(app: Express): Promise<Server> {
           if (data.audioData) {
             console.log(`🎤 Processing voice note from HIMS Patient ${data.phoneNumber}`);
             const audioPayload = { base64: data.audioData, mimetype: data.mediaInfo?.mimetype || 'audio/ogg' };
-            const replyTo = data.from || data.phoneNumber;
+            const replyTo = data.replyTo || data.from || data.phoneNumber;
             await himsChatbotService.processHIMSMessage(data.phoneNumber, '[Voice Note]', audioPayload, replyTo);
             broadcast('hims-chatbot-response-sent', { phoneNumber: data.phoneNumber, type: 'voice_processed' });
             broadcast('incoming-message', data);
@@ -828,7 +826,7 @@ export async function registerRoutes(app: Express): Promise<Server> {
           } else {
             console.log(`🎤 Voice note from HIMS Patient ${data.phoneNumber} - no audio data`);
             await waSession.sendTextMessage(
-              data.from || data.phoneNumber,
+              data.replyTo || data.from || data.phoneNumber,
               "🎤 I received your voice note but couldn't process it. Please try again or type your message."
             );
             broadcast('hims-chatbot-response-sent', { phoneNumber: data.phoneNumber, type: 'voice_failed' });
@@ -840,7 +838,7 @@ export async function registerRoutes(app: Express): Promise<Server> {
         if (messageType === 'image' || messageType === 'video' || messageType === 'document') {
           console.log(`📎 Media (${messageType}) from HIMS Patient ${data.phoneNumber}`);
           await waSession.sendTextMessage(
-            data.from || data.phoneNumber,
+            data.replyTo || data.from || data.phoneNumber,
             `📎 I received your ${messageType}! I can only process text messages at the moment.\n\nPlease type your request and I'll be happy to help. 🏥`
           );
           broadcast('hims-chatbot-response-sent', { phoneNumber: data.phoneNumber, type: 'media_acknowledgment' });
@@ -850,7 +848,7 @@ export async function registerRoutes(app: Express): Promise<Server> {
 
         // Process text message through HIMS chatbot
         console.log(`🏥 Processing HIMS message from ${data.phoneNumber} (org: ${himsPatient?.organizationId})`);
-        const replyTo = data.from || data.phoneNumber;
+        const replyTo = data.replyTo || data.from || data.phoneNumber;
         await himsChatbotService.processHIMSMessage(data.phoneNumber, data.content, undefined, replyTo);
         broadcast('hims-chatbot-response-sent', { phoneNumber: data.phoneNumber });
         broadcast('incoming-message', data);
@@ -901,7 +899,7 @@ export async function registerRoutes(app: Express): Promise<Server> {
               }
 
               // Process the original message through HIMS bot
-              const replyTo = data.from || data.phoneNumber;
+              const replyTo = data.replyTo || data.from || data.phoneNumber;
               await himsChatbotService.processHIMSMessage(data.phoneNumber, data.content, undefined, replyTo);
               broadcast('hims-chatbot-response-sent', { phoneNumber: data.phoneNumber });
               broadcast('incoming-message', data);
@@ -944,7 +942,7 @@ export async function registerRoutes(app: Express): Promise<Server> {
             data.phoneNumber,
             triggerKeyword,
             undefined,
-            data.from
+            data.replyTo || data.from
           ));
           // After flagging and sending greeting, skip processing this message through RAG
           // The greeting is sufficient for first contact
@@ -973,10 +971,10 @@ export async function registerRoutes(app: Express): Promise<Server> {
         if ((messageType === 'voice_note' || messageType === 'audio') && data.audioData) {
           console.log(`🎤 Processing lead voice note from ${data.phoneNumber}`);
           const audioPayload = { base64: data.audioData, mimetype: data.mediaInfo?.mimetype || 'audio/ogg' };
-          await chatbotService.processLeadMessage(data.phoneNumber, '[Voice Note]', data.from, audioPayload);
+          await chatbotService.processLeadMessage(data.phoneNumber, '[Voice Note]', data.replyTo || data.from, audioPayload);
         } else {
           console.log(`🤖 Processing lead message from ${data.phoneNumber}`);
-          await chatbotService.processLeadMessage(data.phoneNumber, data.content, data.from);
+          await chatbotService.processLeadMessage(data.phoneNumber, data.content, data.replyTo || data.from);
         }
         broadcast('chatbot-response-sent', { phoneNumber: data.phoneNumber });
       } else {
