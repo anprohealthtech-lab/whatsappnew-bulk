@@ -398,6 +398,7 @@ export class HIMSChatbotService {
     query: string,
     organizationId: string,
   ): Promise<string> {
+    const tag = "[HIMSChatbotService]";
     const supabaseUrl = process.env.VITE_SUPABASE_URL;
     const supabaseKey = process.env.SUPABASE_SERVICE_ROLE_KEY;
 
@@ -409,6 +410,28 @@ export class HIMSChatbotService {
     }
 
     try {
+      let knowledgeBaseUserId = organizationId;
+      try {
+        const ownerRows = await db
+          .select({ id: users.id })
+          .from(users)
+          .where(
+            drizzleSql`${users.enabledFeatures}->>'himsClinicId' = ${organizationId}`,
+          )
+          .limit(1);
+        if (ownerRows.length > 0) {
+          knowledgeBaseUserId = ownerRows[0].id;
+        }
+      } catch (lookupErr: any) {
+        console.log(
+          `${tag} ⚠️ Knowledge-base owner lookup failed for org=${organizationId}: ${lookupErr.message}`,
+        );
+      }
+
+      console.log(
+        `${tag} 📚 KB search org=${organizationId} user=${knowledgeBaseUserId} query="${query}"`,
+      );
+
       const resp = await fetch(`${supabaseUrl}/functions/v1/rag-chat`, {
         method: "POST",
         headers: {
@@ -417,7 +440,7 @@ export class HIMSChatbotService {
         },
         body: JSON.stringify({
           organization_id: organizationId,
-          user_id: organizationId, // Use orgId as userId for org-level knowledge
+          user_id: knowledgeBaseUserId,
           message: query,
           conversation_history: [],
           system_prompt:
@@ -436,10 +459,14 @@ export class HIMSChatbotService {
 
       const data = await resp.json();
       const content = data.choices?.[0]?.message?.content;
+      const chunksUsed = data.context_chunks || 0;
+      console.log(
+        `${tag} 📚 KB result chunks=${chunksUsed} answerPreview="${String(content || "").substring(0, 120)}"`,
+      );
       return JSON.stringify({
         success: true,
         answer: content || "No information found.",
-        chunks_used: data.context_chunks || 0,
+        chunks_used: chunksUsed,
       });
     } catch (err: any) {
       return JSON.stringify({ success: false, error: err.message });
