@@ -72,7 +72,11 @@ Convert natural language dates to YYYY-MM-DD:
 3. Be concise — WhatsApp messages should be short
 4. Use formatting — *bold* for headings, • for bullets
 5. If no slots are available, suggest alternative dates
-6. Always confirm booking details with the patient before calling book_appointment`;
+6. Always confirm booking details with the patient before calling book_appointment
+7. If a tool returns no useful results, do not keep retrying similar tool calls. Give the best direct answer you can with the information you already have.`;
+
+const MAX_TOOL_ROUNDS = 8;
+const MAX_REPEAT_PER_SIGNATURE = 2;
 
 // ───────────────────── Anthropic tool definitions ─────────────────────
 const TOOLS: Anthropic.Tool[] = [
@@ -714,7 +718,10 @@ IMPORTANT: Always use organizationId="${patient.organizationId}" and patientPhon
       console.log(`${tag}    Stop reason: ${response.stop_reason}`);
 
       // Tool-use loop
+      let toolRounds = 0;
+      const seenToolSignatures = new Map<string, number>();
       while (response.stop_reason === "tool_use") {
+        toolRounds += 1;
         const toolUseBlocks = response.content.filter(
           (b): b is Anthropic.ToolUseBlock => b.type === "tool_use",
         );
@@ -722,6 +729,40 @@ IMPORTANT: Always use organizationId="${patient.organizationId}" and patientPhon
         console.log(
           `${tag} 🔧 Claude wants ${toolUseBlocks.length} tool(s)`,
         );
+
+        const currentSignature = toolUseBlocks
+          .map((tu) => `${tu.name}:${JSON.stringify(tu.input || {})}`)
+          .join("||");
+        const currentCount =
+          (seenToolSignatures.get(currentSignature) || 0) + 1;
+        seenToolSignatures.set(currentSignature, currentCount);
+
+        if (toolRounds > MAX_TOOL_ROUNDS || currentCount > MAX_REPEAT_PER_SIGNATURE) {
+          console.log(
+            `${tag} ⚠️ Breaking tool loop after ${toolRounds} rounds (signature repeats=${currentCount})`,
+          );
+
+          const forcedAnswerMessages: Anthropic.MessageParam[] = [
+            ...messages,
+            { role: "assistant", content: response.content },
+            {
+              role: "user",
+              content:
+                "Stop calling tools now. Give the best final answer using the information already gathered. If information is unavailable, say so clearly and briefly. Do not call any more tools.",
+            },
+          ];
+
+          response = await this.anthropic.messages.create({
+            model: "claude-sonnet-4-20250514",
+            max_tokens: 1024,
+            system: fullSystemPrompt,
+            messages: forcedAnswerMessages,
+          });
+          console.log(
+            `${tag}    Forced final answer — Stop reason: ${response.stop_reason}`,
+          );
+          break;
+        }
 
         const toolResults: Anthropic.ToolResultBlockParam[] = [];
 
