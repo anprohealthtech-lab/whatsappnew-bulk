@@ -122,6 +122,7 @@
   },
   "devDependencies": {},
   "optionalDependencies": {
-    "bufferutil": "^4.0.8"
+    "bufferutil": "^4.0.8",
+    "@rollup/rollup-linux-x64-gnu": "4.24.4"
   }
 }
