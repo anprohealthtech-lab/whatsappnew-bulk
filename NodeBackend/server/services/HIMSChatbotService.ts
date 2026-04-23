@@ -402,6 +402,7 @@ export class HIMSChatbotService {
     query: string,
     organizationId: string,
     appUserId?: string,
+    conversationHistory: ConversationMessage[] = [],
   ): Promise<string> {
     const tag = "[HIMSChatbotService]";
     const supabaseUrl = process.env.VITE_SUPABASE_URL;
@@ -438,7 +439,7 @@ export class HIMSChatbotService {
       }
 
       console.log(
-        `${tag} 📚 KB search user=${knowledgeBaseUserId} source=${userIdSource} query="${query}"`,
+        `${tag} 📚 KB search user=${knowledgeBaseUserId} source=${userIdSource} history=${conversationHistory.length} query="${query}"`,
       );
 
       const resp = await fetch(`${supabaseUrl}/functions/v1/rag-chat`, {
@@ -450,7 +451,10 @@ export class HIMSChatbotService {
         body: JSON.stringify({
           user_id: knowledgeBaseUserId,
           message: query,
-          conversation_history: [],
+          conversation_history: conversationHistory.map((msg) => ({
+            role: msg.role,
+            content: msg.content,
+          })),
           system_prompt:
             "You are a helpful hospital information assistant. Answer the question using only the provided context. Be concise.",
           match_count: 5,
@@ -488,6 +492,7 @@ export class HIMSChatbotService {
     toolInput: Record<string, any>,
     patient: HIMSPatient,
     appUserId?: string,
+    conversationHistory: ConversationMessage[] = [],
   ): Promise<string> {
     const tag = "[HIMSChatbotService]";
     console.log(`${tag} 🔧 Tool: ${toolName}`);
@@ -608,6 +613,7 @@ export class HIMSChatbotService {
             toolInput.query,
             organizationId,
             appUserId,
+            conversationHistory,
           );
         }
 
@@ -781,6 +787,7 @@ IMPORTANT: Always use organizationId="${patient.organizationId}" and patientPhon
             tu.input as Record<string, any>,
             patient,
             appUserId,
+            conversationHistory,
           );
           toolResults.push({
             type: "tool_result",
