@@ -819,7 +819,7 @@ export async function registerRoutes(app: Express): Promise<Server> {
             console.log(`🎤 Processing voice note from HIMS Patient ${data.phoneNumber}`);
             const audioPayload = { base64: data.audioData, mimetype: data.mediaInfo?.mimetype || 'audio/ogg' };
             const replyTo = data.replyTo || data.from || data.phoneNumber;
-            await himsChatbotService.processHIMSMessage(data.phoneNumber, '[Voice Note]', audioPayload, replyTo);
+            await himsChatbotService.processHIMSMessage(data.phoneNumber, '[Voice Note]', audioPayload, replyTo, ownerUserId);
             broadcast('hims-chatbot-response-sent', { phoneNumber: data.phoneNumber, type: 'voice_processed' });
             broadcast('incoming-message', data);
             return;
@@ -849,7 +849,7 @@ export async function registerRoutes(app: Express): Promise<Server> {
         // Process text message through HIMS chatbot
         console.log(`🏥 Processing HIMS message from ${data.phoneNumber} (org: ${himsPatient?.organizationId})`);
         const replyTo = data.replyTo || data.from || data.phoneNumber;
-        await himsChatbotService.processHIMSMessage(data.phoneNumber, data.content, undefined, replyTo);
+        await himsChatbotService.processHIMSMessage(data.phoneNumber, data.content, undefined, replyTo, ownerUserId);
         broadcast('hims-chatbot-response-sent', { phoneNumber: data.phoneNumber });
         broadcast('incoming-message', data);
         return;
@@ -900,7 +900,7 @@ export async function registerRoutes(app: Express): Promise<Server> {
 
               // Process the original message through HIMS bot
               const replyTo = data.replyTo || data.from || data.phoneNumber;
-              await himsChatbotService.processHIMSMessage(data.phoneNumber, data.content, undefined, replyTo);
+              await himsChatbotService.processHIMSMessage(data.phoneNumber, data.content, undefined, replyTo, ownerUserId);
               broadcast('hims-chatbot-response-sent', { phoneNumber: data.phoneNumber });
               broadcast('incoming-message', data);
               return;

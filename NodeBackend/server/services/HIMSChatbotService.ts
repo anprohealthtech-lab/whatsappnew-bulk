@@ -401,6 +401,7 @@ export class HIMSChatbotService {
   private async searchKnowledgeBase(
     query: string,
     organizationId: string,
+    appUserId?: string,
   ): Promise<string> {
     const tag = "[HIMSChatbotService]";
     const supabaseUrl = process.env.VITE_SUPABASE_URL;
@@ -414,17 +415,21 @@ export class HIMSChatbotService {
     }
 
     try {
-      let knowledgeBaseUserId = organizationId;
+      let knowledgeBaseUserId = appUserId || organizationId;
+      let userIdSource = appUserId ? "app_user_id" : "fallback_org_id";
       try {
-        const ownerRows = await db
-          .select({ id: users.id })
-          .from(users)
-          .where(
-            drizzleSql`${users.enabledFeatures}->>'himsClinicId' = ${organizationId}`,
-          )
-          .limit(1);
-        if (ownerRows.length > 0) {
-          knowledgeBaseUserId = ownerRows[0].id;
+        if (!appUserId) {
+          const ownerRows = await db
+            .select({ id: users.id })
+            .from(users)
+            .where(
+              drizzleSql`${users.enabledFeatures}->>'himsClinicId' = ${organizationId}`,
+            )
+            .limit(1);
+          if (ownerRows.length > 0) {
+            knowledgeBaseUserId = ownerRows[0].id;
+            userIdSource = "org_owner_lookup";
+          }
         }
       } catch (lookupErr: any) {
         console.log(
@@ -433,7 +438,7 @@ export class HIMSChatbotService {
       }
 
       console.log(
-        `${tag} 📚 KB search user=${knowledgeBaseUserId} query="${query}"`,
+        `${tag} 📚 KB search user=${knowledgeBaseUserId} source=${userIdSource} query="${query}"`,
       );
 
       const resp = await fetch(`${supabaseUrl}/functions/v1/rag-chat`, {
@@ -482,6 +487,7 @@ export class HIMSChatbotService {
     toolName: string,
     toolInput: Record<string, any>,
     patient: HIMSPatient,
+    appUserId?: string,
   ): Promise<string> {
     const tag = "[HIMSChatbotService]";
     console.log(`${tag} 🔧 Tool: ${toolName}`);
@@ -601,6 +607,7 @@ export class HIMSChatbotService {
           return await this.searchKnowledgeBase(
             toolInput.query,
             organizationId,
+            appUserId,
           );
         }
 
@@ -624,6 +631,7 @@ export class HIMSChatbotService {
     conversationHistory: ConversationMessage[],
     audioData?: { base64: string; mimetype: string },
     ownerSystemPrompt?: string,
+    appUserId?: string,
   ): Promise<string> {
     const tag = "[HIMSChatbotService]";
 
@@ -772,6 +780,7 @@ IMPORTANT: Always use organizationId="${patient.organizationId}" and patientPhon
             tu.name,
             tu.input as Record<string, any>,
             patient,
+            appUserId,
           );
           toolResults.push({
             type: "tool_result",
@@ -825,6 +834,7 @@ IMPORTANT: Always use organizationId="${patient.organizationId}" and patientPhon
     messageText: string,
     audioData?: { base64: string; mimetype: string },
     replyTo?: string,
+    appUserId?: string,
   ): Promise<void> {
     const tag = "[HIMSChatbotService]";
 
@@ -873,6 +883,7 @@ IMPORTANT: Always use organizationId="${patient.organizationId}" and patientPhon
         history,
         audioData,
         ownerSystemPrompt,
+        appUserId,
       );
 
       if (audioData) {
