@@ -16,6 +16,7 @@ import {
     Activity,
     ClipboardList,
     Stethoscope,
+    FolderKanban,
 } from "lucide-react";
 import { cn } from "@/lib/utils";
 import { useAuth } from "@/lib/AuthContext";
@@ -29,7 +30,9 @@ interface SidebarProps {
 export function Sidebar({ activeSection, setActiveSection, setLocation }: SidebarProps) {
     const { user, logout } = useAuth();
 
-    const features = user?.enabledFeatures as { taskManagement?: boolean; himsChatbot?: boolean } | undefined;
+    const features = user?.enabledFeatures as { taskManagement?: boolean; himsChatbot?: boolean; dataManagement?: boolean; visibleTabs?: string[] } | undefined;
+    const visibleTabs = features?.visibleTabs;
+    const canSee = (tabId: string) => user?.role === 'super_admin' || !visibleTabs?.length || visibleTabs.includes(tabId);
 
     const menuItems = [
         { id: "dashboard", label: "Dashboard", icon: Gauge, action: () => setActiveSection("dashboard") },
@@ -46,6 +49,9 @@ export function Sidebar({ activeSection, setActiveSection, setLocation }: Sideba
         { id: "rag-settings", label: "AI Chatbot", icon: Bot, action: () => setActiveSection("rag-settings") },
         { id: "notifications", label: "Notifications", icon: BellRing, action: () => setActiveSection("notifications") },
         { id: "knowledge-base", label: "Knowledge Base", icon: Database, action: () => setActiveSection("knowledge-base") },
+        ...(features?.dataManagement || user?.role === 'super_admin' ? [
+            { id: "data-management", label: "Data Management", icon: FolderKanban, action: () => setActiveSection("data-management") },
+        ] : []),
         ...(features?.taskManagement || user?.role === 'super_admin' ? [
             { id: "task-management", label: "Task Management", icon: ClipboardList, action: () => setActiveSection("task-management") },
         ] : []),
@@ -55,7 +61,7 @@ export function Sidebar({ activeSection, setActiveSection, setLocation }: Sideba
         ...(user?.role === 'super_admin' ? [
             { id: "super-admin", label: "Super Admin", icon: ShieldCheck, action: () => setActiveSection("super-admin") },
         ] : []),
-    ];
+    ].filter((item) => canSee(item.id));
 
     return (
         <div className="w-64 bg-card/50 backdrop-blur-xl border-r border-border flex flex-col h-full transition-all duration-300">

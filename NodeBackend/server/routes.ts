@@ -15,6 +15,7 @@ import { AutoResponseService } from "./services/AutoResponseService";
 import { ChatbotService } from "./services/ChatbotService";
 import { HRChatbotService } from "./services/HRChatbotService";
 import { HIMSChatbotService } from "./services/HIMSChatbotService";
+import { DataManagementAgentService } from "./services/DataManagementAgentService";
 import { sendMessageSchema, sendReportSchema, createCampaignSchema, bulkSendSchema, chatbotConfigSchema, flagLeadSchema, registerHRAdminSchema, hrChatbotConfigSchema, demoSchedules, scheduleCampaignSchema, userRagAgentSchema, userRagAgents, userNotificationRecipientSchema, userNotificationRecipients, registerSchema, loginSchema, registerHIMSPatientSchema } from "@shared/schema";
 import { log } from "./utils";
 import { getDbHealth, db } from "./db";
@@ -25,7 +26,7 @@ import * as XLSX from 'xlsx';
 import { authService } from "./services/AuthService";
 import { requireAuth, optionalAuth, getTenant, requireSuperAdmin } from "./authMiddleware";
 import { sessionManager } from "./services/WhatsAppSessionManager";
-import { users, messages as messagesTable, chatbotConfigs, contacts as contactsTable, campaigns as campaignsTable } from "@shared/schema";
+import { users, messages as messagesTable, chatbotConfigs, contacts as contactsTable, campaigns as campaignsTable, dataPatients, dataDocuments, dataGeneralRecords } from "@shared/schema";
 import { sendNotificationForEvent } from "./services/UserNotificationService";
 
 // Configure CORS
@@ -310,7 +311,7 @@ export async function registerRoutes(app: Express): Promise<Server> {
   // Create a new user (super admin can create users in any org)
   app.post('/api/admin/users', requireSuperAdmin, async (req, res) => {
     try {
-      const { username, password, email, organizationId, role } = req.body;
+      const { username, password, email, organizationId, role, enabledFeatures } = req.body;
       if (!username || !password) {
         return res.status(400).json({ message: 'Username and password are required' });
       }
@@ -333,6 +334,7 @@ export async function registerRoutes(app: Express): Promise<Server> {
         email: email || null,
         organizationId: organizationId || 'org_' + Date.now(),
         role: role || 'user',
+        enabledFeatures: enabledFeatures || { taskManagement: false, himsChatbot: false, dataManagement: false },
       }).returning();
 
       const { password: _, ...safe } = result[0];
@@ -397,6 +399,46 @@ export async function registerRoutes(app: Express): Promise<Server> {
       const result = await db.update(users).set({ password: hash, updatedAt: new Date() }).where(eq(users.id, userId)).returning();
       if (result.length === 0) return res.status(404).json({ message: 'User not found' });
       res.json({ message: 'Password reset successfully' });
+    } catch (error: any) {
+      res.status(500).json({ message: error.message });
+    }
+  });
+
+  app.get('/api/data-management/summary', requireAuth, async (req, res) => {
+    try {
+      const tenant = getTenantFromRequest(req);
+      if (req.auth?.role !== 'super_admin') {
+        const owner = await db.select({ enabledFeatures: users.enabledFeatures }).from(users).where(eq(users.id, tenant.userId)).limit(1);
+        const features = (owner[0]?.enabledFeatures as any) || {};
+        if (features.dataManagement !== true) {
+          return res.status(403).json({ message: 'Data Management is not enabled for this user' });
+        }
+      }
+      const [patientRows, documentRows, generalRows, recentDocuments] = await Promise.all([
+        db.select({ count: drizzleSql<number>`count(*)` }).from(dataPatients).where(and(
+          eq(dataPatients.organizationId, tenant.organizationId),
+          eq(dataPatients.userId, tenant.userId),
+        )),
+        db.select({ count: drizzleSql<number>`count(*)` }).from(dataDocuments).where(and(
+          eq(dataDocuments.organizationId, tenant.organizationId),
+          eq(dataDocuments.userId, tenant.userId),
+        )),
+        db.select({ count: drizzleSql<number>`count(*)` }).from(dataGeneralRecords).where(and(
+          eq(dataGeneralRecords.organizationId, tenant.organizationId),
+          eq(dataGeneralRecords.userId, tenant.userId),
+        )),
+        db.select().from(dataDocuments).where(and(
+          eq(dataDocuments.organizationId, tenant.organizationId),
+          eq(dataDocuments.userId, tenant.userId),
+        )).orderBy(desc(dataDocuments.createdAt)).limit(8),
+      ]);
+
+      res.json({
+        patients: Number(patientRows[0]?.count || 0),
+        documents: Number(documentRows[0]?.count || 0),
+        generalRecords: Number(generalRows[0]?.count || 0),
+        recentDocuments,
+      });
     } catch (error: any) {
       res.status(500).json({ message: error.message });
     }
@@ -721,6 +763,21 @@ export async function registerRoutes(app: Express): Promise<Server> {
       const isBlocked = await withRetry(() => storage.isNumberBlockedForTenant(scopedTenant, data.phoneNumber));
       if (isBlocked) {
         console.log(`⛔ Ignoring message from blocked number: ${data.phoneNumber}`);
+        broadcast('incoming-message', data);
+        return;
+      }
+
+      // ========================================
+      // PRIORITY 0.8: Internal data management agent
+      // Handles report images/PDFs and doctor/admin data questions with a
+      // separate prompt so clinical memory does not mix with chatbot prompts.
+      // ========================================
+      const dataAgentService = new DataManagementAgentService(waSession);
+      if (await dataAgentService.shouldHandleMessage(ownerUserId, data)) {
+        console.log(`Data management agent handling ${data.messageType || 'text'} from ${data.phoneNumber}`);
+        const reply = await dataAgentService.handleIncomingMessage(scopedTenant, data);
+        await waSession.sendTextMessage(data.replyTo || data.from || data.phoneNumber, reply);
+        broadcast('data-management-response-sent', { phoneNumber: data.phoneNumber, messageType: data.messageType || 'text' });
         broadcast('incoming-message', data);
         return;
       }

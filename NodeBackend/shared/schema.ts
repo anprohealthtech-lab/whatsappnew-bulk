@@ -1,5 +1,5 @@
 import { sql } from "drizzle-orm";
-import { pgTable, text, varchar, timestamp, jsonb, integer, boolean as pgBoolean } from "drizzle-orm/pg-core";
+import { pgTable, text, varchar, timestamp, jsonb, integer, boolean as pgBoolean, real } from "drizzle-orm/pg-core";
 import { createInsertSchema } from "drizzle-zod";
 import { z } from "zod";
 
@@ -292,6 +292,77 @@ export const himsPatients = pgTable("hims_patients", {
   updatedAt: timestamp("updated_at").defaultNow(),
 });
 
+export const dataPatients = pgTable("data_patients", {
+  id: varchar("id").primaryKey().default(sql`gen_random_uuid()`),
+  organizationId: text("organization_id").default("default_org").notNull(),
+  userId: text("user_id").default("default_user").notNull(),
+  canonicalName: text("canonical_name").notNull(),
+  aliases: jsonb("aliases").default([]),
+  age: integer("age"),
+  gender: text("gender"),
+  phoneNumbers: jsonb("phone_numbers").default([]),
+  dob: text("dob"),
+  summary: text("summary"),
+  metadata: jsonb("metadata").default({}),
+  firstSeenAt: timestamp("first_seen_at").defaultNow(),
+  lastUpdatedAt: timestamp("last_updated_at").defaultNow(),
+  createdAt: timestamp("created_at").defaultNow(),
+  updatedAt: timestamp("updated_at").defaultNow(),
+});
+
+export const dataDocuments = pgTable("data_documents", {
+  id: varchar("id").primaryKey().default(sql`gen_random_uuid()`),
+  organizationId: text("organization_id").default("default_org").notNull(),
+  userId: text("user_id").default("default_user").notNull(),
+  patientId: varchar("patient_id").references(() => dataPatients.id, { onDelete: 'set null' }),
+  source: text("source").default("whatsapp").notNull(),
+  sourcePhoneNumber: text("source_phone_number"),
+  sourceMessageId: text("source_message_id"),
+  fileName: text("file_name"),
+  mimeType: text("mime_type"),
+  fileSize: integer("file_size"),
+  documentType: text("document_type").default("unknown").notNull(),
+  ocrText: text("ocr_text"),
+  extractedJson: jsonb("extracted_json").default({}),
+  confidence: real("confidence"),
+  status: text("status").default("processed").notNull(),
+  errorMessage: text("error_message"),
+  receivedAt: timestamp("received_at").defaultNow(),
+  processedAt: timestamp("processed_at"),
+  createdAt: timestamp("created_at").defaultNow(),
+  updatedAt: timestamp("updated_at").defaultNow(),
+});
+
+export const dataPatientEvents = pgTable("data_patient_events", {
+  id: varchar("id").primaryKey().default(sql`gen_random_uuid()`),
+  organizationId: text("organization_id").default("default_org").notNull(),
+  userId: text("user_id").default("default_user").notNull(),
+  patientId: varchar("patient_id").notNull().references(() => dataPatients.id, { onDelete: 'cascade' }),
+  documentId: varchar("document_id").references(() => dataDocuments.id, { onDelete: 'set null' }),
+  eventType: text("event_type").default("document_received").notNull(),
+  eventDate: text("event_date"),
+  summary: text("summary").notNull(),
+  structuredData: jsonb("structured_data").default({}),
+  createdAt: timestamp("created_at").defaultNow(),
+  updatedAt: timestamp("updated_at").defaultNow(),
+});
+
+export const dataGeneralRecords = pgTable("data_general_records", {
+  id: varchar("id").primaryKey().default(sql`gen_random_uuid()`),
+  organizationId: text("organization_id").default("default_org").notNull(),
+  userId: text("user_id").default("default_user").notNull(),
+  documentId: varchar("document_id").references(() => dataDocuments.id, { onDelete: 'set null' }),
+  recordType: text("record_type").default("general_note").notNull(),
+  title: text("title").notNull(),
+  periodStart: text("period_start"),
+  periodEnd: text("period_end"),
+  rawText: text("raw_text"),
+  structuredData: jsonb("structured_data").default({}),
+  confidence: real("confidence"),
+  createdAt: timestamp("created_at").defaultNow(),
+  updatedAt: timestamp("updated_at").defaultNow(),
+});
+
 export const insertUserSchema = createInsertSchema(users).pick({
   username: true,
   password: true,
@@ -333,6 +404,10 @@ export type UserNotificationRecipient = typeof userNotificationRecipients.$infer
 export type WhatsAppSession = typeof whatsappSessions.$inferSelect;
 export type SessionConnectionHistory = typeof sessionConnectionHistory.$inferSelect;
 export type HIMSPatient = typeof himsPatients.$inferSelect;
+export type DataPatient = typeof dataPatients.$inferSelect;
+export type DataDocument = typeof dataDocuments.$inferSelect;
+export type DataPatientEvent = typeof dataPatientEvents.$inferSelect;
+export type DataGeneralRecord = typeof dataGeneralRecords.$inferSelect;
 
 // Additional schemas for API requests
 export const sendMessageSchema = z.object({

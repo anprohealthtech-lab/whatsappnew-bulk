@@ -435,8 +435,142 @@ export async function runMigrations(): Promise<void> {
       CREATE INDEX IF NOT EXISTS idx_hims_patients_org
         ON hims_patients(organization_id);
 
-      -- 0009: Per-user feature flags (Task Management, HIMS Chatbot)
-      ALTER TABLE "users" ADD COLUMN IF NOT EXISTS "enabled_features" jsonb DEFAULT '{"taskManagement": false, "himsChatbot": false}'::jsonb;
+      -- 0009: Per-user feature flags (Task Management, HIMS Chatbot, Data Management)
+      ALTER TABLE "users" ADD COLUMN IF NOT EXISTS "enabled_features" jsonb DEFAULT '{"taskManagement": false, "himsChatbot": false, "dataManagement": false}'::jsonb;
+
+      -- 0010: Intelligent Data Management / EMR memory
+      CREATE TABLE IF NOT EXISTS "data_patients" (
+        "id" varchar PRIMARY KEY DEFAULT gen_random_uuid() NOT NULL,
+        "organization_id" text DEFAULT 'default_org' NOT NULL,
+        "user_id" text DEFAULT 'default_user' NOT NULL,
+        "canonical_name" text NOT NULL,
+        "aliases" jsonb DEFAULT '[]'::jsonb,
+        "age" integer,
+        "gender" text,
+        "phone_numbers" jsonb DEFAULT '[]'::jsonb,
+        "dob" text,
+        "summary" text,
+        "metadata" jsonb DEFAULT '{}'::jsonb,
+        "first_seen_at" timestamp DEFAULT now(),
+        "last_updated_at" timestamp DEFAULT now(),
+        "created_at" timestamp DEFAULT now(),
+        "updated_at" timestamp DEFAULT now()
+      );
+
+      CREATE TABLE IF NOT EXISTS "data_documents" (
+        "id" varchar PRIMARY KEY DEFAULT gen_random_uuid() NOT NULL,
+        "organization_id" text DEFAULT 'default_org' NOT NULL,
+        "user_id" text DEFAULT 'default_user' NOT NULL,
+        "patient_id" varchar,
+        "source" text DEFAULT 'whatsapp' NOT NULL,
+        "source_phone_number" text,
+        "source_message_id" text,
+        "file_name" text,
+        "mime_type" text,
+        "file_size" integer,
+        "document_type" text DEFAULT 'unknown' NOT NULL,
+        "ocr_text" text,
+        "extracted_json" jsonb DEFAULT '{}'::jsonb,
+        "confidence" real,
+        "status" text DEFAULT 'processed' NOT NULL,
+        "error_message" text,
+        "received_at" timestamp DEFAULT now(),
+        "processed_at" timestamp,
+        "created_at" timestamp DEFAULT now(),
+        "updated_at" timestamp DEFAULT now()
+      );
+
+      CREATE TABLE IF NOT EXISTS "data_patient_events" (
+        "id" varchar PRIMARY KEY DEFAULT gen_random_uuid() NOT NULL,
+        "organization_id" text DEFAULT 'default_org' NOT NULL,
+        "user_id" text DEFAULT 'default_user' NOT NULL,
+        "patient_id" varchar NOT NULL,
+        "document_id" varchar,
+        "event_type" text DEFAULT 'document_received' NOT NULL,
+        "event_date" text,
+        "summary" text NOT NULL,
+        "structured_data" jsonb DEFAULT '{}'::jsonb,
+        "created_at" timestamp DEFAULT now(),
+        "updated_at" timestamp DEFAULT now()
+      );
+
+      CREATE TABLE IF NOT EXISTS "data_general_records" (
+        "id" varchar PRIMARY KEY DEFAULT gen_random_uuid() NOT NULL,
+        "organization_id" text DEFAULT 'default_org' NOT NULL,
+        "user_id" text DEFAULT 'default_user' NOT NULL,
+        "document_id" varchar,
+        "record_type" text DEFAULT 'general_note' NOT NULL,
+        "title" text NOT NULL,
+        "period_start" text,
+        "period_end" text,
+        "raw_text" text,
+        "structured_data" jsonb DEFAULT '{}'::jsonb,
+        "confidence" real,
+        "created_at" timestamp DEFAULT now(),
+        "updated_at" timestamp DEFAULT now()
+      );
+
+      DO $$ BEGIN
+        IF NOT EXISTS (
+          SELECT 1 FROM information_schema.table_constraints
+          WHERE constraint_name = 'data_documents_patient_id_fk'
+        ) THEN
+          ALTER TABLE "data_documents"
+            ADD CONSTRAINT "data_documents_patient_id_fk"
+            FOREIGN KEY ("patient_id") REFERENCES "data_patients"("id") ON DELETE set null;
+        END IF;
+      END $$;
+
+      DO $$ BEGIN
+        IF NOT EXISTS (
+          SELECT 1 FROM information_schema.table_constraints
+          WHERE constraint_name = 'data_patient_events_patient_id_fk'
+        ) THEN
+          ALTER TABLE "data_patient_events"
+            ADD CONSTRAINT "data_patient_events_patient_id_fk"
+            FOREIGN KEY ("patient_id") REFERENCES "data_patients"("id") ON DELETE cascade;
+        END IF;
+      END $$;
+
+      DO $$ BEGIN
+        IF NOT EXISTS (
+          SELECT 1 FROM information_schema.table_constraints
+          WHERE constraint_name = 'data_patient_events_document_id_fk'
+        ) THEN
+          ALTER TABLE "data_patient_events"
+            ADD CONSTRAINT "data_patient_events_document_id_fk"
+            FOREIGN KEY ("document_id") REFERENCES "data_documents"("id") ON DELETE set null;
+        END IF;
+      END $$;
+
+      DO $$ BEGIN
+        IF NOT EXISTS (
+          SELECT 1 FROM information_schema.table_constraints
+          WHERE constraint_name = 'data_general_records_document_id_fk'
+        ) THEN
+          ALTER TABLE "data_general_records"
+            ADD CONSTRAINT "data_general_records_document_id_fk"
+            FOREIGN KEY ("document_id") REFERENCES "data_documents"("id") ON DELETE set null;
+        END IF;
+      END $$;
+
+      CREATE INDEX IF NOT EXISTS "idx_data_patients_tenant"
+        ON "data_patients" ("organization_id", "user_id");
+
+      CREATE INDEX IF NOT EXISTS "idx_data_patients_name"
+        ON "data_patients" ("canonical_name");
+
+      CREATE INDEX IF NOT EXISTS "idx_data_documents_tenant"
+        ON "data_documents" ("organization_id", "user_id");
+
+      CREATE INDEX IF NOT EXISTS "idx_data_documents_patient"
+        ON "data_documents" ("patient_id");
+
+      CREATE INDEX IF NOT EXISTS "idx_data_patient_events_patient"
+        ON "data_patient_events" ("patient_id", "created_at");
+
+      CREATE INDEX IF NOT EXISTS "idx_data_general_records_tenant"
+        ON "data_general_records" ("organization_id", "user_id", "record_type");
     `);
 
     log('✅ Database migrations completed — all tables ready');

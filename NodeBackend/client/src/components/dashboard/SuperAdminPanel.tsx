@@ -16,15 +16,47 @@ import {
   ClipboardList,
   Stethoscope,
   Settings2,
+  FolderKanban,
+  Eye,
 } from "lucide-react";
 
 interface EnabledFeatures {
   taskManagement?: boolean;
   himsChatbot?: boolean;
+  dataManagement?: boolean;
+  visibleTabs?: string[];
   himsClinicId?: string;
   himsTriggerKeywords?: string[];
   himsGreetingMessage?: string;
 }
+
+const TAB_OPTIONS = [
+  { id: "dashboard", label: "Dashboard" },
+  { id: "sessions", label: "WhatsApp Sessions" },
+  { id: "session-history", label: "Session History" },
+  { id: "templates", label: "Templates" },
+  { id: "schedules", label: "Schedules" },
+  { id: "groups", label: "Group Scraper" },
+  { id: "contacts", label: "Contacts" },
+  { id: "history", label: "Message History" },
+  { id: "auto-responses", label: "Auto-Responses" },
+  { id: "leads", label: "Leads" },
+  { id: "rag-settings", label: "AI Chatbot" },
+  { id: "notifications", label: "Notifications" },
+  { id: "knowledge-base", label: "Knowledge Base" },
+  { id: "data-management", label: "Data Management" },
+  { id: "task-management", label: "Task Management" },
+  { id: "opd-bot", label: "OPD Bot" },
+];
+
+const DEFAULT_VISIBLE_TABS = [
+  "dashboard",
+  "sessions",
+  "history",
+  "contacts",
+  "knowledge-base",
+  "data-management",
+];
 
 interface AdminUser {
   id: string;
@@ -63,6 +95,12 @@ export function SuperAdminPanel() {
     email: "",
     organizationId: "",
     role: "user",
+    enabledFeatures: {
+      taskManagement: false,
+      himsChatbot: false,
+      dataManagement: true,
+      visibleTabs: DEFAULT_VISIBLE_TABS,
+    } as EnabledFeatures,
   });
 
   // Queries
@@ -84,7 +122,19 @@ export function SuperAdminPanel() {
       queryClient.invalidateQueries({ queryKey: ["/api/admin/users"] });
       queryClient.invalidateQueries({ queryKey: ["/api/admin/stats"] });
       setShowCreateUser(false);
-      setCreateForm({ username: "", password: "", email: "", organizationId: "", role: "user" });
+      setCreateForm({
+        username: "",
+        password: "",
+        email: "",
+        organizationId: "",
+        role: "user",
+        enabledFeatures: {
+          taskManagement: false,
+          himsChatbot: false,
+          dataManagement: true,
+          visibleTabs: DEFAULT_VISIBLE_TABS,
+        },
+      });
       toast({ title: "User created successfully" });
     },
     onError: (err: Error) => {
@@ -153,6 +203,30 @@ export function SuperAdminPanel() {
     if (role === "super_admin") return <ShieldCheck className="w-4 h-4 text-red-500" />;
     if (role === "admin") return <Shield className="w-4 h-4 text-blue-500" />;
     return <User className="w-4 h-4 text-gray-500" />;
+  };
+
+  const toggleCreateTab = (tabId: string) => {
+    const current = createForm.enabledFeatures.visibleTabs || [];
+    const next = current.includes(tabId)
+      ? current.filter((id) => id !== tabId)
+      : [...current, tabId];
+    setCreateForm({
+      ...createForm,
+      enabledFeatures: { ...createForm.enabledFeatures, visibleTabs: next },
+    });
+  };
+
+  const toggleUserTab = (user: AdminUser, tabId: string) => {
+    const currentFeatures = user.enabledFeatures || {};
+    const currentTabs = currentFeatures.visibleTabs || TAB_OPTIONS.map((tab) => tab.id);
+    const nextTabs = currentTabs.includes(tabId)
+      ? currentTabs.filter((id) => id !== tabId)
+      : [...currentTabs, tabId];
+
+    toggleFeatureMutation.mutate({
+      userId: user.id,
+      features: { ...currentFeatures, visibleTabs: nextTabs },
+    });
   };
 
   // Group users by org
@@ -259,6 +333,61 @@ export function SuperAdminPanel() {
               </select>
             </div>
           </div>
+          <div className="space-y-3">
+            <div>
+              <label className="block text-sm font-medium mb-2">Module Access</label>
+              <div className="flex flex-wrap gap-2">
+                <label className="flex items-center gap-2 px-3 py-2 border rounded-lg text-sm">
+                  <input
+                    type="checkbox"
+                    checked={!!createForm.enabledFeatures.dataManagement}
+                    onChange={(e) => setCreateForm({
+                      ...createForm,
+                      enabledFeatures: { ...createForm.enabledFeatures, dataManagement: e.target.checked },
+                    })}
+                  />
+                  <FolderKanban className="w-4 h-4" /> Data Management
+                </label>
+                <label className="flex items-center gap-2 px-3 py-2 border rounded-lg text-sm">
+                  <input
+                    type="checkbox"
+                    checked={!!createForm.enabledFeatures.taskManagement}
+                    onChange={(e) => setCreateForm({
+                      ...createForm,
+                      enabledFeatures: { ...createForm.enabledFeatures, taskManagement: e.target.checked },
+                    })}
+                  />
+                  <ClipboardList className="w-4 h-4" /> Tasks
+                </label>
+                <label className="flex items-center gap-2 px-3 py-2 border rounded-lg text-sm">
+                  <input
+                    type="checkbox"
+                    checked={!!createForm.enabledFeatures.himsChatbot}
+                    onChange={(e) => setCreateForm({
+                      ...createForm,
+                      enabledFeatures: { ...createForm.enabledFeatures, himsChatbot: e.target.checked },
+                    })}
+                  />
+                  <Stethoscope className="w-4 h-4" /> OPD Bot
+                </label>
+              </div>
+            </div>
+            <div>
+              <label className="block text-sm font-medium mb-2">Visible Tabs</label>
+              <div className="grid grid-cols-2 md:grid-cols-4 gap-2">
+                {TAB_OPTIONS.map((tab) => (
+                  <label key={tab.id} className="flex items-center gap-2 text-xs px-2 py-1.5 border rounded">
+                    <input
+                      type="checkbox"
+                      checked={createForm.enabledFeatures.visibleTabs?.includes(tab.id) ?? false}
+                      onChange={() => toggleCreateTab(tab.id)}
+                    />
+                    {tab.label}
+                  </label>
+                ))}
+              </div>
+            </div>
+          </div>
           <Button
             onClick={() => createUserMutation.mutate(createForm)}
             disabled={createUserMutation.isPending || !createForm.username || !createForm.password}
@@ -317,6 +446,31 @@ export function SuperAdminPanel() {
                         </button>
                         <button
                           onClick={() => {
+                            const current = u.enabledFeatures || {};
+                            const currentTabs = current.visibleTabs || TAB_OPTIONS.map((tab) => tab.id);
+                            toggleFeatureMutation.mutate({
+                              userId: u.id,
+                              features: {
+                                ...current,
+                                dataManagement: !current.dataManagement,
+                                visibleTabs: current.dataManagement
+                                  ? currentTabs.filter((id) => id !== "data-management")
+                                  : Array.from(new Set([...currentTabs, "data-management"])),
+                              },
+                            });
+                          }}
+                          className={`flex items-center gap-1 px-2 py-1 rounded text-xs font-medium transition-colors ${
+                            u.enabledFeatures?.dataManagement
+                              ? "bg-violet-100 text-violet-700 dark:bg-violet-900/30 dark:text-violet-400"
+                              : "bg-gray-100 text-gray-400 dark:bg-gray-800 dark:text-gray-500"
+                          }`}
+                          title={u.enabledFeatures?.dataManagement ? "Disable Data Management" : "Enable Data Management"}
+                        >
+                          <FolderKanban className="w-3 h-3" />
+                          Data
+                        </button>
+                        <button
+                          onClick={() => {
                             // Open HIMS config dialog
                             const current = u.enabledFeatures || {};
                             setHimsConfigUser(u);
@@ -335,6 +489,27 @@ export function SuperAdminPanel() {
                           OPD
                           {u.enabledFeatures?.himsChatbot && <Settings2 className="w-3 h-3 ml-0.5" />}
                         </button>
+                        <details className="relative">
+                          <summary className="list-none flex items-center gap-1 px-2 py-1 rounded text-xs font-medium bg-gray-100 text-gray-600 dark:bg-gray-800 dark:text-gray-300 cursor-pointer">
+                            <Eye className="w-3 h-3" />
+                            Tabs
+                          </summary>
+                          <div className="absolute right-0 z-20 mt-2 w-64 p-3 bg-card border rounded-lg shadow-xl grid grid-cols-1 gap-1">
+                            {TAB_OPTIONS.map((tab) => {
+                              const currentTabs = u.enabledFeatures?.visibleTabs || TAB_OPTIONS.map((item) => item.id);
+                              return (
+                                <label key={tab.id} className="flex items-center gap-2 text-xs py-1">
+                                  <input
+                                    type="checkbox"
+                                    checked={currentTabs.includes(tab.id)}
+                                    onChange={() => toggleUserTab(u, tab.id)}
+                                  />
+                                  {tab.label}
+                                </label>
+                              );
+                            })}
+                          </div>
+                        </details>
                       </div>
                       {/* Role selector */}
                       <select

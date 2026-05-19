@@ -37,6 +37,8 @@ import { SuperAdminPanel } from "@/components/dashboard/SuperAdminPanel";
 import { SessionHistoryPanel } from "@/components/dashboard/SessionHistoryPanel";
 import { HRAdminsPanel } from "@/components/dashboard/HRAdminsPanel";
 import { OPDBotPanel } from "@/components/dashboard/OPDBotPanel";
+import { DataManagementPanel } from "@/components/dashboard/DataManagementPanel";
+import { useAuth } from "@/lib/AuthContext";
 
 // Form schemas
 const messageSchema = z.object({
@@ -67,11 +69,18 @@ export default function Dashboard() {
   const [unreadCount, setUnreadCount] = useState(0);
   const [sidebarOpen, setSidebarOpen] = useState(false);
 
+  const { user } = useAuth();
   const { toast } = useToast();
   const queryClient = useQueryClient();
   const { isConnected: wsConnected, whatsappStatus: wsWhatsappStatus } = useSocket();
   const [, setLocation] = useLocation();
   const isMobile = useIsMobile();
+  const visibleTabs = user?.enabledFeatures?.visibleTabs;
+  const canSeeSection = useCallback((section: string) => {
+    if (user?.role === "super_admin") return true;
+    if (!visibleTabs?.length) return true;
+    return visibleTabs.includes(section);
+  }, [user?.role, visibleTabs]);
 
   // Per-user session status (source of truth for WhatsApp connection)
   const { data: userSessions = [] } = useQuery<any[]>({
@@ -94,6 +103,12 @@ export default function Dashboard() {
       setSidebarOpen(false);
     }
   }, [activeSection, isMobile]);
+
+  useEffect(() => {
+    if (!canSeeSection(activeSection)) {
+      setActiveSection("dashboard");
+    }
+  }, [activeSection, canSeeSection]);
 
   // Form setup
   const messageForm = useForm<MessageFormData>({
@@ -500,6 +515,8 @@ export default function Dashboard() {
 
           {/* Knowledge Base Section */}
           {activeSection === "knowledge-base" && <KnowledgeBasePanel />}
+
+          {activeSection === "data-management" && canSeeSection("data-management") && <DataManagementPanel />}
 
           {activeSection === "task-management" && <HRAdminsPanel />}
 

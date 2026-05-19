@@ -6,7 +6,19 @@ interface User {
   email?: string;
   organizationId: string;
   role: string;
-  enabledFeatures?: { taskManagement?: boolean; himsChatbot?: boolean; himsClinicId?: string; himsTriggerKeywords?: string[]; himsGreetingMessage?: string; himsSystemPrompt?: string };
+  enabledFeatures?: {
+    taskManagement?: boolean;
+    himsChatbot?: boolean;
+    dataManagement?: boolean;
+    visibleTabs?: string[];
+    himsClinicId?: string;
+    himsTriggerKeywords?: string[];
+    himsGreetingMessage?: string;
+    himsSystemPrompt?: string;
+    dataManagementPrompt?: string;
+    dataManagementSystemPrompt?: string;
+    dataManagementAllowedNumbers?: string[];
+  };
 }
 
 interface AuthContextType {

@@ -620,27 +620,64 @@ class ManagedBaileysSession extends EventEmitter implements WAServiceInstance {
     }
 
     if (msg.message.imageMessage) {
+      const imageMsg = msg.message.imageMessage;
+      let mediaBuffer: Buffer | null = null;
+      let mediaBase64: string | null = null;
+
+      try {
+        mediaBuffer = await downloadMediaMessage(msg, 'buffer', {}) as Buffer;
+        mediaBase64 = mediaBuffer.toString('base64');
+      } catch (error) {
+        log(`[WA] Failed to download image for ${this.userId}/${this.sessionName}: ${(error as Error).message}`);
+      }
+
       this.emit('incoming-message', {
         phoneNumber,
-        content: msg.message.imageMessage.caption || '[Image]',
+        content: imageMsg.caption || '[Image]',
         from,
         replyTo,
         senderPn,
         timestamp: Date.now(),
         messageType: 'image',
+        mediaInfo: {
+          mimetype: imageMsg.mimetype || 'image/jpeg',
+          fileLength: imageMsg.fileLength,
+          caption: imageMsg.caption,
+        },
+        mediaData: mediaBase64,
+        mediaBuffer,
       });
       return;
     }
 
     if (msg.message.documentMessage) {
+      const documentMsg = msg.message.documentMessage;
+      let mediaBuffer: Buffer | null = null;
+      let mediaBase64: string | null = null;
+
+      try {
+        mediaBuffer = await downloadMediaMessage(msg, 'buffer', {}) as Buffer;
+        mediaBase64 = mediaBuffer.toString('base64');
+      } catch (error) {
+        log(`[WA] Failed to download document for ${this.userId}/${this.sessionName}: ${(error as Error).message}`);
+      }
+
       this.emit('incoming-message', {
         phoneNumber,
-        content: `[Document: ${msg.message.documentMessage.fileName || 'file'}]`,
+        content: `[Document: ${documentMsg.fileName || 'file'}]`,
         from,
         replyTo,
         senderPn,
         timestamp: Date.now(),
         messageType: 'document',
+        mediaInfo: {
+          mimetype: documentMsg.mimetype || 'application/octet-stream',
+          fileName: documentMsg.fileName || 'document',
+          fileLength: documentMsg.fileLength,
+          title: documentMsg.title,
+        },
+        mediaData: mediaBase64,
+        mediaBuffer,
       });
       return;
     }
