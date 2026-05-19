@@ -26,7 +26,7 @@ import * as XLSX from 'xlsx';
 import { authService } from "./services/AuthService";
 import { requireAuth, optionalAuth, getTenant, requireSuperAdmin } from "./authMiddleware";
 import { sessionManager } from "./services/WhatsAppSessionManager";
-import { users, messages as messagesTable, chatbotConfigs, contacts as contactsTable, campaigns as campaignsTable, dataPatients, dataDocuments, dataGeneralRecords } from "@shared/schema";
+import { users, messages as messagesTable, chatbotConfigs, contacts as contactsTable, campaigns as campaignsTable, dataPatients, dataDocuments, dataGeneralRecords, dataPatientEvents } from "@shared/schema";
 import { sendNotificationForEvent } from "./services/UserNotificationService";
 
 // Configure CORS
@@ -414,7 +414,7 @@ export async function registerRoutes(app: Express): Promise<Server> {
           return res.status(403).json({ message: 'Data Management is not enabled for this user' });
         }
       }
-      const [patientRows, documentRows, generalRows, recentDocuments] = await Promise.all([
+      const [patientRows, documentRows, generalRows, recentDocuments, patientList, generalRecords, recentEvents] = await Promise.all([
         db.select({ count: drizzleSql<number>`count(*)` }).from(dataPatients).where(and(
           eq(dataPatients.organizationId, tenant.organizationId),
           eq(dataPatients.userId, tenant.userId),
@@ -431,6 +431,18 @@ export async function registerRoutes(app: Express): Promise<Server> {
           eq(dataDocuments.organizationId, tenant.organizationId),
           eq(dataDocuments.userId, tenant.userId),
         )).orderBy(desc(dataDocuments.createdAt)).limit(8),
+        db.select().from(dataPatients).where(and(
+          eq(dataPatients.organizationId, tenant.organizationId),
+          eq(dataPatients.userId, tenant.userId),
+        )).orderBy(desc(dataPatients.lastUpdatedAt)).limit(50),
+        db.select().from(dataGeneralRecords).where(and(
+          eq(dataGeneralRecords.organizationId, tenant.organizationId),
+          eq(dataGeneralRecords.userId, tenant.userId),
+        )).orderBy(desc(dataGeneralRecords.createdAt)).limit(50),
+        db.select().from(dataPatientEvents).where(and(
+          eq(dataPatientEvents.organizationId, tenant.organizationId),
+          eq(dataPatientEvents.userId, tenant.userId),
+        )).orderBy(desc(dataPatientEvents.createdAt)).limit(100),
       ]);
 
       res.json({
@@ -438,6 +450,9 @@ export async function registerRoutes(app: Express): Promise<Server> {
         documents: Number(documentRows[0]?.count || 0),
         generalRecords: Number(generalRows[0]?.count || 0),
         recentDocuments,
+        patientList,
+        generalRecordList: generalRecords,
+        recentEvents,
       });
     } catch (error: any) {
       res.status(500).json({ message: error.message });

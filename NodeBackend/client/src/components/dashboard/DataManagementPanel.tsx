@@ -1,5 +1,6 @@
+import { useMemo, useState } from "react";
 import { useQuery } from "@tanstack/react-query";
-import { Database, FileText, Users, ClipboardList } from "lucide-react";
+import { CalendarClock, ClipboardList, Database, FileText, UserRound, Users } from "lucide-react";
 
 type DataSummary = {
   patients: number;
@@ -13,13 +14,56 @@ type DataSummary = {
     confidence: number | null;
     createdAt: string | null;
   }>;
+  patientList: Array<{
+    id: string;
+    canonicalName: string;
+    age: number | null;
+    gender: string | null;
+    phoneNumbers: unknown;
+    summary: string | null;
+    metadata: unknown;
+    lastUpdatedAt: string | null;
+    createdAt: string | null;
+  }>;
+  generalRecordList: Array<{
+    id: string;
+    recordType: string;
+    title: string;
+    periodStart: string | null;
+    periodEnd: string | null;
+    rawText: string | null;
+    structuredData: unknown;
+    confidence: number | null;
+    createdAt: string | null;
+  }>;
+  recentEvents: Array<{
+    id: string;
+    patientId: string;
+    documentId: string | null;
+    eventType: string;
+    eventDate: string | null;
+    summary: string;
+    structuredData: unknown;
+    createdAt: string | null;
+  }>;
 };
 
 export function DataManagementPanel() {
+  const [activeTab, setActiveTab] = useState<"patients" | "documents" | "general">("patients");
   const { data, isLoading } = useQuery<DataSummary>({
     queryKey: ["/api/data-management/summary"],
     refetchInterval: 30000,
   });
+
+  const eventsByPatient = useMemo(() => {
+    const map = new Map<string, DataSummary["recentEvents"]>();
+    for (const event of data?.recentEvents || []) {
+      const list = map.get(event.patientId) || [];
+      list.push(event);
+      map.set(event.patientId, list);
+    }
+    return map;
+  }, [data?.recentEvents]);
 
   const stats = [
     { label: "Patients", value: data?.patients || 0, icon: Users },
@@ -48,6 +92,123 @@ export function DataManagementPanel() {
         ))}
       </div>
 
+      <div className="flex flex-wrap gap-2">
+        {[
+          { id: "patients", label: "Patients", icon: UserRound },
+          { id: "documents", label: "Documents", icon: FileText },
+          { id: "general", label: "General Records", icon: ClipboardList },
+        ].map((tab) => (
+          <button
+            key={tab.id}
+            type="button"
+            onClick={() => setActiveTab(tab.id as typeof activeTab)}
+            className={`inline-flex items-center gap-2 px-4 py-2 rounded-lg border text-sm font-medium transition-colors ${
+              activeTab === tab.id
+                ? "bg-primary text-primary-foreground border-primary"
+                : "bg-card hover:bg-accent"
+            }`}
+          >
+            <tab.icon className="w-4 h-4" />
+            {tab.label}
+          </button>
+        ))}
+      </div>
+
+      {activeTab === "patients" && (
+        <div className="bg-card rounded-xl border overflow-hidden">
+          <div className="px-5 py-4 border-b flex items-center gap-2">
+            <Users className="w-5 h-5 text-primary" />
+            <h3 className="font-semibold">Saved Patients</h3>
+          </div>
+          <div className="divide-y">
+            {isLoading ? (
+              <p className="p-5 text-sm text-muted-foreground">Loading patients...</p>
+            ) : data?.patientList?.length ? (
+              data.patientList.map((patient) => {
+                const events = eventsByPatient.get(patient.id) || [];
+                const phones = Array.isArray(patient.phoneNumbers) ? patient.phoneNumbers.join(", ") : "";
+                return (
+                  <div key={patient.id} className="p-5 space-y-3">
+                    <div className="flex flex-col md:flex-row md:items-start md:justify-between gap-2">
+                      <div>
+                        <p className="font-semibold text-lg">{patient.canonicalName}</p>
+                        <p className="text-sm text-muted-foreground">
+                          {[patient.age ? `${patient.age} yrs` : "", patient.gender || "", phones].filter(Boolean).join(" · ") || "No demographics extracted"}
+                        </p>
+                      </div>
+                      <span className="text-xs text-muted-foreground">
+                        Updated {patient.lastUpdatedAt ? new Date(patient.lastUpdatedAt).toLocaleString() : "-"}
+                      </span>
+                    </div>
+                    {patient.summary && (
+                      <p className="text-sm bg-accent/30 rounded-lg px-3 py-2">{patient.summary}</p>
+                    )}
+                    <div className="space-y-2">
+                      <p className="text-xs font-medium text-muted-foreground flex items-center gap-1">
+                        <CalendarClock className="w-3 h-3" /> Recent Timeline
+                      </p>
+                      {events.length ? (
+                        events.slice(0, 3).map((event) => (
+                          <div key={event.id} className="text-sm border rounded-lg px-3 py-2">
+                            <p className="font-medium">{event.summary}</p>
+                            <p className="text-xs text-muted-foreground">
+                              {event.eventType} · {event.eventDate || (event.createdAt ? new Date(event.createdAt).toLocaleDateString() : "")}
+                            </p>
+                          </div>
+                        ))
+                      ) : (
+                        <p className="text-sm text-muted-foreground">No timeline events saved yet.</p>
+                      )}
+                    </div>
+                  </div>
+                );
+              })
+            ) : (
+              <p className="p-5 text-sm text-muted-foreground">No patients yet. Send a patient report image/PDF with patient name visible.</p>
+            )}
+          </div>
+        </div>
+      )}
+
+      {activeTab === "general" && (
+        <div className="bg-card rounded-xl border overflow-hidden">
+          <div className="px-5 py-4 border-b flex items-center gap-2">
+            <ClipboardList className="w-5 h-5 text-primary" />
+            <h3 className="font-semibold">General Data Records</h3>
+          </div>
+          <div className="divide-y">
+            {isLoading ? (
+              <p className="p-5 text-sm text-muted-foreground">Loading general records...</p>
+            ) : data?.generalRecordList?.length ? (
+              data.generalRecordList.map((record) => (
+                <div key={record.id} className="p-5">
+                  <div className="flex items-start justify-between gap-4">
+                    <div>
+                      <p className="font-semibold">{record.title}</p>
+                      <p className="text-xs text-muted-foreground">
+                        {record.recordType} · {record.createdAt ? new Date(record.createdAt).toLocaleString() : ""}
+                      </p>
+                    </div>
+                    <span className="text-xs text-muted-foreground">
+                      {typeof record.confidence === "number" ? `${Math.round(record.confidence * 100)}%` : ""}
+                    </span>
+                  </div>
+                  {record.rawText && <p className="text-sm mt-3 bg-accent/30 rounded-lg px-3 py-2">{record.rawText}</p>}
+                  {record.structuredData && Object.keys(record.structuredData as Record<string, unknown>).length > 0 && (
+                    <pre className="text-xs mt-3 overflow-auto bg-muted rounded-lg p-3">
+                      {JSON.stringify(record.structuredData, null, 2)}
+                    </pre>
+                  )}
+                </div>
+              ))
+            ) : (
+              <p className="p-5 text-sm text-muted-foreground">No general records yet.</p>
+            )}
+          </div>
+        </div>
+      )}
+
+      {activeTab === "documents" && (
       <div className="bg-card rounded-xl border overflow-hidden">
         <div className="px-5 py-4 border-b flex items-center gap-2">
           <Database className="w-5 h-5 text-primary" />
@@ -75,6 +236,7 @@ export function DataManagementPanel() {
           )}
         </div>
       </div>
+      )}
     </div>
   );
 }
