@@ -570,12 +570,21 @@ class ManagedBaileysSession extends EventEmitter implements WAServiceInstance {
     const replyTo = this.resolveReplyTarget(from, senderPn);
     this.rememberRecentJid(phoneNumber, from, senderPn);
 
-    if (msg.key.fromMe && !this.isSelfChatJid(from)) {
+    const isFromMe = msg.key.fromMe === true;
+    const isSelfChat = this.isSelfChatJid(from);
+    const isSentEcho = payload?.type === 'append';
+
+    if (isFromMe && isSentEcho) {
+      log(`[WA] Ignoring sent-message echo for ${this.userId}/${this.sessionName}: ${from}`);
+      return;
+    }
+
+    if (isFromMe && !isSelfChat) {
       log(`[WA] Ignoring incoming event for ${this.userId}/${this.sessionName}: message is fromMe (${from})`);
       return;
     }
 
-    if (msg.key.fromMe) {
+    if (isFromMe) {
       log(`[WA] Processing note-to-self message for ${this.userId}/${this.sessionName}: ${from}`);
     }
 
