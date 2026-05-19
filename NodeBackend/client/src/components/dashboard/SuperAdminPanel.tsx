@@ -1,4 +1,4 @@
-import { useState } from "react";
+import { Fragment, useState } from "react";
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
 import { apiRequest } from "@/lib/queryClient";
 import { useToast } from "@/hooks/use-toast";
@@ -83,6 +83,7 @@ export function SuperAdminPanel() {
   const [showCreateUser, setShowCreateUser] = useState(false);
   const [showResetPassword, setShowResetPassword] = useState<string | null>(null);
   const [newPassword, setNewPassword] = useState("");
+  const [tabConfigUserId, setTabConfigUserId] = useState<string | null>(null);
   const [himsConfigUser, setHimsConfigUser] = useState<AdminUser | null>(null);
   const [himsConfigForm, setHimsConfigForm] = useState({
     himsClinicId: "",
@@ -413,7 +414,8 @@ export function SuperAdminPanel() {
               </div>
               <div className="divide-y">
                 {orgUsers.map((u: AdminUser) => (
-                  <div key={u.id} className="px-6 py-3 flex items-center gap-4">
+                  <Fragment key={u.id}>
+                  <div className="px-6 py-3 flex items-center gap-4">
                     <div className="flex items-center gap-2 flex-1 min-w-0">
                       {roleIcon(u.role)}
                       <div className="min-w-0">
@@ -489,27 +491,19 @@ export function SuperAdminPanel() {
                           OPD
                           {u.enabledFeatures?.himsChatbot && <Settings2 className="w-3 h-3 ml-0.5" />}
                         </button>
-                        <details className="relative">
-                          <summary className="list-none flex items-center gap-1 px-2 py-1 rounded text-xs font-medium bg-gray-100 text-gray-600 dark:bg-gray-800 dark:text-gray-300 cursor-pointer">
+                        <button
+                          type="button"
+                          onClick={() => setTabConfigUserId(tabConfigUserId === u.id ? null : u.id)}
+                          className={`flex items-center gap-1 px-2 py-1 rounded text-xs font-medium transition-colors ${
+                            tabConfigUserId === u.id
+                              ? "bg-primary text-primary-foreground"
+                              : "bg-gray-100 text-gray-600 dark:bg-gray-800 dark:text-gray-300"
+                          }`}
+                          title="Choose visible tabs"
+                        >
                             <Eye className="w-3 h-3" />
                             Tabs
-                          </summary>
-                          <div className="absolute right-0 z-20 mt-2 w-64 p-3 bg-card border rounded-lg shadow-xl grid grid-cols-1 gap-1">
-                            {TAB_OPTIONS.map((tab) => {
-                              const currentTabs = u.enabledFeatures?.visibleTabs || TAB_OPTIONS.map((item) => item.id);
-                              return (
-                                <label key={tab.id} className="flex items-center gap-2 text-xs py-1">
-                                  <input
-                                    type="checkbox"
-                                    checked={currentTabs.includes(tab.id)}
-                                    onChange={() => toggleUserTab(u, tab.id)}
-                                  />
-                                  {tab.label}
-                                </label>
-                              );
-                            })}
-                          </div>
-                        </details>
+                        </button>
                       </div>
                       {/* Role selector */}
                       <select
@@ -568,6 +562,47 @@ export function SuperAdminPanel() {
                       </Button>
                     </div>
                   </div>
+                  {tabConfigUserId === u.id && (
+                    <div className="px-6 pb-5 bg-accent/10">
+                      <div className="ml-6 rounded-lg border bg-card p-4">
+                        <div className="flex items-center justify-between gap-3 mb-3">
+                          <div>
+                            <p className="font-medium text-sm">Visible tabs for {u.username}</p>
+                            <p className="text-xs text-muted-foreground">Only selected tabs will appear in this user's sidebar.</p>
+                          </div>
+                          <Button
+                            size="sm"
+                            variant="outline"
+                            onClick={() => {
+                              const current = u.enabledFeatures || {};
+                              toggleFeatureMutation.mutate({
+                                userId: u.id,
+                                features: { ...current, visibleTabs: TAB_OPTIONS.map((tab) => tab.id) },
+                              });
+                            }}
+                          >
+                            Select All
+                          </Button>
+                        </div>
+                        <div className="grid grid-cols-2 md:grid-cols-4 gap-2">
+                          {TAB_OPTIONS.map((tab) => {
+                            const currentTabs = u.enabledFeatures?.visibleTabs || TAB_OPTIONS.map((item) => item.id);
+                            return (
+                              <label key={tab.id} className="flex items-center gap-2 text-xs px-2 py-1.5 border rounded">
+                                <input
+                                  type="checkbox"
+                                  checked={currentTabs.includes(tab.id)}
+                                  onChange={() => toggleUserTab(u, tab.id)}
+                                />
+                                {tab.label}
+                              </label>
+                            );
+                          })}
+                        </div>
+                      </div>
+                    </div>
+                  )}
+                  </Fragment>
                 ))}
               </div>
             </div>

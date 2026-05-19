@@ -570,9 +570,13 @@ class ManagedBaileysSession extends EventEmitter implements WAServiceInstance {
     const replyTo = this.resolveReplyTarget(from, senderPn);
     this.rememberRecentJid(phoneNumber, from, senderPn);
 
-    if (msg.key.fromMe) {
+    if (msg.key.fromMe && !this.isSelfChatJid(from)) {
       log(`[WA] Ignoring incoming event for ${this.userId}/${this.sessionName}: message is fromMe (${from})`);
       return;
+    }
+
+    if (msg.key.fromMe) {
+      log(`[WA] Processing note-to-self message for ${this.userId}/${this.sessionName}: ${from}`);
     }
 
     if (msg.message.interactiveResponseMessage) {
@@ -998,6 +1002,36 @@ class ManagedBaileysSession extends EventEmitter implements WAServiceInstance {
     }
 
     return fromValue || null;
+  }
+
+  private isSelfChatJid(jid?: string | null): boolean {
+    if (!jid || !this.socket?.user) return false;
+
+    const normalize = (value?: string | null): string | null => {
+      if (!value) return null;
+      return String(value)
+        .split(':')[0]
+        .replace(/@(s\.whatsapp\.net|lid)$/i, '')
+        .trim();
+    };
+
+    const current = normalize(jid);
+    if (!current) return false;
+
+    const socketUser = this.socket.user as any;
+    const candidates = [
+      socketUser.id,
+      socketUser.jid,
+      socketUser.lid,
+      socketUser.phoneNumber,
+      socketUser.me?.id,
+      socketUser.me?.jid,
+      socketUser.me?.lid,
+    ]
+      .map(normalize)
+      .filter(Boolean);
+
+    return candidates.includes(current);
   }
 
   private formatPhoneNumber(phoneNumber: string): string {
