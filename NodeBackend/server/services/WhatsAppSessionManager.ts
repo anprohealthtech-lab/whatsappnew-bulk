@@ -65,6 +65,7 @@ class ManagedBaileysSession extends EventEmitter implements WAServiceInstance {
   private connectedSince: Date | null = null;
   private badSessionRetryCount = 0;
   private presenceRefreshTimer: NodeJS.Timeout | null = null;
+  private readonly backendSentMessageIds = new Map<string, number>();
 
   constructor(
     private readonly userId: string,
@@ -572,10 +573,13 @@ class ManagedBaileysSession extends EventEmitter implements WAServiceInstance {
 
     const isFromMe = msg.key.fromMe === true;
     const isSelfChat = this.isSelfChatJid(from);
-    const isSentEcho = payload?.type === 'append';
+    const messageId = msg.key.id as string | undefined;
+    const isSentEcho = !!messageId && this.backendSentMessageIds.has(messageId);
+
+    this.cleanupBackendSentMessageIds();
 
     if (isFromMe && isSentEcho) {
-      log(`[WA] Ignoring sent-message echo for ${this.userId}/${this.sessionName}: ${from}`);
+      log(`[WA] Ignoring backend sent-message echo for ${this.userId}/${this.sessionName}: ${from} (${messageId})`);
       return;
     }
 
@@ -775,6 +779,7 @@ class ManagedBaileysSession extends EventEmitter implements WAServiceInstance {
     const jid = await this.resolveOutgoingJid(phoneNumber);
     log(`[WA] sendTextMessage ${this.userId}/${this.sessionName} target="${phoneNumber}" resolvedJid="${jid}"`);
     const result = await this.socket.sendMessage(jid, { text: message });
+    this.rememberBackendSentMessageId(result?.key?.id);
 
     this.status.lastSeen = new Date();
     this.emit('message-sent', {
@@ -825,6 +830,7 @@ class ManagedBaileysSession extends EventEmitter implements WAServiceInstance {
     }
 
     const result = await this.socket.sendMessage(jid, payload);
+    this.rememberBackendSentMessageId(result?.key?.id);
     this.status.lastSeen = new Date();
     this.emit('message-sent', {
       messageId: result?.key?.id,
@@ -1041,6 +1047,21 @@ class ManagedBaileysSession extends EventEmitter implements WAServiceInstance {
       .filter(Boolean);
 
     return candidates.includes(current);
+  }
+
+  private rememberBackendSentMessageId(messageId?: string | null): void {
+    if (!messageId) return;
+    this.backendSentMessageIds.set(messageId, Date.now());
+    this.cleanupBackendSentMessageIds();
+  }
+
+  private cleanupBackendSentMessageIds(): void {
+    const cutoff = Date.now() - 10 * 60 * 1000;
+    for (const [messageId, createdAt] of this.backendSentMessageIds.entries()) {
+      if (createdAt < cutoff) {
+        this.backendSentMessageIds.delete(messageId);
+      }
+    }
   }
 
   private formatPhoneNumber(phoneNumber: string): string {
