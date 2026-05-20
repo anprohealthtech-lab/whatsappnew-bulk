@@ -558,6 +558,8 @@ class ManagedBaileysSession extends EventEmitter implements WAServiceInstance {
       return;
     }
 
+    const message = this.unwrapMessage(msg.message);
+
     const from = msg.key.remoteJid;
 
     // Skip group messages and broadcast — chatbot/autoresponse should only handle private DMs
@@ -592,8 +594,8 @@ class ManagedBaileysSession extends EventEmitter implements WAServiceInstance {
       log(`[WA] Processing note-to-self message for ${this.userId}/${this.sessionName}: ${from}`);
     }
 
-    if (msg.message.interactiveResponseMessage) {
-      const res = msg.message.interactiveResponseMessage.nativeFlowResponseMessage;
+    if (message.interactiveResponseMessage) {
+      const res = message.interactiveResponseMessage.nativeFlowResponseMessage;
       const buttonId = res?.paramsJson ? JSON.parse(res.paramsJson)?.id : null;
       this.emit('button-clicked', {
         buttonId,
@@ -606,8 +608,8 @@ class ManagedBaileysSession extends EventEmitter implements WAServiceInstance {
       return;
     }
 
-    if (msg.message.audioMessage) {
-      const audioMsg = msg.message.audioMessage;
+    if (message.audioMessage) {
+      const audioMsg = message.audioMessage;
       const isVoiceNote = audioMsg.ptt === true;
       let audioBuffer: Buffer | null = null;
       let audioBase64: string | null = null;
@@ -636,8 +638,8 @@ class ManagedBaileysSession extends EventEmitter implements WAServiceInstance {
       return;
     }
 
-    if (msg.message.imageMessage) {
-      const imageMsg = msg.message.imageMessage;
+    if (message.imageMessage) {
+      const imageMsg = message.imageMessage;
       let mediaBuffer: Buffer | null = null;
       let mediaBase64: string | null = null;
 
@@ -667,8 +669,8 @@ class ManagedBaileysSession extends EventEmitter implements WAServiceInstance {
       return;
     }
 
-    if (msg.message.documentMessage) {
-      const documentMsg = msg.message.documentMessage;
+    if (message.documentMessage) {
+      const documentMsg = message.documentMessage;
       let mediaBuffer: Buffer | null = null;
       let mediaBase64: string | null = null;
 
@@ -699,10 +701,10 @@ class ManagedBaileysSession extends EventEmitter implements WAServiceInstance {
       return;
     }
 
-    if (msg.message.videoMessage) {
+    if (message.videoMessage) {
       this.emit('incoming-message', {
         phoneNumber,
-        content: msg.message.videoMessage.caption || '[Video]',
+        content: message.videoMessage.caption || '[Video]',
         from,
         replyTo,
         senderPn,
@@ -712,9 +714,15 @@ class ManagedBaileysSession extends EventEmitter implements WAServiceInstance {
       return;
     }
 
-    const messageText = msg.message.conversation || msg.message.extendedTextMessage?.text || '';
+    const messageText =
+      message.conversation ||
+      message.extendedTextMessage?.text ||
+      message.imageMessage?.caption ||
+      message.documentMessage?.caption ||
+      message.videoMessage?.caption ||
+      '';
     if (!messageText) {
-      log(`[WA] Ignoring incoming event for ${this.userId}/${this.sessionName}: no text content for ${from}`);
+      log(`[WA] Ignoring incoming event for ${this.userId}/${this.sessionName}: no text/media content for ${from}; keys=${Object.keys(message).join(',') || 'none'} rawKeys=${Object.keys(msg.message || {}).join(',') || 'none'}`);
       return;
     }
 
@@ -740,6 +748,30 @@ class ManagedBaileysSession extends EventEmitter implements WAServiceInstance {
         timestamp: Date.now(),
       });
     }
+  }
+
+  private unwrapMessage(message: proto.IMessage | any): any {
+    let current = message || {};
+    for (let depth = 0; depth < 5; depth++) {
+      if (current?.ephemeralMessage?.message) {
+        current = current.ephemeralMessage.message;
+        continue;
+      }
+      if (current?.viewOnceMessage?.message) {
+        current = current.viewOnceMessage.message;
+        continue;
+      }
+      if (current?.viewOnceMessageV2?.message) {
+        current = current.viewOnceMessageV2.message;
+        continue;
+      }
+      if (current?.documentWithCaptionMessage?.message) {
+        current = current.documentWithCaptionMessage.message;
+        continue;
+      }
+      return current;
+    }
+    return current;
   }
 
   /**
@@ -1020,7 +1052,7 @@ class ManagedBaileysSession extends EventEmitter implements WAServiceInstance {
   }
 
   private isSelfChatJid(jid?: string | null): boolean {
-    if (!jid || !this.socket?.user) return false;
+    if (!jid) return false;
 
     const normalize = (value?: string | null): string | null => {
       if (!value) return null;
@@ -1033,7 +1065,8 @@ class ManagedBaileysSession extends EventEmitter implements WAServiceInstance {
     const current = normalize(jid);
     if (!current) return false;
 
-    const socketUser = this.socket.user as any;
+    const socketUser = (this.socket?.user || {}) as any;
+    const statusUser = (this.status.sessionInfo || {}) as any;
     const candidates = [
       socketUser.id,
       socketUser.jid,
@@ -1042,6 +1075,13 @@ class ManagedBaileysSession extends EventEmitter implements WAServiceInstance {
       socketUser.me?.id,
       socketUser.me?.jid,
       socketUser.me?.lid,
+      statusUser.id,
+      statusUser.jid,
+      statusUser.lid,
+      statusUser.phoneNumber,
+      statusUser.me?.id,
+      statusUser.me?.jid,
+      statusUser.me?.lid,
     ]
       .map(normalize)
       .filter(Boolean);
