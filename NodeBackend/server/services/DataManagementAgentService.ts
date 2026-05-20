@@ -57,6 +57,12 @@ type DataExtraction = {
   needs_confirmation?: boolean;
 };
 
+type DataToolResult = {
+  success: boolean;
+  data?: unknown;
+  error?: string;
+};
+
 const DEFAULT_DATA_MANAGEMENT_PROMPT = `You are a clinical data management agent for a doctor's private WhatsApp/data app.
 
 Your job is to read text, report images, PDF documents, and short doctor notes, then return strict JSON only.
@@ -99,6 +105,119 @@ For general records, return:
   "confidence": number
 }`;
 
+const DATA_QA_SYSTEM_PROMPT = `You are a private clinical data Q&A agent for a doctor on WhatsApp.
+
+You answer only from the database tools provided. Do not invent patients, reports, prices, counts, lab values, or dates.
+Use tools whenever a question asks about saved patients, reports, timelines, lab values, trends, surgeries, price lists, packages, or general clinic records.
+
+Style:
+- Be concise and WhatsApp-friendly.
+- If data is missing, say exactly what is missing.
+- For medical values, preserve units and dates when available.
+- You may summarize clinical data, but do not give diagnosis or treatment advice beyond the saved record content.
+- If multiple patients match, ask the doctor to clarify.
+- If you used limited data, mention that briefly.`;
+
+const DATA_QA_TOOLS: Anthropic.Tool[] = [
+  {
+    name: "count_patients",
+    description: "Count saved patients in the doctor's data management records.",
+    input_schema: {
+      type: "object",
+      properties: {},
+    },
+  },
+  {
+    name: "search_patient",
+    description: "Search saved patients by name, partial name, phone, age, or free-text query.",
+    input_schema: {
+      type: "object",
+      properties: {
+        query: { type: "string", description: "Patient name, phone, or search text." },
+        limit: { type: "number", description: "Maximum matches to return." },
+      },
+      required: ["query"],
+    },
+  },
+  {
+    name: "get_patient_timeline",
+    description: "Get recent timeline events for a patient. Use patientId when known; otherwise provide patientName.",
+    input_schema: {
+      type: "object",
+      properties: {
+        patientId: { type: "string" },
+        patientName: { type: "string" },
+        limit: { type: "number" },
+      },
+    },
+  },
+  {
+    name: "get_patient_documents",
+    description: "Get parsed documents for a patient, including extracted JSON summaries. Use patientId when known; otherwise patientName.",
+    input_schema: {
+      type: "object",
+      properties: {
+        patientId: { type: "string" },
+        patientName: { type: "string" },
+        limit: { type: "number" },
+      },
+    },
+  },
+  {
+    name: "search_general_records",
+    description: "Search general non-patient clinic records such as surgery counts, price lists, packages, inventory, revenue, or notes.",
+    input_schema: {
+      type: "object",
+      properties: {
+        query: { type: "string" },
+        recordType: { type: "string" },
+        limit: { type: "number" },
+      },
+      required: ["query"],
+    },
+  },
+  {
+    name: "get_recent_updates",
+    description: "Get recent saved patient timeline events and general records.",
+    input_schema: {
+      type: "object",
+      properties: {
+        limit: { type: "number" },
+      },
+    },
+  },
+  {
+    name: "find_lab_values",
+    description: "Find saved lab/test values or clinical fields for a patient and test name, such as HbA1c, hemoglobin, creatinine, BP, etc.",
+    input_schema: {
+      type: "object",
+      properties: {
+        patientId: { type: "string" },
+        patientName: { type: "string" },
+        testName: { type: "string", description: "Lab/test/field name to search for." },
+        limit: { type: "number" },
+      },
+      required: ["testName"],
+    },
+  },
+  {
+    name: "save_general_record",
+    description: "Save a non-patient general clinic record stated by the doctor in text, such as monthly surgery count or a price/package note.",
+    input_schema: {
+      type: "object",
+      properties: {
+        recordType: { type: "string" },
+        title: { type: "string" },
+        rawText: { type: "string" },
+        periodStart: { type: "string" },
+        periodEnd: { type: "string" },
+        structuredData: { type: "object" },
+      },
+      required: ["recordType", "title", "rawText"],
+    },
+  },
+];
+
 export class DataManagementAgentService {
   private anthropic: Anthropic | null = null;
 
@@ -136,10 +255,14 @@ export class DataManagementAgentService {
     const commandPatterns = [
       /\bhow many patients\b/,
       /\bcount patients\b/,
+      /\b(patient|patients)\b/,
       /\bshow .*patient\b/,
       /\blast (report|update|document)\b/,
+      /\b(report|reports|document|documents|timeline|history)\b/,
+      /\b(trend|compare|abnormal|normal|high|low|value|values|test|lab|hba1c|hb|hemoglobin|creatinine|cholesterol|glucose)\b/,
       /\bprice list\b/,
       /\bsurgery\b/,
+      /\b(package|price|rate|cost|charge|inventory|revenue)\b/,
       /\badd .*patient\b/,
       /\bfind patient\b/,
       /\bdata\b/,
@@ -157,7 +280,7 @@ export class DataManagementAgentService {
     const maybeSaved = await this.trySaveTextAsRecord(tenant, data);
     if (maybeSaved) return maybeSaved;
 
-    return this.answerDataQuestion(tenant, data.content || "");
+    return this.answerQuestionWithClaudeTools(tenant, data.content || "");
   }
 
   private async processDocument(tenant: TenantContext, data: IncomingDataMessage): Promise<string> {
@@ -254,6 +377,193 @@ export class DataManagementAgentService {
     }
 
     return "I can answer patient counts, patient timelines, last reports, price/package data, and surgery/general records once they are saved.";
+  }
+
+  private async answerQuestionWithClaudeTools(tenant: TenantContext, question: string): Promise<string> {
+    const text = question.trim();
+    if (!text) return "Please send a data question, patient name, or report.";
+
+    if (!this.anthropic) {
+      return this.answerDataQuestion(tenant, text);
+    }
+
+    const systemPrompt = await this.getQuestionSystemPrompt(tenant.userId);
+    const messages: Anthropic.MessageParam[] = [
+      {
+        role: "user",
+        content: `Doctor question: ${text}`,
+      },
+    ];
+
+    try {
+      let response = await this.anthropic.messages.create({
+        model: process.env.DATA_AGENT_MODEL || "claude-sonnet-4-20250514",
+        max_tokens: 1200,
+        system: systemPrompt,
+        tools: DATA_QA_TOOLS,
+        messages,
+      });
+
+      let rounds = 0;
+      while (response.stop_reason === "tool_use" && rounds < 6) {
+        rounds += 1;
+        const toolUses = response.content.filter((block): block is Anthropic.ToolUseBlock => block.type === "tool_use");
+        const toolResults: Anthropic.ToolResultBlockParam[] = [];
+
+        for (const toolUse of toolUses) {
+          const result = await this.executeDataTool(tenant, toolUse.name, (toolUse.input || {}) as Record<string, unknown>);
+          toolResults.push({
+            type: "tool_result",
+            tool_use_id: toolUse.id,
+            content: JSON.stringify(result),
+          });
+        }
+
+        messages.push({ role: "assistant", content: response.content });
+        messages.push({ role: "user", content: toolResults });
+
+        response = await this.anthropic.messages.create({
+          model: process.env.DATA_AGENT_MODEL || "claude-sonnet-4-20250514",
+          max_tokens: 1200,
+          system: systemPrompt,
+          tools: DATA_QA_TOOLS,
+          messages,
+        });
+      }
+
+      const answer = response.content
+        .filter((block): block is Anthropic.TextBlock => block.type === "text")
+        .map((block) => block.text)
+        .join("\n")
+        .trim();
+
+      return answer || "I checked the saved data, but could not form an answer.";
+    } catch (error: any) {
+      console.error("[DataManagementAgentService] Claude Q&A failed:", error?.message || error);
+      return this.answerDataQuestion(tenant, text);
+    }
+  }
+
+  private async executeDataTool(tenant: TenantContext, toolName: string, input: Record<string, unknown>): Promise<DataToolResult> {
+    try {
+      switch (toolName) {
+        case "count_patients": {
+          const rows = await db
+            .select({ count: sql<number>`count(*)` })
+            .from(dataPatients)
+            .where(and(eq(dataPatients.organizationId, tenant.organizationId), eq(dataPatients.userId, tenant.userId)));
+          return { success: true, data: { count: Number(rows[0]?.count || 0) } };
+        }
+
+        case "search_patient": {
+          const query = String(input.query || "").trim();
+          const limit = this.limitNumber(input.limit, 10, 1, 25);
+          const patients = await this.searchPatients(tenant, query, limit);
+          return { success: true, data: patients };
+        }
+
+        case "get_patient_timeline": {
+          const patient = await this.resolvePatientForTool(tenant, input);
+          if (!patient) return { success: false, error: "Patient not found" };
+          const limit = this.limitNumber(input.limit, 8, 1, 25);
+          const events = await db.select().from(dataPatientEvents)
+            .where(and(
+              eq(dataPatientEvents.organizationId, tenant.organizationId),
+              eq(dataPatientEvents.userId, tenant.userId),
+              eq(dataPatientEvents.patientId, patient.id),
+            ))
+            .orderBy(desc(dataPatientEvents.createdAt))
+            .limit(limit);
+          return { success: true, data: { patient: this.publicPatient(patient), events } };
+        }
+
+        case "get_patient_documents": {
+          const patient = await this.resolvePatientForTool(tenant, input);
+          if (!patient) return { success: false, error: "Patient not found" };
+          const limit = this.limitNumber(input.limit, 8, 1, 25);
+          const documents = await db.select().from(dataDocuments)
+            .where(and(
+              eq(dataDocuments.organizationId, tenant.organizationId),
+              eq(dataDocuments.userId, tenant.userId),
+              eq(dataDocuments.patientId, patient.id),
+            ))
+            .orderBy(desc(dataDocuments.createdAt))
+            .limit(limit);
+          return { success: true, data: { patient: this.publicPatient(patient), documents: this.compactDocuments(documents) } };
+        }
+
+        case "search_general_records": {
+          const query = String(input.query || "").trim();
+          const recordType = String(input.recordType || "").trim();
+          const limit = this.limitNumber(input.limit, 8, 1, 25);
+          const conditions = [
+            eq(dataGeneralRecords.organizationId, tenant.organizationId),
+            eq(dataGeneralRecords.userId, tenant.userId),
+          ];
+          if (recordType) conditions.push(eq(dataGeneralRecords.recordType, recordType));
+          if (query) conditions.push(sql`(
+            ${dataGeneralRecords.title} ILIKE ${`%${query}%`}
+            OR ${dataGeneralRecords.rawText} ILIKE ${`%${query}%`}
+            OR ${dataGeneralRecords.recordType} ILIKE ${`%${query}%`}
+            OR ${dataGeneralRecords.structuredData}::text ILIKE ${`%${query}%`}
+          )` as any);
+          const records = await db.select().from(dataGeneralRecords)
+            .where(and(...conditions))
+            .orderBy(desc(dataGeneralRecords.createdAt))
+            .limit(limit);
+          return { success: true, data: records };
+        }
+
+        case "get_recent_updates": {
+          const limit = this.limitNumber(input.limit, 8, 1, 25);
+          const [events, records] = await Promise.all([
+            db.select().from(dataPatientEvents)
+              .where(and(eq(dataPatientEvents.organizationId, tenant.organizationId), eq(dataPatientEvents.userId, tenant.userId)))
+              .orderBy(desc(dataPatientEvents.createdAt))
+              .limit(limit),
+            db.select().from(dataGeneralRecords)
+              .where(and(eq(dataGeneralRecords.organizationId, tenant.organizationId), eq(dataGeneralRecords.userId, tenant.userId)))
+              .orderBy(desc(dataGeneralRecords.createdAt))
+              .limit(limit),
+          ]);
+          return { success: true, data: { patientEvents: events, generalRecords: records } };
+        }
+
+        case "find_lab_values": {
+          const patient = await this.resolvePatientForTool(tenant, input);
+          if (!patient) return { success: false, error: "Patient not found" };
+          const testName = String(input.testName || "").trim();
+          if (!testName) return { success: false, error: "testName is required" };
+          const limit = this.limitNumber(input.limit, 10, 1, 30);
+          const matches = await this.findLabValueMatches(tenant, patient.id, testName, limit);
+          return { success: true, data: { patient: this.publicPatient(patient), testName, matches } };
+        }
+
+        case "save_general_record": {
+          const title = String(input.title || "").trim();
+          const rawText = String(input.rawText || "").trim();
+          const recordType = String(input.recordType || "general_note").trim() || "general_note";
+          if (!title || !rawText) return { success: false, error: "title and rawText are required" };
+          const rows = await db.insert(dataGeneralRecords).values({
+            organizationId: tenant.organizationId,
+            userId: tenant.userId,
+            recordType,
+            title,
+            rawText,
+            periodStart: typeof input.periodStart === "string" ? input.periodStart : null,
+            periodEnd: typeof input.periodEnd === "string" ? input.periodEnd : null,
+            structuredData: (input.structuredData && typeof input.structuredData === "object" ? input.structuredData : {}) as any,
+            confidence: 1,
+          }).returning();
+          return { success: true, data: rows[0] };
+        }
+
+        default:
+          return { success: false, error: `Unknown tool: ${toolName}` };
+      }
+    } catch (error: any) {
+      return { success: false, error: error?.message || "Tool execution failed" };
+    }
   }
 
   private async extractStructuredData(tenant: TenantContext, data: IncomingDataMessage): Promise<DataExtraction> {
@@ -459,6 +769,135 @@ export class DataManagementAgentService {
     }) || null;
   }
 
+  private async searchPatients(tenant: TenantContext, query: string, limit: number) {
+    const normalizedQuery = this.normalizeName(query);
+    const rows = await db.select().from(dataPatients).where(and(
+      eq(dataPatients.organizationId, tenant.organizationId),
+      eq(dataPatients.userId, tenant.userId),
+    )).orderBy(desc(dataPatients.updatedAt)).limit(200);
+
+    const scored = rows
+      .map((patient) => {
+        const haystack = [
+          patient.canonicalName,
+          patient.age,
+          patient.gender,
+          patient.summary,
+          JSON.stringify(patient.phoneNumbers || []),
+          JSON.stringify(patient.aliases || []),
+          JSON.stringify(patient.metadata || {}),
+        ].join(" ").toLowerCase();
+        const normalizedName = this.normalizeName(patient.canonicalName);
+        let score = 0;
+        if (!query) score = 1;
+        else if (normalizedName === normalizedQuery) score = 100;
+        else if (normalizedName.includes(normalizedQuery) || normalizedQuery.includes(normalizedName)) score = 80;
+        else if (haystack.includes(query.toLowerCase())) score = 50;
+        return { patient, score };
+      })
+      .filter((item) => item.score > 0)
+      .sort((a, b) => b.score - a.score)
+      .slice(0, limit)
+      .map((item) => this.publicPatient(item.patient));
+
+    return scored;
+  }
+
+  private async resolvePatientForTool(tenant: TenantContext, input: Record<string, unknown>) {
+    const patientId = typeof input.patientId === "string" ? input.patientId.trim() : "";
+    if (patientId) {
+      const rows = await db.select().from(dataPatients).where(and(
+        eq(dataPatients.organizationId, tenant.organizationId),
+        eq(dataPatients.userId, tenant.userId),
+        eq(dataPatients.id, patientId),
+      )).limit(1);
+      if (rows[0]) return rows[0];
+    }
+
+    const patientName = typeof input.patientName === "string" ? input.patientName.trim() : "";
+    if (patientName) return this.findPatientByName(tenant, patientName);
+
+    return null;
+  }
+
+  private publicPatient(patient: typeof dataPatients.$inferSelect) {
+    return {
+      id: patient.id,
+      name: patient.canonicalName,
+      age: patient.age,
+      gender: patient.gender,
+      phoneNumbers: patient.phoneNumbers,
+      dob: patient.dob,
+      summary: patient.summary,
+      firstSeenAt: patient.firstSeenAt,
+      lastUpdatedAt: patient.lastUpdatedAt,
+    };
+  }
+
+  private compactDocuments(documents: Array<typeof dataDocuments.$inferSelect>) {
+    return documents.map((document) => ({
+      id: document.id,
+      fileName: document.fileName,
+      documentType: document.documentType,
+      status: document.status,
+      confidence: document.confidence,
+      receivedAt: document.receivedAt,
+      processedAt: document.processedAt,
+      ocrText: this.truncateText(document.ocrText || "", 1200),
+      extractedJson: document.extractedJson,
+    }));
+  }
+
+  private async findLabValueMatches(tenant: TenantContext, patientId: string, testName: string, limit: number) {
+    const needle = this.normalizeName(testName);
+    const [events, documents] = await Promise.all([
+      db.select().from(dataPatientEvents).where(and(
+        eq(dataPatientEvents.organizationId, tenant.organizationId),
+        eq(dataPatientEvents.userId, tenant.userId),
+        eq(dataPatientEvents.patientId, patientId),
+      )).orderBy(desc(dataPatientEvents.createdAt)).limit(100),
+      db.select().from(dataDocuments).where(and(
+        eq(dataDocuments.organizationId, tenant.organizationId),
+        eq(dataDocuments.userId, tenant.userId),
+        eq(dataDocuments.patientId, patientId),
+      )).orderBy(desc(dataDocuments.createdAt)).limit(100),
+    ]);
+
+    const matches: Array<Record<string, unknown>> = [];
+
+    for (const event of events) {
+      const text = JSON.stringify(event.structuredData || {});
+      if (this.normalizeName(text).includes(needle)) {
+        matches.push({
+          source: "timeline_event",
+          id: event.id,
+          date: event.eventDate || event.createdAt,
+          summary: event.summary,
+          structuredData: event.structuredData,
+        });
+      }
+      if (matches.length >= limit) return matches;
+    }
+
+    for (const document of documents) {
+      const text = [document.ocrText || "", JSON.stringify(document.extractedJson || {})].join(" ");
+      if (this.normalizeName(text).includes(needle)) {
+        matches.push({
+          source: "document",
+          id: document.id,
+          fileName: document.fileName,
+          documentType: document.documentType,
+          date: document.processedAt || document.createdAt,
+          extractedJson: document.extractedJson,
+          ocrText: this.truncateText(document.ocrText || "", 1200),
+        });
+      }
+      if (matches.length >= limit) return matches;
+    }
+
+    return matches;
+  }
+
   private extractNameFromQuestion(question: string): string | null {
     const patterns = [
       /(?:for|of|patient)\s+([a-z][a-z\s.]{2,})$/i,
@@ -526,6 +965,28 @@ export class DataManagementAgentService {
 
 User-level clinic instructions:
 ${userPrompt}`;
+  }
+
+  private async getQuestionSystemPrompt(userId: string): Promise<string> {
+    const features = await this.getUserFeatures(userId);
+    const userPrompt = String(features.dataManagementPrompt || features.dataManagementSystemPrompt || "").trim();
+    if (!userPrompt) return DATA_QA_SYSTEM_PROMPT;
+
+    return `${DATA_QA_SYSTEM_PROMPT}
+
+User-level clinic instructions:
+${userPrompt}`;
+  }
+
+  private limitNumber(value: unknown, fallback: number, min: number, max: number): number {
+    const parsed = Number(value);
+    if (!Number.isFinite(parsed)) return fallback;
+    return Math.max(min, Math.min(max, Math.floor(parsed)));
+  }
+
+  private truncateText(text: string, maxLength: number): string {
+    if (text.length <= maxLength) return text;
+    return `${text.slice(0, maxLength)}...`;
   }
 
   private toFileSize(value: number | string | bigint | undefined): number | null {
