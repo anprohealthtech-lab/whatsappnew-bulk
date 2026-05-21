@@ -574,7 +574,8 @@ class ManagedBaileysSession extends EventEmitter implements WAServiceInstance {
     this.rememberRecentJid(phoneNumber, from, senderPn);
 
     const isFromMe = msg.key.fromMe === true;
-    const isSelfChat = this.isSelfChatJid(from);
+    const isLidJid = !!from && from.endsWith('@lid');
+    const isSelfChat = this.isSelfChatJid(from) || (isFromMe && isLidJid);
     const messageId = msg.key.id as string | undefined;
     const isSentEcho = !!messageId && this.backendSentMessageIds.has(messageId);
 

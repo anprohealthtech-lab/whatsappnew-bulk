@@ -411,7 +411,9 @@ export class DataManagementAgentService {
         const toolResults: Anthropic.ToolResultBlockParam[] = [];
 
         for (const toolUse of toolUses) {
+          console.log(`[DataManagementAgentService] Claude tool requested: ${toolUse.name} input=${JSON.stringify(toolUse.input || {})}`);
           const result = await this.executeDataTool(tenant, toolUse.name, (toolUse.input || {}) as Record<string, unknown>);
+          console.log(`[DataManagementAgentService] Claude tool result: ${toolUse.name} success=${result.success}${result.error ? ` error=${result.error}` : ""}`);
           toolResults.push({
             type: "tool_result",
             tool_use_id: toolUse.id,
