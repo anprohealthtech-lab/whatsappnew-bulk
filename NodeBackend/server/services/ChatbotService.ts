@@ -706,6 +706,7 @@ export class ChatbotService {
           content: m.content,
         })),
         system_prompt: systemPrompt,
+        channel: "whatsapp",
       }),
     });
 

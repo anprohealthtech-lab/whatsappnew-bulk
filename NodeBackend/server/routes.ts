@@ -229,6 +229,7 @@ const voiceAgentRequestSchema = z.object({
   callerId: z.string().optional(),
   organizationId: z.string().trim().min(1),
   userId: z.string().trim().min(1),
+  stream: z.boolean().optional().default(false),
 });
 
 function getVoiceAgentSecret(): string {
@@ -250,6 +251,8 @@ async function callVoiceRagAgent(params: {
   tenant: TenantContext;
   text: string;
   history: Array<{ role: string; content: string }>;
+  stream?: boolean;
+  onChunk?: (chunk: string) => void;
 }): Promise<string> {
   const [userRagConfig] = await db.select().from(userRagAgents)
     .where(and(
@@ -306,11 +309,48 @@ async function callVoiceRagAgent(params: {
       user_id: params.tenant.userId,
       message: params.text,
       conversation_history: params.history,
+      stream: params.stream || false,
+      channel: "voice",
     }),
   });
 
   if (!response.ok) {
     throw new Error(`Voice Supabase RAG returned ${response.status}: ${await response.text()}`);
+  }
+
+  if (params.stream && params.onChunk) {
+    const reader = response.body?.getReader();
+    if (!reader) throw new Error("No response body for streaming");
+
+    const decoder = new TextDecoder();
+    let fullText = "";
+    let buffer = "";
+
+    while (true) {
+      const { done, value } = await reader.read();
+      if (done) break;
+
+      buffer += decoder.decode(value, { stream: true });
+      const lines = buffer.split("\n");
+      buffer = lines.pop() || "";
+
+      for (const line of lines) {
+        if (!line.startsWith("data: ")) continue;
+        const data = line.slice(6);
+        try {
+          const event = JSON.parse(data);
+          if (event.type === "chunk" && event.text) {
+            fullText += event.text;
+            params.onChunk(event.text);
+          }
+        } catch {
+          // Skip invalid JSON
+        }
+      }
+    }
+
+    if (!fullText) throw new Error("Voice Supabase RAG returned an empty streaming response");
+    return fullText.trim();
   }
 
   const data = await response.json();
@@ -502,6 +542,7 @@ export async function registerRoutes(app: Express): Promise<Server> {
   });
 
   // Voice Agent service endpoint. Authenticated by shared service secret, then tenant-scoped by userId/orgId.
+  // Supports streaming mode for lower latency voice responses.
   app.post('/api/voice-agent/respond', async (req, res) => {
     try {
       const expectedSecret = getVoiceAgentSecret();
@@ -541,6 +582,63 @@ export async function registerRoutes(app: Express): Promise<Server> {
           session_id: input.sessionId,
         },
       } as any);
+
+      if (input.stream) {
+        res.setHeader('Content-Type', 'text/event-stream');
+        res.setHeader('Cache-Control', 'no-cache');
+        res.setHeader('Connection', 'keep-alive');
+        res.flushHeaders();
+
+        let sentenceBuffer = "";
+        let fullText = "";
+        const sentenceEnders = /[.!?।]+[\s]*/;
+
+        const flushSentence = (text: string, isFinal: boolean) => {
+          if (text.trim()) {
+            res.write(`data: ${JSON.stringify({ type: "sentence", text: text.trim(), isFinal })}\n\n`);
+          }
+        };
+
+        const replyText = await callVoiceRagAgent({
+          tenant,
+          text: input.text,
+          history,
+          stream: true,
+          onChunk: (chunk: string) => {
+            fullText += chunk;
+            sentenceBuffer += chunk;
+
+            const parts = sentenceBuffer.split(sentenceEnders);
+            while (parts.length > 1) {
+              const sentence = parts.shift()!;
+              flushSentence(sentence, false);
+            }
+            sentenceBuffer = parts[0] || "";
+          },
+        });
+
+        if (sentenceBuffer.trim()) {
+          flushSentence(sentenceBuffer, true);
+        }
+
+        res.write(`data: ${JSON.stringify({ type: "done", fullText: replyText })}\n\n`);
+        res.end();
+
+        storage.createMessageForTenant(tenant, {
+          phoneNumber: callerId,
+          content: replyText,
+          type: "outgoing",
+          status: "sent",
+          metadata: {
+            voice_agent: true,
+            channel: input.channel,
+            session_id: input.sessionId,
+            streamed: true,
+          },
+        } as any).catch(err => log(`Failed to save streamed voice message: ${err.message}`));
+
+        return;
+      }
 
       const replyText = await callVoiceRagAgent({
         tenant,
@@ -2768,6 +2866,7 @@ export async function registerRoutes(app: Express): Promise<Server> {
           message,
           conversation_history: conversation_history || [],
           system_prompt: system_prompt || undefined,
+          channel: "web",
         }),
       });
 

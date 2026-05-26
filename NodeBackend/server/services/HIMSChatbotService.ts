@@ -458,6 +458,7 @@ export class HIMSChatbotService {
           system_prompt:
             "You are a helpful hospital information assistant. Answer the question using only the provided context. Be concise.",
           match_count: 5,
+          channel: "whatsapp",
         }),
       });
 

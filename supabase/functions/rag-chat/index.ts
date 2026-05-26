@@ -8,7 +8,8 @@ const corsHeaders = {
 };
 
 const GEMINI_EMBED_URL = "https://generativelanguage.googleapis.com/v1beta/models/text-embedding-004:embedContent";
-const GEMINI_CHAT_URL = "https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash:generateContent";
+const ANTHROPIC_API_URL = "https://api.anthropic.com/v1/messages";
+const ANTHROPIC_MODEL = "claude-haiku-4-5-20251001";
 
 interface RagChatRequest {
   organization_id: string;
@@ -17,6 +18,10 @@ interface RagChatRequest {
   conversation_history?: { role: string; content: string }[];
   system_prompt?: string;
   match_count?: number;
+  stream?: boolean;
+  max_tokens?: number;
+  temperature?: number;
+  channel?: "whatsapp" | "voice" | "web";
 }
 
 async function embedQuery(text: string, geminiKey: string): Promise<number[]> {
@@ -38,61 +43,135 @@ async function embedQuery(text: string, geminiKey: string): Promise<number[]> {
   return data.embedding.values;
 }
 
-async function generateResponse(
+async function generateResponseStreaming(
   systemPrompt: string,
   context: string,
   conversationHistory: { role: string; content: string }[],
   userMessage: string,
-  geminiKey: string
+  anthropicKey: string,
+  maxTokens: number,
+  temperature: number,
+  onChunk: (text: string) => void
 ): Promise<string> {
-  // Build the full prompt with context
   const contextBlock = context
     ? `\n\n--- KNOWLEDGE BASE CONTEXT (use this to answer) ---\n${context}\n--- END CONTEXT ---\n`
     : "";
 
   const fullSystemPrompt = systemPrompt + contextBlock;
 
-  // Convert conversation history to Gemini format
-  const contents: any[] = [];
-
-  // Add system instruction as first user turn with model acknowledgment
-  contents.push({ role: "user", parts: [{ text: `System Instructions: ${fullSystemPrompt}\n\nPlease follow these instructions for all responses.` }] });
-  contents.push({ role: "model", parts: [{ text: "Understood. I will follow these instructions." }] });
-
-  // Add conversation history
+  const messages: Array<{ role: "user" | "assistant"; content: string }> = [];
   for (const msg of conversationHistory) {
-    const role = msg.role === "assistant" ? "model" : "user";
-    contents.push({ role, parts: [{ text: msg.content }] });
+    const role = msg.role === "assistant" ? "assistant" : "user";
+    messages.push({ role, content: msg.content });
   }
+  messages.push({ role: "user", content: userMessage });
 
-  // Add current user message
-  contents.push({ role: "user", parts: [{ text: userMessage }] });
-
-  const response = await fetch(`${GEMINI_CHAT_URL}?key=${geminiKey}`, {
+  const response = await fetch(ANTHROPIC_API_URL, {
     method: "POST",
-    headers: { "Content-Type": "application/json" },
+    headers: {
+      "Content-Type": "application/json",
+      "x-api-key": anthropicKey,
+      "anthropic-version": "2023-06-01",
+    },
     body: JSON.stringify({
-      contents,
-      generationConfig: {
-        temperature: 0.7,
-        maxOutputTokens: 1024,
-        topP: 0.9,
-      },
+      model: ANTHROPIC_MODEL,
+      max_tokens: maxTokens,
+      temperature,
+      system: fullSystemPrompt,
+      messages,
+      stream: true,
     }),
   });
 
   if (!response.ok) {
     const err = await response.text();
-    throw new Error(`Gemini chat failed (${response.status}): ${err}`);
+    throw new Error(`Anthropic API failed (${response.status}): ${err}`);
+  }
+
+  const reader = response.body?.getReader();
+  if (!reader) throw new Error("No response body");
+
+  const decoder = new TextDecoder();
+  let fullText = "";
+  let buffer = "";
+
+  while (true) {
+    const { done, value } = await reader.read();
+    if (done) break;
+
+    buffer += decoder.decode(value, { stream: true });
+    const lines = buffer.split("\n");
+    buffer = lines.pop() || "";
+
+    for (const line of lines) {
+      if (!line.startsWith("data: ")) continue;
+      const data = line.slice(6);
+      if (data === "[DONE]") continue;
+
+      try {
+        const event = JSON.parse(data);
+        if (event.type === "content_block_delta" && event.delta?.text) {
+          const chunk = event.delta.text;
+          fullText += chunk;
+          onChunk(chunk);
+        }
+      } catch {
+        // Skip invalid JSON
+      }
+    }
+  }
+
+  return fullText;
+}
+
+async function generateResponseNonStreaming(
+  systemPrompt: string,
+  context: string,
+  conversationHistory: { role: string; content: string }[],
+  userMessage: string,
+  anthropicKey: string,
+  maxTokens: number,
+  temperature: number
+): Promise<string> {
+  const contextBlock = context
+    ? `\n\n--- KNOWLEDGE BASE CONTEXT (use this to answer) ---\n${context}\n--- END CONTEXT ---\n`
+    : "";
+
+  const fullSystemPrompt = systemPrompt + contextBlock;
+
+  const messages: Array<{ role: "user" | "assistant"; content: string }> = [];
+  for (const msg of conversationHistory) {
+    const role = msg.role === "assistant" ? "assistant" : "user";
+    messages.push({ role, content: msg.content });
+  }
+  messages.push({ role: "user", content: userMessage });
+
+  const response = await fetch(ANTHROPIC_API_URL, {
+    method: "POST",
+    headers: {
+      "Content-Type": "application/json",
+      "x-api-key": anthropicKey,
+      "anthropic-version": "2023-06-01",
+    },
+    body: JSON.stringify({
+      model: ANTHROPIC_MODEL,
+      max_tokens: maxTokens,
+      temperature,
+      system: fullSystemPrompt,
+      messages,
+    }),
+  });
+
+  if (!response.ok) {
+    const err = await response.text();
+    throw new Error(`Anthropic API failed (${response.status}): ${err}`);
   }
 
   const data = await response.json();
-  const candidate = data.candidates?.[0];
-  if (!candidate?.content?.parts?.[0]?.text) {
-    throw new Error("Empty response from Gemini");
-  }
+  const content = data.content?.[0]?.text;
+  if (!content) throw new Error("Empty response from Anthropic");
 
-  return candidate.content.parts[0].text;
+  return content;
 }
 
 serve(async (req: Request) => {
@@ -104,8 +183,10 @@ serve(async (req: Request) => {
   const log = (msg: string) => console.log(`[rag-chat][${requestId}] ${msg}`);
 
   try {
+    const anthropicKey = Deno.env.get("ANTHROPIC_API_KEY");
     const geminiKey = Deno.env.get("GEMINI_API_KEY");
-    if (!geminiKey) throw new Error("GEMINI_API_KEY not configured");
+    if (!anthropicKey) throw new Error("ANTHROPIC_API_KEY not configured");
+    if (!geminiKey) throw new Error("GEMINI_API_KEY not configured (needed for embeddings)");
 
     const supabaseUrl = Deno.env.get("SUPABASE_URL")!;
     const supabaseKey = Deno.env.get("SUPABASE_SERVICE_ROLE_KEY")!;
@@ -117,24 +198,51 @@ serve(async (req: Request) => {
       user_id,
       message,
       conversation_history = [],
-      system_prompt = "You are a helpful assistant. Answer questions based on the provided knowledge base context. If the context doesn't contain relevant information, say so honestly.",
+      system_prompt,
       match_count = 5,
+      stream = false,
+      max_tokens,
+      temperature,
+      channel = "web",
     } = body;
 
-    if (!organization_id || !user_id || !message) {
+    const defaultSystemPrompts: Record<string, string> = {
+      voice: "You are a helpful voice assistant. Keep responses concise and conversational - under 2-3 sentences when possible. Answer based on the knowledge base context if provided.",
+      whatsapp: "You are a helpful assistant. Answer questions based on the provided knowledge base context. If the context doesn't contain relevant information, say so honestly.",
+      web: "You are a helpful assistant. Answer questions based on the provided knowledge base context. If the context doesn't contain relevant information, say so honestly.",
+    };
+
+    const defaultMaxTokens: Record<string, number> = {
+      voice: 512,
+      whatsapp: 1024,
+      web: 1024,
+    };
+
+    const defaultTemperatures: Record<string, number> = {
+      voice: 0.7,
+      whatsapp: 0.8,
+      web: 0.8,
+    };
+
+    const effectiveSystemPrompt = system_prompt || defaultSystemPrompts[channel] || defaultSystemPrompts.web;
+    const effectiveMaxTokens = max_tokens || defaultMaxTokens[channel] || 1024;
+    const effectiveTemperature = temperature ?? defaultTemperatures[channel] ?? 0.8;
+
+    if (!user_id || !message) {
       return new Response(
-        JSON.stringify({ error: "Missing required fields: organization_id, user_id, message" }),
+        JSON.stringify({ error: "Missing required fields: user_id, message" }),
         { status: 400, headers: { ...corsHeaders, "Content-Type": "application/json" } }
       );
     }
 
-    log(`RAG chat for user ${user_id}: "${message.substring(0, 100)}..."`);
+    const effectiveOrgId = organization_id || "default_org";
 
-    // Step 1: Check if user has any knowledge files
+    log(`RAG chat for user ${user_id}: "${message.substring(0, 100)}..." stream=${stream}`);
+
     const { data: files, error: filesError } = await supabase
       .from("knowledge_files")
       .select("id")
-      .eq("organization_id", organization_id)
+      .eq("organization_id", effectiveOrgId)
       .eq("user_id", user_id)
       .eq("status", "ready")
       .limit(1);
@@ -146,15 +254,13 @@ serve(async (req: Request) => {
     let context = "";
 
     if (files && files.length > 0) {
-      // Step 2: Embed the user's question
       log("Embedding query...");
       const queryEmbedding = await embedQuery(message, geminiKey);
 
-      // Step 3: Vector similarity search scoped to user
       log("Searching knowledge base...");
       const { data: matches, error: matchError } = await supabase.rpc("match_knowledge_chunks", {
         query_embedding: JSON.stringify(queryEmbedding),
-        match_org_id: organization_id,
+        match_org_id: effectiveOrgId,
         match_user_id: user_id,
         match_count: match_count,
         match_threshold: 0.3,
@@ -163,28 +269,67 @@ serve(async (req: Request) => {
       if (matchError) {
         log(`Vector search error: ${matchError.message}`);
       } else if (matches && matches.length > 0) {
-        log(`Found ${matches.length} relevant chunks (similarity: ${matches.map((m: any) => m.similarity.toFixed(3)).join(", ")})`);
+        log(`Found ${matches.length} relevant chunks`);
         context = matches.map((m: any, i: number) => `[${i + 1}] ${m.content}`).join("\n\n");
       } else {
         log("No relevant chunks found above threshold");
       }
     } else {
-      log("No knowledge files found for user — responding without context");
+      log("No knowledge files found for user");
     }
 
-    // Step 4: Generate response with context
-    log("Generating response...");
-    const response = await generateResponse(
-      system_prompt,
+    if (stream) {
+      log("Starting streaming response...");
+      const encoder = new TextEncoder();
+      const readable = new ReadableStream({
+        async start(controller) {
+          try {
+            await generateResponseStreaming(
+              effectiveSystemPrompt,
+              context,
+              conversation_history,
+              message,
+              anthropicKey,
+              effectiveMaxTokens,
+              effectiveTemperature,
+              (chunk: string) => {
+                const sseData = `data: ${JSON.stringify({ type: "chunk", text: chunk })}\n\n`;
+                controller.enqueue(encoder.encode(sseData));
+              }
+            );
+            controller.enqueue(encoder.encode(`data: ${JSON.stringify({ type: "done" })}\n\n`));
+            controller.close();
+          } catch (err: any) {
+            controller.enqueue(encoder.encode(`data: ${JSON.stringify({ type: "error", message: err.message })}\n\n`));
+            controller.close();
+          }
+        },
+      });
+
+      return new Response(readable, {
+        status: 200,
+        headers: {
+          ...corsHeaders,
+          "Content-Type": "text/event-stream",
+          "Cache-Control": "no-cache",
+          "Connection": "keep-alive",
+        },
+      });
+    }
+
+    log("Generating non-streaming response...");
+    const response = await generateResponseNonStreaming(
+      effectiveSystemPrompt,
       context,
       conversation_history,
       message,
-      geminiKey
+      anthropicKey,
+      effectiveMaxTokens,
+      effectiveTemperature
     );
 
     log(`Response generated (${response.length} chars)`);
 
-    // Return OpenAI-compatible format for easy integration
     const result = {
       choices: [{
         message: {
