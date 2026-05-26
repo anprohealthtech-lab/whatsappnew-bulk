@@ -24,6 +24,7 @@ import { Skeleton } from "@/components/ui/skeleton";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { UserPlus, Settings, Building2, User, Pause, Play, Trash2 } from "lucide-react";
 import { useToast } from "@/hooks/use-toast";
+import { apiRequest } from "@/lib/queryClient";
 
 // Schema for registering HR Admin
 const registerHRAdminSchema = z.object({
@@ -112,17 +113,7 @@ export function HRAdminsPanel() {
   // Mutation to register HR admin
   const registerAdminMutation = useMutation({
     mutationFn: async (data: RegisterHRAdminFormData) => {
-      const response = await fetch("/api/hr-admins", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify(data),
-      });
-
-      if (!response.ok) {
-        const error = await response.json();
-        throw new Error(error.error || "Failed to register HR admin");
-      }
-
+      const response = await apiRequest("POST", "/api/hr-admins", data);
       return response.json();
     },
     onSuccess: () => {
@@ -146,15 +137,7 @@ export function HRAdminsPanel() {
   // Mutation to delete HR admin
   const deleteAdminMutation = useMutation({
     mutationFn: async (phoneNumber: string) => {
-      const response = await fetch(`/api/hr-admins/${encodeURIComponent(phoneNumber)}`, {
-        method: "DELETE",
-      });
-
-      if (!response.ok) {
-        const error = await response.json();
-        throw new Error(error.error || "Failed to delete HR admin");
-      }
-
+      const response = await apiRequest("DELETE", `/api/hr-admins/${encodeURIComponent(phoneNumber)}`);
       return response.json();
     },
     onSuccess: () => {
@@ -176,17 +159,7 @@ export function HRAdminsPanel() {
   // Mutation to toggle chatbot status
   const toggleChatbotMutation = useMutation({
     mutationFn: async ({ phoneNumber, active }: { phoneNumber: string; active: boolean }) => {
-      const response = await fetch(`/api/hr-admins/${encodeURIComponent(phoneNumber)}/chatbot-status`, {
-        method: "PATCH",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ active }),
-      });
-
-      if (!response.ok) {
-        const error = await response.json();
-        throw new Error(error.error || "Failed to toggle chatbot status");
-      }
-
+      const response = await apiRequest("PATCH", `/api/hr-admins/${encodeURIComponent(phoneNumber)}/chatbot-status`, { active });
       return response.json();
     },
     onSuccess: (_, variables) => {
@@ -208,17 +181,7 @@ export function HRAdminsPanel() {
   // Mutation to update config
   const updateConfigMutation = useMutation({
     mutationFn: async (data: HRChatbotConfigFormData) => {
-      const response = await fetch("/api/hr-chatbot/config", {
-        method: "PUT",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify(data),
-      });
-
-      if (!response.ok) {
-        const error = await response.json();
-        throw new Error(error.error || "Failed to update config");
-      }
-
+      const response = await apiRequest("PUT", "/api/hr-chatbot/config", data);
       return response.json();
     },
     onSuccess: () => {
@@ -240,15 +203,7 @@ export function HRAdminsPanel() {
   // Mutation to test connection
   const testConnectionMutation = useMutation({
     mutationFn: async () => {
-      const response = await fetch("/api/hr-chatbot/test", {
-        method: "POST",
-      });
-
-      if (!response.ok) {
-        const error = await response.json();
-        throw new Error(error.error || error.message || "Test failed");
-      }
-
+      const response = await apiRequest("POST", "/api/hr-chatbot/test");
       return response.json();
     },
     onSuccess: (data) => {
