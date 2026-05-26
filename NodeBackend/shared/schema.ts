@@ -10,7 +10,7 @@ export const users = pgTable("users", {
   email: text("email").unique(),
   organizationId: text("organization_id").default("default_org").notNull(),
   role: text("role").default("user").notNull(), // 'super_admin' | 'admin' | 'user'
-  enabledFeatures: jsonb("enabled_features").default({ taskManagement: false, himsChatbot: false }),
+  enabledFeatures: jsonb("enabled_features").default({ taskManagement: false, himsChatbot: false, voiceAgent: false }),
   lastLoginAt: timestamp("last_login_at"),
   createdAt: timestamp("created_at").defaultNow(),
   updatedAt: timestamp("updated_at").defaultNow(),

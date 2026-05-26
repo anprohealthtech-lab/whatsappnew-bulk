@@ -18,12 +18,14 @@ import {
   Settings2,
   FolderKanban,
   Eye,
+  Mic,
 } from "lucide-react";
 
 interface EnabledFeatures {
   taskManagement?: boolean;
   himsChatbot?: boolean;
   dataManagement?: boolean;
+  voiceAgent?: boolean;
   visibleTabs?: string[];
   himsClinicId?: string;
   himsTriggerKeywords?: string[];
@@ -100,6 +102,7 @@ export function SuperAdminPanel() {
       taskManagement: false,
       himsChatbot: false,
       dataManagement: true,
+      voiceAgent: false,
       visibleTabs: DEFAULT_VISIBLE_TABS,
     } as EnabledFeatures,
   });
@@ -133,6 +136,7 @@ export function SuperAdminPanel() {
           taskManagement: false,
           himsChatbot: false,
           dataManagement: true,
+          voiceAgent: false,
           visibleTabs: DEFAULT_VISIBLE_TABS,
         },
       });
@@ -371,6 +375,17 @@ export function SuperAdminPanel() {
                   />
                   <Stethoscope className="w-4 h-4" /> OPD Bot
                 </label>
+                <label className="flex items-center gap-2 px-3 py-2 border rounded-lg text-sm">
+                  <input
+                    type="checkbox"
+                    checked={!!createForm.enabledFeatures.voiceAgent}
+                    onChange={(e) => setCreateForm({
+                      ...createForm,
+                      enabledFeatures: { ...createForm.enabledFeatures, voiceAgent: e.target.checked },
+                    })}
+                  />
+                  <Mic className="w-4 h-4" /> Voice Agent
+                </label>
               </div>
             </div>
             <div>
@@ -490,6 +505,24 @@ export function SuperAdminPanel() {
                           <Stethoscope className="w-3 h-3" />
                           OPD
                           {u.enabledFeatures?.himsChatbot && <Settings2 className="w-3 h-3 ml-0.5" />}
+                        </button>
+                        <button
+                          onClick={() => {
+                            const current = u.enabledFeatures || {};
+                            toggleFeatureMutation.mutate({
+                              userId: u.id,
+                              features: { ...current, voiceAgent: !current.voiceAgent },
+                            });
+                          }}
+                          className={`flex items-center gap-1 px-2 py-1 rounded text-xs font-medium transition-colors ${
+                            u.enabledFeatures?.voiceAgent
+                              ? "bg-teal-100 text-teal-700 dark:bg-teal-900/30 dark:text-teal-400"
+                              : "bg-gray-100 text-gray-400 dark:bg-gray-800 dark:text-gray-500"
+                          }`}
+                          title={u.enabledFeatures?.voiceAgent ? "Disable Voice Agent" : "Enable Voice Agent"}
+                        >
+                          <Mic className="w-3 h-3" />
+                          Voice
                         </button>
                         <button
                           type="button"

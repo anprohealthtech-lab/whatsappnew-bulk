@@ -222,6 +222,103 @@ function parseWebhookLeadBody(body: any): ParsedWebhookLead {
   };
 }
 
+const voiceAgentRequestSchema = z.object({
+  text: z.string().trim().min(1),
+  channel: z.enum(["browser", "twilio"]).default("browser"),
+  sessionId: z.string().trim().min(1),
+  callerId: z.string().optional(),
+  organizationId: z.string().trim().min(1),
+  userId: z.string().trim().min(1),
+});
+
+function getVoiceAgentSecret(): string {
+  return process.env.VOICE_AGENT_SHARED_SECRET || process.env.PLATFORM_AGENT_SECRET || "";
+}
+
+function isVoiceAgentEnabled(features: unknown): boolean {
+  return Boolean(features && typeof features === "object" && (features as any).voiceAgent === true);
+}
+
+function toRagHistory(messages: Array<{ content: string; type: string }>) {
+  return messages.map((message) => ({
+    role: message.type === "incoming" ? "user" : "assistant",
+    content: message.content,
+  }));
+}
+
+async function callVoiceRagAgent(params: {
+  tenant: TenantContext;
+  text: string;
+  history: Array<{ role: string; content: string }>;
+}): Promise<string> {
+  const [userRagConfig] = await db.select().from(userRagAgents)
+    .where(and(
+      eq(userRagAgents.organizationId, params.tenant.organizationId),
+      eq(userRagAgents.userId, params.tenant.userId)
+    ))
+    .limit(1);
+
+  if (userRagConfig?.ragBaseUrl && userRagConfig.ragBaseUrl !== "supabase-knowledge-base") {
+    const endpoint = `${userRagConfig.ragBaseUrl}/api/v1/chat/completions`;
+    const response = await fetch(endpoint, {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+        "Authorization": `Bearer ${userRagConfig.ragAccessKey}`,
+      },
+      body: JSON.stringify({
+        messages: [
+          ...(userRagConfig.systemPrompt ? [{ role: "system", content: userRagConfig.systemPrompt }] : []),
+          ...params.history,
+          { role: "user", content: params.text },
+        ],
+        stream: false,
+        include_functions_info: true,
+        include_retrieval_info: false,
+        include_guardrails_info: false,
+      }),
+    });
+
+    if (!response.ok) {
+      throw new Error(`Voice RAG agent returned ${response.status}: ${await response.text()}`);
+    }
+
+    const data = await response.json();
+    const content = data.choices?.[0]?.message?.content;
+    if (!content || typeof content !== "string") throw new Error("Voice RAG agent returned an empty response");
+    return content.trim();
+  }
+
+  const supabaseUrl = process.env.VITE_SUPABASE_URL;
+  const supabaseKey = process.env.SUPABASE_SERVICE_ROLE_KEY;
+  if (!supabaseUrl || !supabaseKey) {
+    throw new Error("No voice agent RAG provider configured. Set user RAG agent or Supabase env vars.");
+  }
+
+  const response = await fetch(`${supabaseUrl}/functions/v1/rag-chat`, {
+    method: "POST",
+    headers: {
+      "Content-Type": "application/json",
+      "Authorization": `Bearer ${supabaseKey}`,
+    },
+    body: JSON.stringify({
+      organization_id: params.tenant.organizationId,
+      user_id: params.tenant.userId,
+      message: params.text,
+      conversation_history: params.history,
+    }),
+  });
+
+  if (!response.ok) {
+    throw new Error(`Voice Supabase RAG returned ${response.status}: ${await response.text()}`);
+  }
+
+  const data = await response.json();
+  const content = data.choices?.[0]?.message?.content;
+  if (!content || typeof content !== "string") throw new Error("Voice Supabase RAG returned an empty response");
+  return content.trim();
+}
+
 export async function registerRoutes(app: Express): Promise<Server> {
   // Apply CORS middleware
   app.use(cors(corsOptions));
@@ -334,7 +431,7 @@ export async function registerRoutes(app: Express): Promise<Server> {
         email: email || null,
         organizationId: organizationId || 'org_' + Date.now(),
         role: role || 'user',
-        enabledFeatures: enabledFeatures || { taskManagement: false, himsChatbot: false, dataManagement: false },
+        enabledFeatures: enabledFeatures || { taskManagement: false, himsChatbot: false, dataManagement: false, voiceAgent: false },
       }).returning();
 
       const { password: _, ...safe } = result[0];
@@ -401,6 +498,80 @@ export async function registerRoutes(app: Express): Promise<Server> {
       res.json({ message: 'Password reset successfully' });
     } catch (error: any) {
       res.status(500).json({ message: error.message });
+    }
+  });
+
+  // Voice Agent service endpoint. Authenticated by shared service secret, then tenant-scoped by userId/orgId.
+  app.post('/api/voice-agent/respond', async (req, res) => {
+    try {
+      const expectedSecret = getVoiceAgentSecret();
+      const providedSecret = String(req.headers['x-voice-agent-secret'] || "");
+      if (!expectedSecret || providedSecret !== expectedSecret) {
+        return res.status(401).json({ message: 'Invalid voice agent secret' });
+      }
+
+      const input = voiceAgentRequestSchema.parse(req.body);
+      const tenant = { organizationId: input.organizationId, userId: input.userId };
+
+      const [owner] = await db.select().from(users).where(and(
+        eq(users.id, tenant.userId),
+        eq(users.organizationId, tenant.organizationId)
+      )).limit(1);
+
+      if (!owner) {
+        return res.status(404).json({ message: 'Voice tenant user not found' });
+      }
+
+      if (owner.role !== 'super_admin' && !isVoiceAgentEnabled(owner.enabledFeatures)) {
+        return res.status(403).json({ message: 'Voice Agent is not enabled for this user' });
+      }
+
+      const callerId = input.callerId || `voice:${input.sessionId}`;
+      const historyRows = await storage.getConversationHistoryByTenant(tenant, callerId, 12);
+      const history = toRagHistory(historyRows.reverse());
+
+      await storage.createMessageForTenant(tenant, {
+        phoneNumber: callerId,
+        content: input.text,
+        type: "incoming",
+        status: "received",
+        metadata: {
+          voice_agent: true,
+          channel: input.channel,
+          session_id: input.sessionId,
+        },
+      } as any);
+
+      const replyText = await callVoiceRagAgent({
+        tenant,
+        text: input.text,
+        history,
+      });
+
+      await storage.createMessageForTenant(tenant, {
+        phoneNumber: callerId,
+        content: replyText,
+        type: "outgoing",
+        status: "sent",
+        metadata: {
+          voice_agent: true,
+          channel: input.channel,
+          session_id: input.sessionId,
+        },
+      } as any);
+
+      res.json({
+        text: replyText,
+        metadata: {
+          organizationId: tenant.organizationId,
+          userId: tenant.userId,
+          voiceAgentEnabled: true,
+        },
+      });
+    } catch (error: any) {
+      const status = error instanceof z.ZodError ? 400 : 500;
+      log(`Voice agent respond error: ${error.message}`);
+      res.status(status).json({ message: error.message || 'Voice agent failed' });
     }
   });
 
