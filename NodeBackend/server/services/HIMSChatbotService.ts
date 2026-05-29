@@ -55,12 +55,15 @@ You help patients book, check, and manage their appointments with doctors.
 
 ## DATE HANDLING
 Convert natural language dates to YYYY-MM-DD:
+- Use the CURRENT CONTEXT date/time, which is already in IST (Asia/Kolkata)
+- When mentioning dates to patients, use the dateDisplay returned by tools when available
 - "tomorrow" → next day
 - "next Monday" → calculate it
 - "today" → current date
 
 ## HIMS API RULES (STRICT — follow exactly)
 - All dates MUST be in "YYYY-MM-DD" format (e.g. "2026-04-20")
+- Patients may write natural times like "2 pm", "2pm", or "2:00 PM"; interpret these as the matching available slot and call tools with 24-hour HH:MM
 - All timeSlots MUST be in 24-hour "HH:MM" format (e.g. "14:00", "09:30", "17:00") — NEVER use AM/PM like "2:00 PM" or "02:00 PM"
 - ALWAYS call get_doctors FIRST to get the real doctorId UUID before calling get_available_slots or book_appointment
 - NEVER guess or fabricate a doctorId — it must be the exact UUID returned by get_doctors
@@ -77,6 +80,156 @@ Convert natural language dates to YYYY-MM-DD:
 
 const MAX_TOOL_ROUNDS = 8;
 const MAX_REPEAT_PER_SIGNATURE = 2;
+const IST_TIME_ZONE = "Asia/Kolkata";
+const WEEKDAY_NAMES = [
+  "Sunday",
+  "Monday",
+  "Tuesday",
+  "Wednesday",
+  "Thursday",
+  "Friday",
+  "Saturday",
+];
+const MONTH_NAMES = [
+  "January",
+  "February",
+  "March",
+  "April",
+  "May",
+  "June",
+  "July",
+  "August",
+  "September",
+  "October",
+  "November",
+  "December",
+];
+const MONTH_LOOKUP: Record<string, number> = {
+  jan: 0,
+  january: 0,
+  feb: 1,
+  february: 1,
+  mar: 2,
+  march: 2,
+  apr: 3,
+  april: 3,
+  may: 4,
+  jun: 5,
+  june: 5,
+  jul: 6,
+  july: 6,
+  aug: 7,
+  august: 7,
+  sep: 8,
+  sept: 8,
+  september: 8,
+  oct: 9,
+  october: 9,
+  nov: 10,
+  november: 10,
+  dec: 11,
+  december: 11,
+};
+
+function getOrdinalSuffix(day: number): string {
+  if (day >= 11 && day <= 13) return "th";
+  switch (day % 10) {
+    case 1:
+      return "st";
+    case 2:
+      return "nd";
+    case 3:
+      return "rd";
+    default:
+      return "th";
+  }
+}
+
+function parseIsoDate(date: unknown): { year: number; month: number; day: number } | null {
+  const match = String(date || "").match(/^(\d{4})-(\d{2})-(\d{2})$/);
+  if (!match) return null;
+  const year = Number(match[1]);
+  const month = Number(match[2]);
+  const day = Number(match[3]);
+  if (!year || month < 1 || month > 12 || day < 1 || day > 31) return null;
+  return { year, month, day };
+}
+
+function getDateDisplay(date: unknown): string | null {
+  const parsed = parseIsoDate(date);
+  if (!parsed) return null;
+  const utcDate = new Date(Date.UTC(parsed.year, parsed.month - 1, parsed.day));
+  const weekday = WEEKDAY_NAMES[utcDate.getUTCDay()];
+  const suffix = getOrdinalSuffix(parsed.day);
+  return `${weekday}, ${parsed.day}${suffix} ${MONTH_NAMES[parsed.month - 1]} ${parsed.year}`;
+}
+
+function getCurrentIstContext(): { date: string; time: string } {
+  const parts = new Intl.DateTimeFormat("en-CA", {
+    timeZone: IST_TIME_ZONE,
+    year: "numeric",
+    month: "2-digit",
+    day: "2-digit",
+    hour: "2-digit",
+    minute: "2-digit",
+    second: "2-digit",
+    hour12: false,
+  }).formatToParts(new Date());
+
+  const getPart = (type: string) => parts.find((part) => part.type === type)?.value || "";
+  return {
+    date: `${getPart("year")}-${getPart("month")}-${getPart("day")}`,
+    time: `${getPart("hour")}:${getPart("minute")}:${getPart("second")} IST`,
+  };
+}
+
+function normalizeTimeSlot(value: unknown): string | null {
+  const raw = String(value || "")
+    .trim()
+    .toLowerCase()
+    .replace(/(\d)\.(\d)/g, "$1:$2")
+    .replace(/\b([ap])\.?m\.?\b/g, "$1m")
+    .replace(/\./g, "")
+    .replace(/\s+/g, " ");
+  if (!raw) return null;
+
+  const match = raw.match(/^(\d{1,2})(?::(\d{1,2}))?\s*(am|pm)?$/);
+  if (!match) return null;
+
+  let hour = Number(match[1]);
+  const minute = match[2] === undefined ? 0 : Number(match[2]);
+  const meridiem = match[3];
+
+  if (!Number.isInteger(hour) || !Number.isInteger(minute) || minute < 0 || minute > 59) {
+    return null;
+  }
+
+  if (meridiem) {
+    if (hour < 1 || hour > 12) return null;
+    if (meridiem === "pm" && hour !== 12) hour += 12;
+    if (meridiem === "am" && hour === 12) hour = 0;
+  } else if (hour < 0 || hour > 23) {
+    return null;
+  }
+
+  return `${String(hour).padStart(2, "0")}:${String(minute).padStart(2, "0")}`;
+}
+
+function correctWeekdayLabels(text: string): string {
+  return text.replace(
+    /\b(Sunday|Monday|Tuesday|Wednesday|Thursday|Friday|Saturday),?\s+(\d{1,2})(?:st|nd|rd|th)?\s+(January|February|March|April|May|June|July|August|September|October|November|December|Jan|Feb|Mar|Apr|Jun|Jul|Aug|Sep|Sept|Oct|Nov|Dec)\s+(\d{4})\b/gi,
+    (full, _weekday, dayText, monthText, yearText) => {
+      const monthIndex = MONTH_LOOKUP[String(monthText).toLowerCase()];
+      const day = Number(dayText);
+      const year = Number(yearText);
+      if (monthIndex === undefined || !day || !year) return full;
+      const display = getDateDisplay(
+        `${year}-${String(monthIndex + 1).padStart(2, "0")}-${String(day).padStart(2, "0")}`,
+      );
+      return display || full;
+    },
+  );
+}
 
 // ───────────────────── Anthropic tool definitions ─────────────────────
 const TOOLS: Anthropic.Tool[] = [
@@ -522,6 +675,7 @@ export class HIMSChatbotService {
         }
 
         case "get_available_slots": {
+          const dateDisplay = getDateDisplay(toolInput.date);
           const result = await this.callHIMSEdgeFunction("hims-get-slots", {
             organizationId,
             doctorId: toolInput.doctorId,
@@ -531,6 +685,7 @@ export class HIMSChatbotService {
             return JSON.stringify({
               success: true,
               date: result.date || toolInput.date,
+              dateDisplay: getDateDisplay(result.date || toolInput.date) || dateDisplay,
               doctorName: result.doctorName || result.doctor,
               slots: result.slots || [],
             });
@@ -542,11 +697,19 @@ export class HIMSChatbotService {
         }
 
         case "book_appointment": {
+          const normalizedTimeSlot = normalizeTimeSlot(toolInput.timeSlot);
+          if (!normalizedTimeSlot) {
+            return JSON.stringify({
+              success: false,
+              error:
+                "Invalid time slot. Use an available slot time such as 14:00 or 2 pm.",
+            });
+          }
           const result = await this.callHIMSEdgeFunction("hims-book-appointment", {
             organizationId,
             doctorId: toolInput.doctorId,
             date: toolInput.date,
-            timeSlot: toolInput.timeSlot,
+            timeSlot: normalizedTimeSlot,
             patientName: toolInput.patientName,
             patientPhone: toolInput.patientPhone,
             reason: toolInput.reason,
@@ -558,6 +721,7 @@ export class HIMSChatbotService {
               doctorName: result.doctorName,
               patientName: result.patientName,
               date: result.date,
+              dateDisplay: getDateDisplay(result.date || toolInput.date),
               timeSlot: result.timeSlot,
               status: result.status,
             });
@@ -650,13 +814,15 @@ export class HIMSChatbotService {
 
     const basePrompt = patient.systemPrompt || ownerSystemPrompt || DEFAULT_SYSTEM_PROMPT;
 
+    const currentIst = getCurrentIstContext();
     const contextInfo = `
 ## CURRENT CONTEXT
 - Patient Name: ${patient.name || "Patient"}
 - Patient Phone: ${patient.phoneNumber}
 - Organization ID: ${patient.organizationId}
-- Current Date: ${new Date().toISOString().split("T")[0]}
-- Current Time: ${new Date().toLocaleTimeString()}
+- Current Date: ${currentIst.date}
+- Current Time: ${currentIst.time}
+- Timezone: IST (${IST_TIME_ZONE})
 
 IMPORTANT: Always use organizationId="${patient.organizationId}" and patientPhone="${patient.phoneNumber}" in ALL function calls.`;
 
@@ -824,6 +990,8 @@ IMPORTANT: Always use organizationId="${patient.organizationId}" and patientPhon
         .map((b) => b.text)
         .join("\n")
         .trim();
+      const correctedResponse = correctWeekdayLabels(finalResponse);
+      if (correctedResponse) return correctedResponse;
 
       console.log(
         `${tag} 📤 Response: ${finalResponse.substring(0, 100)}...`,
