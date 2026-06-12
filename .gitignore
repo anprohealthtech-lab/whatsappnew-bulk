@@ -48,6 +48,9 @@ Thumbs.db
 AndroidVoiceCompanion/.gradle/
 AndroidVoiceCompanion/local.properties
 AndroidVoiceCompanion/app/build/
+WindowsVoiceGateway/bin/
+WindowsVoiceGateway/obj/
+WindowsVoiceGateway/run-gateway.ps1
 
 # Docker
 .docker/

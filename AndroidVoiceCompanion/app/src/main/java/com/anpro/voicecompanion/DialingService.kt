@@ -9,6 +9,8 @@ import android.os.IBinder
 import androidx.core.app.ActivityCompat
 import androidx.core.app.NotificationCompat
 import okhttp3.*
+import okhttp3.MediaType.Companion.toMediaType
+import okhttp3.RequestBody.Companion.toRequestBody
 import org.json.JSONObject
 import java.util.concurrent.TimeUnit
 
@@ -35,21 +37,31 @@ class DialingService : Service() {
                     val sessionId = job.getJSONObject("session").getString("id")
                     val phone = job.getJSONObject("contact").getString("phoneNumber")
                     if (sessionId != lastDialedSessionId) {
-                        lastDialedSessionId = sessionId
+                        updateNotification("Dialing $phone")
                         report(baseUrl, deviceId, token, sessionId, "dialing")
                         dial(phone)
+                        lastDialedSessionId = sessionId
                     }
                     TimeUnit.SECONDS.sleep(3)
-                } else TimeUnit.SECONDS.sleep(3)
-            } catch (_: Exception) {
+                } else {
+                    updateNotification("Connected - waiting for campaign jobs")
+                    TimeUnit.SECONDS.sleep(3)
+                }
+            } catch (error: Exception) {
+                updateNotification("Connection error: ${error.message ?: error.javaClass.simpleName}")
                 TimeUnit.SECONDS.sleep(5)
             }
         }
     }
 
     private fun dial(phone: String) {
-        if (ActivityCompat.checkSelfPermission(this, Manifest.permission.CALL_PHONE) != PackageManager.PERMISSION_GRANTED) return
+        if (ActivityCompat.checkSelfPermission(this, Manifest.permission.CALL_PHONE) != PackageManager.PERMISSION_GRANTED)
+            error("Phone permission is not allowed")
         startActivity(Intent(Intent.ACTION_CALL, Uri.parse("tel:${Uri.encode(phone)}")).addFlags(Intent.FLAG_ACTIVITY_NEW_TASK))
+    }
+
+    private fun updateNotification(text: String) {
+        getSystemService(NotificationManager::class.java).notify(1, notification(text))
     }
 
     private fun report(baseUrl: String, deviceId: String, token: String, sessionId: String, type: String) {

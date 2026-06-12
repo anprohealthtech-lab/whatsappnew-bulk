@@ -348,7 +348,7 @@ export class VoiceTenantService {
     const device = await this.authenticateGateway(deviceId, token);
     const [session] = await db.select().from(voiceCallSessions).where(and(
       eq(voiceCallSessions.gatewayDeviceId, device.id),
-      inArray(voiceCallSessions.status, ["leased", "dialing", "ringing"]),
+      inArray(voiceCallSessions.status, ["leased", "dialing", "ringing", "connected"]),
     )).orderBy(desc(voiceCallSessions.createdAt)).limit(1);
     if (!session?.contactId) return null;
     const [contact] = await db.select().from(voiceCampaignContacts)

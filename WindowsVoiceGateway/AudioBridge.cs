@@ -41,7 +41,7 @@ public sealed class AudioBridge(GatewayOptions options)
 
         capture.StartRecording();
         output.Play();
-        await report("connected", new { type = "connected" });
+        await report("media_ready", new { type = "media_ready" });
 
         var utterancePump = Task.Run(async () =>
         {

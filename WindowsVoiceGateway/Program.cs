@@ -1,9 +1,6 @@
 using NAudio.CoreAudioApi;
 using WindowsVoiceGateway;
 
-var options = GatewayOptions.FromEnvironment();
-var api = new GatewayApi(options);
-
 if (args.Contains("--list-devices"))
 {
     Console.WriteLine("Capture endpoints:");
@@ -12,6 +9,9 @@ if (args.Contains("--list-devices"))
     foreach (var endpoint in AudioBridge.ListEndpoints(DataFlow.Render)) Console.WriteLine(System.Text.Json.JsonSerializer.Serialize(endpoint));
     return;
 }
+
+var options = GatewayOptions.FromEnvironment();
+var api = new GatewayApi(options);
 
 using var shutdown = new CancellationTokenSource();
 Console.CancelKeyPress += (_, eventArgs) => { eventArgs.Cancel = true; shutdown.Cancel(); };
