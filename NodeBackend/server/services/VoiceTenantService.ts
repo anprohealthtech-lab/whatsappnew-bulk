@@ -356,6 +356,18 @@ export class VoiceTenantService {
     return contact ? { session, contact } : null;
   }
 
+  async getGatewaySession(deviceId: string, token: string, sessionId: string) {
+    const device = await this.authenticateGateway(deviceId, token);
+    const [session] = await db.select().from(voiceCallSessions).where(and(
+      eq(voiceCallSessions.id, sessionId),
+      eq(voiceCallSessions.gatewayDeviceId, device.id),
+      eq(voiceCallSessions.organizationId, device.organizationId),
+      eq(voiceCallSessions.userId, device.userId),
+    )).limit(1);
+    if (!session) throw new Error("Gateway call session not found");
+    return session;
+  }
+
   async recordGatewayEvent(deviceId: string, token: string, sessionId: string, input: {
     type: string; text?: string; speaker?: string; outcome?: string; errorMessage?: string;
     durationSeconds?: number; usage?: Array<{ metric: string; quantity: number; unit: string; provider?: string }>;

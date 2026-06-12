@@ -2,10 +2,15 @@ package com.anpro.voicecompanion
 
 import android.Manifest
 import android.app.*
+import android.content.BroadcastReceiver
+import android.content.Context
 import android.content.Intent
+import android.content.IntentFilter
 import android.content.pm.PackageManager
 import android.net.Uri
 import android.os.IBinder
+import android.os.SystemClock
+import android.telephony.TelephonyManager
 import androidx.core.app.ActivityCompat
 import androidx.core.app.NotificationCompat
 import okhttp3.*
@@ -18,11 +23,49 @@ class DialingService : Service() {
     private val client = OkHttpClient.Builder().readTimeout(30, TimeUnit.SECONDS).build()
     @Volatile private var running = true
     private var lastDialedSessionId: String? = null
+    @Volatile private var activeSessionId: String? = null
+    @Volatile private var callWasOffHook = false
+    @Volatile private var connectedAtElapsedMs: Long? = null
+    private var baseUrl = ""
+    private var deviceId = ""
+    private var token = ""
+
+    private val phoneStateReceiver = object : BroadcastReceiver() {
+        override fun onReceive(context: Context?, intent: Intent?) {
+            val state = intent?.getStringExtra(TelephonyManager.EXTRA_STATE) ?: return
+            val sessionId = activeSessionId ?: return
+            when (state) {
+                TelephonyManager.EXTRA_STATE_OFFHOOK -> {
+                    if (callWasOffHook) return
+                    callWasOffHook = true
+                    connectedAtElapsedMs = SystemClock.elapsedRealtime()
+                    updateNotification("Call connected")
+                    reportInBackground(sessionId, "connected")
+                }
+                TelephonyManager.EXTRA_STATE_IDLE -> {
+                    if (!callWasOffHook) return
+                    val duration = connectedAtElapsedMs?.let {
+                        ((SystemClock.elapsedRealtime() - it) / 1000).coerceAtLeast(0)
+                    } ?: 0
+                    updateNotification("Call ended - waiting for next job")
+                    reportInBackground(sessionId, "ended", duration)
+                    activeSessionId = null
+                    callWasOffHook = false
+                    connectedAtElapsedMs = null
+                }
+            }
+        }
+    }
+
+    override fun onCreate() {
+        super.onCreate()
+        registerReceiver(phoneStateReceiver, IntentFilter(TelephonyManager.ACTION_PHONE_STATE_CHANGED))
+    }
 
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
-        val baseUrl = intent?.getStringExtra("baseUrl")?.trimEnd('/') ?: return START_NOT_STICKY
-        val deviceId = intent.getStringExtra("deviceId") ?: return START_NOT_STICKY
-        val token = intent.getStringExtra("token") ?: return START_NOT_STICKY
+        baseUrl = intent?.getStringExtra("baseUrl")?.trimEnd('/') ?: return START_NOT_STICKY
+        deviceId = intent.getStringExtra("deviceId") ?: return START_NOT_STICKY
+        token = intent.getStringExtra("token") ?: return START_NOT_STICKY
         startForeground(1, notification("Waiting for campaign jobs"))
         Thread { poll(baseUrl, deviceId, token) }.start()
         return START_STICKY
@@ -39,6 +82,9 @@ class DialingService : Service() {
                     if (sessionId != lastDialedSessionId) {
                         updateNotification("Dialing $phone")
                         report(baseUrl, deviceId, token, sessionId, "dialing")
+                        activeSessionId = sessionId
+                        callWasOffHook = false
+                        connectedAtElapsedMs = null
                         dial(phone)
                         lastDialedSessionId = sessionId
                     }
@@ -65,7 +111,31 @@ class DialingService : Service() {
     }
 
     private fun report(baseUrl: String, deviceId: String, token: String, sessionId: String, type: String) {
-        post(baseUrl, deviceId, token, "/api/voice/gateway/sessions/$sessionId/events", JSONObject().put("type", type))
+        report(baseUrl, deviceId, token, sessionId, type, null)
+    }
+
+    private fun report(
+        baseUrl: String,
+        deviceId: String,
+        token: String,
+        sessionId: String,
+        type: String,
+        durationSeconds: Long?
+    ) {
+        val body = JSONObject().put("type", type)
+        if (durationSeconds != null) body.put("durationSeconds", durationSeconds)
+        if (type == "ended") body.put("outcome", "completed")
+        post(baseUrl, deviceId, token, "/api/voice/gateway/sessions/$sessionId/events", body)
+    }
+
+    private fun reportInBackground(sessionId: String, type: String, durationSeconds: Long? = null) {
+        Thread {
+            try {
+                report(baseUrl, deviceId, token, sessionId, type, durationSeconds)
+            } catch (error: Exception) {
+                updateNotification("Call state sync error: ${error.message ?: error.javaClass.simpleName}")
+            }
+        }.start()
     }
 
     private fun post(baseUrl: String, deviceId: String, token: String, path: String, body: JSONObject): JSONObject {
@@ -96,6 +166,10 @@ class DialingService : Service() {
             .setContentText(text).setSmallIcon(android.R.drawable.sym_action_call).build()
     }
 
-    override fun onDestroy() { running = false; super.onDestroy() }
+    override fun onDestroy() {
+        running = false
+        unregisterReceiver(phoneStateReceiver)
+        super.onDestroy()
+    }
     override fun onBind(intent: Intent?): IBinder? = null
 }

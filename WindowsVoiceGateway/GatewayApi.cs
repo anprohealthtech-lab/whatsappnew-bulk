@@ -21,6 +21,14 @@ public sealed class GatewayApi(GatewayOptions options)
     public async Task SendEventAsync(string sessionId, object payload, CancellationToken cancellationToken) =>
         await EnsureSuccess(await _http.PostAsJsonAsync($"/api/voice/gateway/sessions/{sessionId}/events", payload, cancellationToken));
 
+    public async Task<GatewaySessionState> GetSessionAsync(string sessionId, CancellationToken cancellationToken)
+    {
+        var response = await _http.GetAsync($"/api/voice/gateway/sessions/{sessionId}", cancellationToken);
+        await EnsureSuccess(response);
+        return await response.Content.ReadFromJsonAsync<GatewaySessionState>(cancellationToken: cancellationToken)
+            ?? throw new InvalidOperationException("Gateway session response was empty");
+    }
+
     private static HttpClient CreateClient(GatewayOptions options)
     {
         var client = new HttpClient { BaseAddress = new Uri(options.MainAppBaseUrl) };
@@ -41,3 +49,4 @@ public sealed record GatewayJob(CallSession Session, Campaign Campaign, Campaign
 public sealed record CallSession(string Id);
 public sealed record Campaign(string Id, string Name);
 public sealed record CampaignContact(string Id, string PhoneNumber, string? Name, JsonElement Variables);
+public sealed record GatewaySessionState(string Id, string Status);

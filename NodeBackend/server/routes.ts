@@ -960,6 +960,13 @@ export async function registerRoutes(app: Express): Promise<Server> {
     } catch (error: any) { res.status(401).json({ message: error.message }); }
   });
 
+  app.get('/api/voice/gateway/sessions/:id', async (req, res) => {
+    try {
+      const credentials = gatewayCredentials(req);
+      res.json(await voiceTenantService.getGatewaySession(credentials.deviceId, credentials.token, req.params.id));
+    } catch (error: any) { res.status(401).json({ message: error.message }); }
+  });
+
   app.post('/api/voice/gateway/sessions/:id/events', async (req, res) => {
     try {
       const credentials = gatewayCredentials(req);

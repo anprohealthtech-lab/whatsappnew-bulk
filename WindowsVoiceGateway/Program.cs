@@ -32,8 +32,33 @@ while (!shutdown.IsCancellationRequested)
 
         await api.SendEventAsync(job.Session.Id, new { type = "dialing" }, shutdown.Token);
         Console.WriteLine($"Dial on paired Android device: {job.Contact.PhoneNumber}");
-        await bridge.RunAsync(job, (_, payload) => api.SendEventAsync(job.Session.Id, payload, shutdown.Token), shutdown.Token);
-        await api.SendEventAsync(job.Session.Id, new { type = "ended", outcome = "completed" }, shutdown.Token);
+        using var callShutdown = CancellationTokenSource.CreateLinkedTokenSource(shutdown.Token);
+        var sessionMonitor = Task.Run(async () =>
+        {
+            while (!callShutdown.IsCancellationRequested)
+            {
+                await Task.Delay(TimeSpan.FromSeconds(2), callShutdown.Token);
+                var session = await api.GetSessionAsync(job.Session.Id, callShutdown.Token);
+                if (session.Status is "completed" or "failed")
+                {
+                    callShutdown.Cancel();
+                    break;
+                }
+            }
+        }, callShutdown.Token);
+        try
+        {
+            await bridge.RunAsync(job, (_, payload) => api.SendEventAsync(job.Session.Id, payload, shutdown.Token), callShutdown.Token);
+        }
+        catch (OperationCanceledException) when (callShutdown.IsCancellationRequested && !shutdown.IsCancellationRequested)
+        {
+            Console.WriteLine($"Call ended: {job.Contact.PhoneNumber}");
+        }
+        finally
+        {
+            callShutdown.Cancel();
+            try { await sessionMonitor; } catch (OperationCanceledException) { }
+        }
     }
     catch (OperationCanceledException) when (shutdown.IsCancellationRequested) { }
     catch (Exception error)
