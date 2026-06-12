@@ -57,6 +57,7 @@ public sealed class AudioBridge(GatewayOptions options)
                     type = "audio",
                     audioBase64 = Convert.ToBase64String(wav.ToArray()),
                     mimeType = "audio/wav",
+                    sampleRate = capture.WaveFormat.SampleRate,
                     sessionId = job.Session.Id,
                     sessionToken = job.SessionToken
                 }, cancellationToken);
@@ -66,17 +67,35 @@ public sealed class AudioBridge(GatewayOptions options)
         var receive = new byte[1024 * 128];
         while (!cancellationToken.IsCancellationRequested && socket.State == WebSocketState.Open)
         {
-            var result = await socket.ReceiveAsync(receive, cancellationToken);
+            using var messageBuffer = new MemoryStream();
+            WebSocketReceiveResult result;
+            do
+            {
+                result = await socket.ReceiveAsync(receive, cancellationToken);
+                messageBuffer.Write(receive, 0, result.Count);
+            } while (!result.EndOfMessage);
             if (result.MessageType == WebSocketMessageType.Close) break;
-            var json = Encoding.UTF8.GetString(receive, 0, result.Count);
+            var json = Encoding.UTF8.GetString(messageBuffer.ToArray());
             using var document = JsonDocument.Parse(json);
             var root = document.RootElement;
             var type = root.TryGetProperty("type", out var typeValue) ? typeValue.GetString() : "";
+            if (type == "status")
+            {
+                var status = root.TryGetProperty("status", out var statusValue) ? statusValue.GetString() : "";
+                var detail = root.TryGetProperty("detail", out var detailValue) ? detailValue.GetString() : "";
+                Console.WriteLine($"Voice service: {status}{(string.IsNullOrWhiteSpace(detail) ? "" : $" - {detail}")}");
+            }
+            if (type == "error")
+            {
+                var error = root.TryGetProperty("error", out var errorValue) ? errorValue.GetString() : "Unknown voice service error";
+                throw new InvalidOperationException($"Voice service error: {error}");
+            }
             if (type == "audio_chunk" && root.TryGetProperty("audioBase64", out var audio) && !string.IsNullOrWhiteSpace(audio.GetString()))
             {
                 var mimeType = root.TryGetProperty("mimeType", out var mime) ? mime.GetString() : "";
                 if (mimeType != "audio/L16") throw new InvalidOperationException("Windows prototype requires a Fish voice profile with audioFormat=pcm and 16 kHz output.");
                 var samples = Convert.FromBase64String(audio.GetString()!);
+                Console.WriteLine($"Playing voice audio: {samples.Length} bytes");
                 playback.AddSamples(samples, 0, samples.Length);
             }
             if (type == "flow_transcript" && root.TryGetProperty("transcript", out var flowTranscript))

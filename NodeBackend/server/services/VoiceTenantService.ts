@@ -98,8 +98,8 @@ export class VoiceTenantService {
       referenceId: input.referenceId || null,
       model: input.model || null,
       language: input.language || null,
-      audioFormat: input.audioFormat || "opus",
-      settings: input.settings || {},
+      audioFormat: input.audioFormat || "pcm",
+      settings: input.settings || { sampleRate: 16000 },
       status: "active",
       updatedAt: new Date(),
     }).returning();

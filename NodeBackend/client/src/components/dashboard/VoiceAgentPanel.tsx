@@ -77,7 +77,8 @@ export function VoiceAgentPanel() {
       const response = await apiRequest("POST", "/api/voice/profiles", {
         ...profile,
         provider: "fish",
-        audioFormat: "opus",
+        audioFormat: "pcm",
+        settings: { sampleRate: 16000 },
       });
       return response.json();
     },

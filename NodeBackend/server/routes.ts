@@ -263,7 +263,7 @@ const voiceProfileSchema = z.object({
   referenceId: z.string().trim().optional(),
   model: z.string().trim().optional(),
   language: z.string().trim().optional(),
-  audioFormat: z.enum(["mp3", "wav", "pcm", "opus"]).default("opus"),
+  audioFormat: z.enum(["mp3", "wav", "pcm", "opus"]).default("pcm"),
   settings: z.record(z.unknown()).optional(),
 });
 

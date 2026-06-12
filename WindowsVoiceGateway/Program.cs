@@ -32,6 +32,22 @@ while (!shutdown.IsCancellationRequested)
 
         await api.SendEventAsync(job.Session.Id, new { type = "dialing" }, shutdown.Token);
         Console.WriteLine($"Dial on paired Android device: {job.Contact.PhoneNumber}");
+        GatewaySessionState session;
+        do
+        {
+            await Task.Delay(TimeSpan.FromSeconds(1), shutdown.Token);
+            session = await api.GetSessionAsync(job.Session.Id, shutdown.Token);
+        } while (session.Status is not ("connected" or "completed" or "failed"));
+
+        if (session.Status is "completed" or "failed")
+        {
+            Console.WriteLine($"Call finished before media started: {job.Contact.PhoneNumber}");
+            continue;
+        }
+
+        Console.WriteLine($"Call audio starting in 5 seconds: {job.Contact.PhoneNumber}");
+        await Task.Delay(TimeSpan.FromSeconds(5), shutdown.Token);
+
         using var callShutdown = CancellationTokenSource.CreateLinkedTokenSource(shutdown.Token);
         var sessionMonitor = Task.Run(async () =>
         {
@@ -53,6 +69,15 @@ while (!shutdown.IsCancellationRequested)
         catch (OperationCanceledException) when (callShutdown.IsCancellationRequested && !shutdown.IsCancellationRequested)
         {
             Console.WriteLine($"Call ended: {job.Contact.PhoneNumber}");
+        }
+        catch (Exception error)
+        {
+            await api.SendEventAsync(job.Session.Id, new {
+                type = "failed",
+                outcome = "media_error",
+                errorMessage = error.Message
+            }, shutdown.Token);
+            throw;
         }
         finally
         {
