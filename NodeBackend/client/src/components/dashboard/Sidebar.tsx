@@ -17,6 +17,7 @@ import {
     ClipboardList,
     Stethoscope,
     FolderKanban,
+    Mic,
 } from "lucide-react";
 import { cn } from "@/lib/utils";
 import { useAuth } from "@/lib/AuthContext";
@@ -30,7 +31,7 @@ interface SidebarProps {
 export function Sidebar({ activeSection, setActiveSection, setLocation }: SidebarProps) {
     const { user, logout } = useAuth();
 
-    const features = user?.enabledFeatures as { taskManagement?: boolean; himsChatbot?: boolean; dataManagement?: boolean; visibleTabs?: string[] } | undefined;
+    const features = user?.enabledFeatures as { taskManagement?: boolean; himsChatbot?: boolean; dataManagement?: boolean; voiceAgent?: boolean; visibleTabs?: string[] } | undefined;
     const visibleTabs = features?.visibleTabs;
     const canSee = (tabId: string) => user?.role === 'super_admin' || !visibleTabs?.length || visibleTabs.includes(tabId);
 
@@ -51,6 +52,9 @@ export function Sidebar({ activeSection, setActiveSection, setLocation }: Sideba
         { id: "knowledge-base", label: "Knowledge Base", icon: Database, action: () => setActiveSection("knowledge-base") },
         ...(features?.dataManagement || user?.role === 'super_admin' ? [
             { id: "data-management", label: "Data Management", icon: FolderKanban, action: () => setActiveSection("data-management") },
+        ] : []),
+        ...(features?.voiceAgent || user?.role === 'super_admin' ? [
+            { id: "voice-agent", label: "Voice Service", icon: Mic, action: () => setActiveSection("voice-agent") },
         ] : []),
         ...(features?.taskManagement || user?.role === 'super_admin' ? [
             { id: "task-management", label: "Task Management", icon: ClipboardList, action: () => setActiveSection("task-management") },

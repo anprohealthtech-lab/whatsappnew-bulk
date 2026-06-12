@@ -16,6 +16,7 @@ import { ChatbotService } from "./services/ChatbotService";
 import { HRChatbotService } from "./services/HRChatbotService";
 import { HIMSChatbotService } from "./services/HIMSChatbotService";
 import { DataManagementAgentService } from "./services/DataManagementAgentService";
+import { voiceTenantService } from "./services/VoiceTenantService";
 import { sendMessageSchema, sendReportSchema, createCampaignSchema, bulkSendSchema, chatbotConfigSchema, flagLeadSchema, registerHRAdminSchema, hrChatbotConfigSchema, demoSchedules, scheduleCampaignSchema, userRagAgentSchema, userRagAgents, userNotificationRecipientSchema, userNotificationRecipients, registerSchema, loginSchema, registerHIMSPatientSchema } from "@shared/schema";
 import { log } from "./utils";
 import { getDbHealth, db } from "./db";
@@ -90,6 +91,20 @@ function hasExplicitTenantInRequest(req: Request): boolean {
     req.body?.organizationId ||
     req.body?.userId
   );
+}
+
+async function requireVoiceFeature(req: Request): Promise<void> {
+  if (req.auth?.role === "super_admin") return;
+  const tenant = getTenantFromRequest(req);
+  const [owner] = await db.select({ enabledFeatures: users.enabledFeatures })
+    .from(users)
+    .where(and(eq(users.id, tenant.userId), eq(users.organizationId, tenant.organizationId)))
+    .limit(1);
+  if ((owner?.enabledFeatures as any)?.voiceAgent !== true) {
+    const error = new Error("Voice Agent is not enabled for this user");
+    (error as any).status = 403;
+    throw error;
+  }
 }
 
 async function resolveTenantForUserId(userId: string): Promise<TenantContext> {
@@ -230,6 +245,94 @@ const voiceAgentRequestSchema = z.object({
   organizationId: z.string().trim().min(1),
   userId: z.string().trim().min(1),
   stream: z.boolean().optional().default(false),
+});
+
+const voiceCredentialSchema = z.object({
+  provider: z.enum(["fish", "openai", "http"]),
+  credentialType: z.enum(["stt", "tts"]),
+  name: z.string().trim().min(1),
+  secret: z.string().min(1),
+  accountId: z.string().trim().optional(),
+  settings: z.record(z.unknown()).optional(),
+});
+
+const voiceProfileSchema = z.object({
+  credentialId: z.string().trim().min(1),
+  name: z.string().trim().min(1),
+  provider: z.enum(["fish", "http"]),
+  referenceId: z.string().trim().optional(),
+  model: z.string().trim().optional(),
+  language: z.string().trim().optional(),
+  audioFormat: z.enum(["mp3", "wav", "pcm", "opus"]).default("opus"),
+  settings: z.record(z.unknown()).optional(),
+});
+
+const voiceAgentConfigSchema = z.object({
+  name: z.string().trim().min(1),
+  systemPrompt: z.string().optional(),
+  languageMode: z.string().default("match_speaker"),
+  responseMode: z.string().default("voice"),
+  defaultFlowKey: z.string().trim().optional(),
+  ragAgentId: z.string().trim().optional(),
+  sttCredentialId: z.string().trim().optional(),
+  voiceProfileId: z.string().trim().optional(),
+});
+
+const voiceFlowSchema = z.object({
+  voiceAgentId: z.string().trim().optional(),
+  flowKey: z.string().trim().min(1).regex(/^[a-zA-Z0-9._-]+$/),
+  name: z.string().trim().min(1),
+  description: z.string().optional(),
+  definition: z.object({
+    id: z.string().trim().min(1),
+    startNode: z.string().trim().min(1),
+    nodes: z.record(z.unknown()),
+  }),
+  voiceProfileId: z.string().trim().optional(),
+});
+
+const voiceSessionSchema = z.object({
+  voiceAgentId: z.string().trim().min(1),
+  flowKey: z.string().trim().optional(),
+  flowVersion: z.number().int().positive().optional(),
+  voiceProfileId: z.string().trim().optional(),
+  channel: z.enum(["browser", "twilio"]).default("browser"),
+});
+
+const voiceCampaignSchema = z.object({
+  name: z.string().trim().min(1),
+  voiceAgentId: z.string().trim().min(1),
+  flowId: z.string().trim().min(1),
+  gatewayDeviceId: z.string().trim().optional(),
+  maxAttempts: z.number().int().min(1).max(5).default(1),
+  retryDelayMinutes: z.number().int().min(1).default(30),
+});
+
+const voiceContactsSchema = z.object({
+  contacts: z.array(z.object({
+    name: z.string().optional(),
+    phoneNumber: z.string().trim().min(7),
+    variables: z.record(z.unknown()).optional(),
+  })).min(1).max(1000),
+});
+
+const gatewayEnrollSchema = z.object({
+  name: z.string().trim().min(1),
+  deviceType: z.enum(["windows", "android"]),
+  phoneNumber: z.string().optional(),
+  capabilities: z.record(z.unknown()).optional(),
+});
+
+const gatewayEventSchema = z.object({
+  type: z.enum(["dialing", "ringing", "connected", "transcript", "agent_text", "ended", "failed"]),
+  text: z.string().optional(),
+  speaker: z.string().optional(),
+  outcome: z.string().optional(),
+  errorMessage: z.string().optional(),
+  durationSeconds: z.number().int().nonnegative().optional(),
+  usage: z.array(z.object({
+    metric: z.string(), quantity: z.number().nonnegative(), unit: z.string(), provider: z.string().optional(),
+  })).optional(),
 });
 
 function getVoiceAgentSecret(): string {
@@ -671,6 +774,199 @@ export async function registerRoutes(app: Express): Promise<Server> {
       log(`Voice agent respond error: ${error.message}`);
       res.status(status).json({ message: error.message || 'Voice agent failed' });
     }
+  });
+
+  app.get('/api/voice/credentials', requireAuth, async (req, res) => {
+    try {
+      await requireVoiceFeature(req);
+      res.json(await voiceTenantService.listCredentials(getTenantFromRequest(req)));
+    } catch (error: any) {
+      res.status(error.status || 500).json({ message: error.message });
+    }
+  });
+
+  app.post('/api/voice/credentials', requireAuth, async (req, res) => {
+    try {
+      await requireVoiceFeature(req);
+      const input = voiceCredentialSchema.parse(req.body);
+      res.status(201).json(await voiceTenantService.createCredential(getTenantFromRequest(req), input));
+    } catch (error: any) {
+      res.status(error instanceof z.ZodError ? 400 : error.status || 500).json({ message: error.message });
+    }
+  });
+
+  app.patch('/api/voice/credentials/:id/rotate', requireAuth, async (req, res) => {
+    try {
+      await requireVoiceFeature(req);
+      const input = z.object({ secret: z.string().min(1), settings: z.record(z.unknown()).optional() }).parse(req.body);
+      res.json(await voiceTenantService.rotateCredential(getTenantFromRequest(req), req.params.id, input));
+    } catch (error: any) {
+      res.status(error instanceof z.ZodError ? 400 : error.status || 500).json({ message: error.message });
+    }
+  });
+
+  app.get('/api/voice/profiles', requireAuth, async (req, res) => {
+    try {
+      await requireVoiceFeature(req);
+      res.json(await voiceTenantService.listProfiles(getTenantFromRequest(req)));
+    } catch (error: any) {
+      res.status(error.status || 500).json({ message: error.message });
+    }
+  });
+
+  app.post('/api/voice/profiles', requireAuth, async (req, res) => {
+    try {
+      await requireVoiceFeature(req);
+      const input = voiceProfileSchema.parse(req.body);
+      res.status(201).json(await voiceTenantService.createProfile(getTenantFromRequest(req), input));
+    } catch (error: any) {
+      res.status(error instanceof z.ZodError ? 400 : error.status || 500).json({ message: error.message });
+    }
+  });
+
+  app.get('/api/voice/agents', requireAuth, async (req, res) => {
+    try {
+      await requireVoiceFeature(req);
+      res.json(await voiceTenantService.listAgents(getTenantFromRequest(req)));
+    } catch (error: any) {
+      res.status(error.status || 500).json({ message: error.message });
+    }
+  });
+
+  app.post('/api/voice/agents', requireAuth, async (req, res) => {
+    try {
+      await requireVoiceFeature(req);
+      const input = voiceAgentConfigSchema.parse(req.body);
+      res.status(201).json(await voiceTenantService.createAgent(getTenantFromRequest(req), input));
+    } catch (error: any) {
+      res.status(error instanceof z.ZodError ? 400 : error.status || 500).json({ message: error.message });
+    }
+  });
+
+  app.get('/api/voice/flows', requireAuth, async (req, res) => {
+    try {
+      await requireVoiceFeature(req);
+      res.json(await voiceTenantService.listFlows(getTenantFromRequest(req)));
+    } catch (error: any) {
+      res.status(error.status || 500).json({ message: error.message });
+    }
+  });
+
+  app.post('/api/voice/flows', requireAuth, async (req, res) => {
+    try {
+      await requireVoiceFeature(req);
+      const input = voiceFlowSchema.parse(req.body);
+      res.status(201).json(await voiceTenantService.createFlowDraft(getTenantFromRequest(req), input));
+    } catch (error: any) {
+      res.status(error instanceof z.ZodError ? 400 : error.status || 500).json({ message: error.message });
+    }
+  });
+
+  app.post('/api/voice/flows/:id/publish', requireAuth, async (req, res) => {
+    try {
+      await requireVoiceFeature(req);
+      res.json(await voiceTenantService.publishFlow(getTenantFromRequest(req), req.params.id));
+    } catch (error: any) {
+      res.status(error.status || 500).json({ message: error.message });
+    }
+  });
+
+  app.post('/api/voice/session-token', requireAuth, async (req, res) => {
+    try {
+      await requireVoiceFeature(req);
+      const input = voiceSessionSchema.parse(req.body);
+      const token = await voiceTenantService.createSessionToken(getTenantFromRequest(req), input);
+      res.json({ token, expiresInSeconds: 600 });
+    } catch (error: any) {
+      res.status(error instanceof z.ZodError ? 400 : error.status || 500).json({ message: error.message });
+    }
+  });
+
+  app.get('/api/voice/campaigns', requireAuth, async (req, res) => {
+    try { await requireVoiceFeature(req); res.json(await voiceTenantService.listCampaigns(getTenantFromRequest(req))); }
+    catch (error: any) { res.status(error.status || 500).json({ message: error.message }); }
+  });
+
+  app.post('/api/voice/campaigns', requireAuth, async (req, res) => {
+    try {
+      await requireVoiceFeature(req);
+      res.status(201).json(await voiceTenantService.createCampaign(getTenantFromRequest(req), voiceCampaignSchema.parse(req.body)));
+    } catch (error: any) { res.status(error instanceof z.ZodError ? 400 : error.status || 500).json({ message: error.message }); }
+  });
+
+  app.post('/api/voice/campaigns/:id/contacts', requireAuth, async (req, res) => {
+    try {
+      await requireVoiceFeature(req);
+      const { contacts } = voiceContactsSchema.parse(req.body);
+      res.status(201).json(await voiceTenantService.addCampaignContacts(getTenantFromRequest(req), req.params.id, contacts));
+    } catch (error: any) { res.status(error instanceof z.ZodError ? 400 : error.status || 500).json({ message: error.message }); }
+  });
+
+  app.post('/api/voice/campaigns/:id/start', requireAuth, async (req, res) => {
+    try { await requireVoiceFeature(req); res.json(await voiceTenantService.startCampaign(getTenantFromRequest(req), req.params.id)); }
+    catch (error: any) { res.status(error.status || 500).json({ message: error.message }); }
+  });
+
+  app.post('/api/voice/campaigns/:id/pause', requireAuth, async (req, res) => {
+    try { await requireVoiceFeature(req); res.json(await voiceTenantService.pauseCampaign(getTenantFromRequest(req), req.params.id)); }
+    catch (error: any) { res.status(error.status || 500).json({ message: error.message }); }
+  });
+
+  app.get('/api/voice/calls', requireAuth, async (req, res) => {
+    try { await requireVoiceFeature(req); res.json(await voiceTenantService.listCalls(getTenantFromRequest(req), Number(req.query.limit) || 100)); }
+    catch (error: any) { res.status(error.status || 500).json({ message: error.message }); }
+  });
+
+  app.get('/api/voice/usage', requireAuth, async (req, res) => {
+    try { await requireVoiceFeature(req); res.json(await voiceTenantService.usageSummary(getTenantFromRequest(req))); }
+    catch (error: any) { res.status(error.status || 500).json({ message: error.message }); }
+  });
+
+  app.get('/api/voice/gateways', requireAuth, async (req, res) => {
+    try { await requireVoiceFeature(req); res.json(await voiceTenantService.listGateways(getTenantFromRequest(req))); }
+    catch (error: any) { res.status(error.status || 500).json({ message: error.message }); }
+  });
+
+  app.post('/api/voice/gateways/enroll', requireAuth, async (req, res) => {
+    try {
+      await requireVoiceFeature(req);
+      res.status(201).json(await voiceTenantService.enrollGateway(getTenantFromRequest(req), gatewayEnrollSchema.parse(req.body)));
+    } catch (error: any) { res.status(error instanceof z.ZodError ? 400 : error.status || 500).json({ message: error.message }); }
+  });
+
+  const gatewayCredentials = (req: Request) => ({
+    deviceId: String(req.headers["x-voice-device-id"] || ""),
+    token: String(req.headers["x-voice-device-token"] || ""),
+  });
+
+  app.post('/api/voice/gateway/heartbeat', async (req, res) => {
+    try {
+      const credentials = gatewayCredentials(req);
+      res.json(await voiceTenantService.gatewayHeartbeat(credentials.deviceId, credentials.token, req.body?.capabilities));
+    } catch (error: any) { res.status(401).json({ message: error.message }); }
+  });
+
+  app.post('/api/voice/gateway/jobs/lease', async (req, res) => {
+    try {
+      const credentials = gatewayCredentials(req);
+      res.json({ job: await voiceTenantService.leaseGatewayJob(credentials.deviceId, credentials.token) });
+    } catch (error: any) { res.status(401).json({ message: error.message }); }
+  });
+
+  app.get('/api/voice/gateway/jobs/active-dial', async (req, res) => {
+    try {
+      const credentials = gatewayCredentials(req);
+      res.json({ job: await voiceTenantService.getGatewayActiveDialJob(credentials.deviceId, credentials.token) });
+    } catch (error: any) { res.status(401).json({ message: error.message }); }
+  });
+
+  app.post('/api/voice/gateway/sessions/:id/events', async (req, res) => {
+    try {
+      const credentials = gatewayCredentials(req);
+      const event = gatewayEventSchema.parse(req.body);
+      const session = await voiceTenantService.recordGatewayEvent(credentials.deviceId, credentials.token, req.params.id, event);
+      res.json(session);
+    } catch (error: any) { res.status(error instanceof z.ZodError ? 400 : 401).json({ message: error.message }); }
   });
 
   app.get('/api/data-management/summary', requireAuth, async (req, res) => {

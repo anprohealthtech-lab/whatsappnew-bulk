@@ -578,6 +578,8 @@ export async function runMigrations(): Promise<void> {
         "organization_id" text NOT NULL,
         "user_id" text NOT NULL,
         "flow_id" text NOT NULL,
+        "flow_version" integer DEFAULT 1 NOT NULL,
+        "voice_profile_id" text,
         "node_id" text NOT NULL,
         "chunk_index" integer NOT NULL,
         "text" text NOT NULL,
@@ -593,11 +595,19 @@ export async function runMigrations(): Promise<void> {
         "updated_at" timestamp DEFAULT now()
       );
 
-      CREATE UNIQUE INDEX IF NOT EXISTS "voice_flow_audio_chunks_unique"
+      ALTER TABLE "voice_flow_audio_chunks"
+        ADD COLUMN IF NOT EXISTS "flow_version" integer DEFAULT 1 NOT NULL;
+      ALTER TABLE "voice_flow_audio_chunks"
+        ADD COLUMN IF NOT EXISTS "voice_profile_id" text;
+
+      DROP INDEX IF EXISTS "voice_flow_audio_chunks_unique";
+      CREATE UNIQUE INDEX "voice_flow_audio_chunks_unique"
         ON "voice_flow_audio_chunks" (
           "organization_id",
           "user_id",
           "flow_id",
+          "flow_version",
+          COALESCE("voice_profile_id", ''),
           "node_id",
           "chunk_index",
           "text_hash",
@@ -607,6 +617,151 @@ export async function runMigrations(): Promise<void> {
 
       CREATE INDEX IF NOT EXISTS "voice_flow_audio_chunks_lookup"
         ON "voice_flow_audio_chunks" ("organization_id", "user_id", "flow_id", "node_id");
+
+      CREATE TABLE IF NOT EXISTS "voice_provider_credentials" (
+        "id" varchar PRIMARY KEY DEFAULT gen_random_uuid() NOT NULL,
+        "organization_id" text NOT NULL,
+        "user_id" text NOT NULL,
+        "provider" text NOT NULL,
+        "credential_type" text NOT NULL,
+        "name" text NOT NULL,
+        "encrypted_secret" text NOT NULL,
+        "account_id" text,
+        "settings" jsonb DEFAULT '{}'::jsonb NOT NULL,
+        "is_platform_managed" boolean DEFAULT false NOT NULL,
+        "status" text DEFAULT 'active' NOT NULL,
+        "last_verified_at" timestamp,
+        "created_at" timestamp DEFAULT now(),
+        "updated_at" timestamp DEFAULT now()
+      );
+      CREATE INDEX IF NOT EXISTS "voice_provider_credentials_tenant"
+        ON "voice_provider_credentials" ("organization_id", "user_id", "credential_type", "status");
+
+      CREATE TABLE IF NOT EXISTS "voice_profiles" (
+        "id" varchar PRIMARY KEY DEFAULT gen_random_uuid() NOT NULL,
+        "organization_id" text NOT NULL,
+        "user_id" text NOT NULL,
+        "credential_id" varchar NOT NULL REFERENCES "voice_provider_credentials"("id") ON DELETE RESTRICT,
+        "name" text NOT NULL,
+        "provider" text NOT NULL,
+        "reference_id" text,
+        "model" text,
+        "language" text,
+        "audio_format" text DEFAULT 'mp3' NOT NULL,
+        "settings" jsonb DEFAULT '{}'::jsonb NOT NULL,
+        "status" text DEFAULT 'active' NOT NULL,
+        "created_at" timestamp DEFAULT now(),
+        "updated_at" timestamp DEFAULT now()
+      );
+      CREATE INDEX IF NOT EXISTS "voice_profiles_tenant"
+        ON "voice_profiles" ("organization_id", "user_id", "status");
+
+      CREATE TABLE IF NOT EXISTS "voice_agents" (
+        "id" varchar PRIMARY KEY DEFAULT gen_random_uuid() NOT NULL,
+        "organization_id" text NOT NULL,
+        "user_id" text NOT NULL,
+        "name" text NOT NULL,
+        "status" text DEFAULT 'active' NOT NULL,
+        "system_prompt" text,
+        "language_mode" text DEFAULT 'match_speaker' NOT NULL,
+        "response_mode" text DEFAULT 'voice' NOT NULL,
+        "default_flow_key" text,
+        "rag_agent_id" varchar,
+        "stt_credential_id" varchar REFERENCES "voice_provider_credentials"("id") ON DELETE SET NULL,
+        "voice_profile_id" varchar REFERENCES "voice_profiles"("id") ON DELETE SET NULL,
+        "created_at" timestamp DEFAULT now(),
+        "updated_at" timestamp DEFAULT now()
+      );
+      CREATE INDEX IF NOT EXISTS "voice_agents_tenant"
+        ON "voice_agents" ("organization_id", "user_id", "status");
+
+      CREATE TABLE IF NOT EXISTS "voice_flows" (
+        "id" varchar PRIMARY KEY DEFAULT gen_random_uuid() NOT NULL,
+        "organization_id" text NOT NULL,
+        "user_id" text NOT NULL,
+        "voice_agent_id" varchar REFERENCES "voice_agents"("id") ON DELETE CASCADE,
+        "flow_key" text NOT NULL,
+        "name" text NOT NULL,
+        "description" text,
+        "version" integer NOT NULL,
+        "status" text DEFAULT 'draft' NOT NULL,
+        "start_node" text NOT NULL,
+        "definition" jsonb NOT NULL,
+        "voice_profile_id" varchar REFERENCES "voice_profiles"("id") ON DELETE SET NULL,
+        "published_at" timestamp,
+        "created_at" timestamp DEFAULT now(),
+        "updated_at" timestamp DEFAULT now()
+      );
+      CREATE UNIQUE INDEX IF NOT EXISTS "voice_flows_tenant_version"
+        ON "voice_flows" ("organization_id", "user_id", "flow_key", "version");
+      CREATE INDEX IF NOT EXISTS "voice_flows_published_lookup"
+        ON "voice_flows" ("organization_id", "user_id", "flow_key", "status", "version" DESC);
+
+      CREATE TABLE IF NOT EXISTS "voice_gateway_devices" (
+        "id" varchar PRIMARY KEY DEFAULT gen_random_uuid() NOT NULL,
+        "organization_id" text NOT NULL, "user_id" text NOT NULL, "name" text NOT NULL,
+        "device_type" text NOT NULL, "pairing_code" text, "device_token_hash" text,
+        "paired_device_id" varchar, "phone_number" text, "capabilities" jsonb DEFAULT '{}'::jsonb,
+        "status" text DEFAULT 'offline' NOT NULL, "last_heartbeat_at" timestamp,
+        "created_at" timestamp DEFAULT now(), "updated_at" timestamp DEFAULT now()
+      );
+      CREATE INDEX IF NOT EXISTS "voice_gateway_devices_tenant"
+        ON "voice_gateway_devices" ("organization_id", "user_id", "status");
+
+      CREATE TABLE IF NOT EXISTS "voice_campaigns" (
+        "id" varchar PRIMARY KEY DEFAULT gen_random_uuid() NOT NULL,
+        "organization_id" text NOT NULL, "user_id" text NOT NULL,
+        "voice_agent_id" varchar NOT NULL REFERENCES "voice_agents"("id") ON DELETE CASCADE,
+        "flow_id" varchar NOT NULL REFERENCES "voice_flows"("id") ON DELETE RESTRICT,
+        "gateway_device_id" varchar REFERENCES "voice_gateway_devices"("id") ON DELETE SET NULL,
+        "name" text NOT NULL, "status" text DEFAULT 'draft' NOT NULL,
+        "timezone" text DEFAULT 'Asia/Kolkata' NOT NULL, "max_attempts" integer DEFAULT 1 NOT NULL,
+        "retry_delay_minutes" integer DEFAULT 30 NOT NULL, "settings" jsonb DEFAULT '{}'::jsonb,
+        "started_at" timestamp, "completed_at" timestamp,
+        "created_at" timestamp DEFAULT now(), "updated_at" timestamp DEFAULT now()
+      );
+      CREATE INDEX IF NOT EXISTS "voice_campaigns_tenant"
+        ON "voice_campaigns" ("organization_id", "user_id", "status");
+
+      CREATE TABLE IF NOT EXISTS "voice_campaign_contacts" (
+        "id" varchar PRIMARY KEY DEFAULT gen_random_uuid() NOT NULL,
+        "organization_id" text NOT NULL, "user_id" text NOT NULL,
+        "campaign_id" varchar NOT NULL REFERENCES "voice_campaigns"("id") ON DELETE CASCADE,
+        "name" text, "phone_number" text NOT NULL, "variables" jsonb DEFAULT '{}'::jsonb,
+        "consent_status" text DEFAULT 'confirmed' NOT NULL, "status" text DEFAULT 'queued' NOT NULL,
+        "attempts" integer DEFAULT 0 NOT NULL, "next_attempt_at" timestamp DEFAULT now(),
+        "last_outcome" text, "created_at" timestamp DEFAULT now(), "updated_at" timestamp DEFAULT now()
+      );
+      CREATE INDEX IF NOT EXISTS "voice_campaign_contacts_queue"
+        ON "voice_campaign_contacts" ("campaign_id", "status", "next_attempt_at");
+
+      CREATE TABLE IF NOT EXISTS "voice_call_sessions" (
+        "id" varchar PRIMARY KEY DEFAULT gen_random_uuid() NOT NULL,
+        "organization_id" text NOT NULL, "user_id" text NOT NULL,
+        "campaign_id" varchar REFERENCES "voice_campaigns"("id") ON DELETE SET NULL,
+        "contact_id" varchar REFERENCES "voice_campaign_contacts"("id") ON DELETE SET NULL,
+        "voice_agent_id" varchar REFERENCES "voice_agents"("id") ON DELETE SET NULL,
+        "flow_id" varchar REFERENCES "voice_flows"("id") ON DELETE SET NULL,
+        "gateway_device_id" varchar REFERENCES "voice_gateway_devices"("id") ON DELETE SET NULL,
+        "phone_number" text NOT NULL, "direction" text DEFAULT 'outbound' NOT NULL,
+        "transport" text DEFAULT 'windows_bluetooth' NOT NULL, "status" text DEFAULT 'queued' NOT NULL,
+        "transcript" jsonb DEFAULT '[]'::jsonb, "outcome" text, "error_message" text,
+        "started_at" timestamp, "connected_at" timestamp, "ended_at" timestamp,
+        "duration_seconds" integer DEFAULT 0, "created_at" timestamp DEFAULT now(),
+        "updated_at" timestamp DEFAULT now()
+      );
+      CREATE INDEX IF NOT EXISTS "voice_call_sessions_tenant"
+        ON "voice_call_sessions" ("organization_id", "user_id", "created_at" DESC);
+
+      CREATE TABLE IF NOT EXISTS "voice_usage" (
+        "id" varchar PRIMARY KEY DEFAULT gen_random_uuid() NOT NULL,
+        "organization_id" text NOT NULL, "user_id" text NOT NULL,
+        "call_session_id" varchar REFERENCES "voice_call_sessions"("id") ON DELETE CASCADE,
+        "metric" text NOT NULL, "quantity" real NOT NULL, "unit" text NOT NULL,
+        "provider" text, "metadata" jsonb DEFAULT '{}'::jsonb, "created_at" timestamp DEFAULT now()
+      );
+      CREATE INDEX IF NOT EXISTS "voice_usage_tenant"
+        ON "voice_usage" ("organization_id", "user_id", "created_at" DESC);
     `);
 
     log('✅ Database migrations completed — all tables ready');

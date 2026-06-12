@@ -1,0 +1,26 @@
+namespace WindowsVoiceGateway;
+
+public sealed class GatewayOptions
+{
+    public required string MainAppBaseUrl { get; init; }
+    public required string VoiceServiceWebSocketUrl { get; init; }
+    public required string DeviceId { get; init; }
+    public required string DeviceToken { get; init; }
+    public string? CaptureDeviceId { get; init; }
+    public string? RenderDeviceId { get; init; }
+    public int PollSeconds { get; init; } = 3;
+
+    public static GatewayOptions FromEnvironment() => new()
+    {
+        MainAppBaseUrl = Required("VOICE_MAIN_APP_URL").TrimEnd('/'),
+        VoiceServiceWebSocketUrl = Required("VOICE_SERVICE_WS_URL"),
+        DeviceId = Required("VOICE_GATEWAY_DEVICE_ID"),
+        DeviceToken = Required("VOICE_GATEWAY_DEVICE_TOKEN"),
+        CaptureDeviceId = Environment.GetEnvironmentVariable("VOICE_CAPTURE_DEVICE_ID"),
+        RenderDeviceId = Environment.GetEnvironmentVariable("VOICE_RENDER_DEVICE_ID"),
+        PollSeconds = int.TryParse(Environment.GetEnvironmentVariable("VOICE_JOB_POLL_SECONDS"), out var value) ? value : 3
+    };
+
+    private static string Required(string name) =>
+        Environment.GetEnvironmentVariable(name) ?? throw new InvalidOperationException($"{name} is required");
+}

@@ -44,6 +44,11 @@ Thumbs.db
 *.swp
 *.swo
 
+# Android local/build state
+AndroidVoiceCompanion/.gradle/
+AndroidVoiceCompanion/local.properties
+AndroidVoiceCompanion/app/build/
+
 # Docker
 .docker/
 

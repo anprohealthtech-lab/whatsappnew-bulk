@@ -38,6 +38,7 @@ import { SessionHistoryPanel } from "@/components/dashboard/SessionHistoryPanel"
 import { HRAdminsPanel } from "@/components/dashboard/HRAdminsPanel";
 import { OPDBotPanel } from "@/components/dashboard/OPDBotPanel";
 import { DataManagementPanel } from "@/components/dashboard/DataManagementPanel";
+import { VoiceAgentPanel } from "@/components/dashboard/VoiceAgentPanel";
 import { useAuth } from "@/lib/AuthContext";
 
 // Form schemas
@@ -517,6 +518,7 @@ export default function Dashboard() {
           {activeSection === "knowledge-base" && <KnowledgeBasePanel />}
 
           {activeSection === "data-management" && canSeeSection("data-management") && <DataManagementPanel />}
+          {activeSection === "voice-agent" && canSeeSection("voice-agent") && <VoiceAgentPanel />}
 
           {activeSection === "task-management" && <HRAdminsPanel />}
 
