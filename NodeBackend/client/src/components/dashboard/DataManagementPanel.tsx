@@ -1,6 +1,6 @@
 import { useMemo, useState } from "react";
 import { useQuery } from "@tanstack/react-query";
-import { CalendarClock, ClipboardList, Database, FileText, UserRound, Users } from "lucide-react";
+import { Activity, CalendarClock, ClipboardList, Database, FileText, TableProperties, UserRound, Users } from "lucide-react";
 
 type DataSummary = {
   patients: number;
@@ -48,11 +48,40 @@ type DataSummary = {
   }>;
 };
 
+type PatientAnalysis = {
+  patient: DataSummary["patientList"][number];
+  events: DataSummary["recentEvents"];
+  documents: Array<{
+    id: string;
+    documentType: string;
+    fileName: string | null;
+    status: string;
+    confidence: number | null;
+    createdAt: string | null;
+  }>;
+};
+
+type Observation = {
+  category?: string;
+  name?: string;
+  value?: string | null;
+  numeric_value?: number | null;
+  unit?: string | null;
+  reference_range?: string | null;
+  flag?: string | null;
+  needs_confirmation?: boolean;
+};
+
 export function DataManagementPanel() {
   const [activeTab, setActiveTab] = useState<"patients" | "documents" | "general">("patients");
+  const [selectedPatientId, setSelectedPatientId] = useState<string | null>(null);
   const { data, isLoading } = useQuery<DataSummary>({
     queryKey: ["/api/data-management/summary"],
     refetchInterval: 30000,
+  });
+  const { data: patientAnalysis, isLoading: isAnalysisLoading } = useQuery<PatientAnalysis>({
+    queryKey: [`/api/data-management/patients/${selectedPatientId}/analysis`],
+    enabled: Boolean(selectedPatientId),
   });
 
   const eventsByPatient = useMemo(() => {
@@ -70,6 +99,41 @@ export function DataManagementPanel() {
     { label: "Documents", value: data?.documents || 0, icon: FileText },
     { label: "General Records", value: data?.generalRecords || 0, icon: ClipboardList },
   ];
+
+  const horizontalAnalysis = useMemo(() => {
+    const dates: string[] = [];
+    const rows = new Map<string, { category: string; name: string; values: Map<string, Observation[]> }>();
+
+    for (const event of [...(patientAnalysis?.events || [])].reverse()) {
+      const eventDate = event.eventDate || (event.createdAt ? new Date(event.createdAt).toISOString().slice(0, 10) : "Unknown date");
+      if (!dates.includes(eventDate)) dates.push(eventDate);
+      const structured = event.structuredData && typeof event.structuredData === "object"
+        ? event.structuredData as Record<string, unknown>
+        : {};
+      const observations = Array.isArray(structured.observations)
+        ? structured.observations.filter((item): item is Observation => Boolean(item) && typeof item === "object")
+        : [];
+
+      for (const observation of observations) {
+        const name = String(observation.name || "").trim();
+        if (!name) continue;
+        const category = String(observation.category || "other");
+        const key = `${category}:${name.toLowerCase()}`;
+        const row = rows.get(key) || { category, name, values: new Map<string, Observation[]>() };
+        const values = row.values.get(eventDate) || [];
+        values.push(observation);
+        row.values.set(eventDate, values);
+        rows.set(key, row);
+      }
+    }
+
+    return { dates, rows: Array.from(rows.values()) };
+  }, [patientAnalysis?.events]);
+
+  const formatObservation = (observation: Observation) => {
+    const value = observation.value || (typeof observation.numeric_value === "number" ? String(observation.numeric_value) : "-");
+    return `${value}${observation.unit ? ` ${observation.unit}` : ""}`;
+  };
 
   return (
     <div className="space-y-6 animate-fade-in-up">
@@ -143,6 +207,92 @@ export function DataManagementPanel() {
                     {patient.summary && (
                       <p className="text-sm bg-accent/30 rounded-lg px-3 py-2">{patient.summary}</p>
                     )}
+                    <button
+                      type="button"
+                      onClick={() => setSelectedPatientId(selectedPatientId === patient.id ? null : patient.id)}
+                      className="inline-flex items-center gap-2 text-sm font-medium text-primary hover:underline"
+                    >
+                      <Activity className="w-4 h-4" />
+                      {selectedPatientId === patient.id ? "Close patient analysis" : "Open vertical and horizontal analysis"}
+                    </button>
+                    {selectedPatientId === patient.id && (
+                      <div className="space-y-4 rounded-xl border bg-background p-4">
+                        {isAnalysisLoading ? (
+                          <p className="text-sm text-muted-foreground">Loading complete patient history...</p>
+                        ) : (
+                          <>
+                            <div>
+                              <p className="mb-2 flex items-center gap-2 text-sm font-semibold">
+                                <CalendarClock className="w-4 h-4 text-primary" /> Vertical patient timeline
+                              </p>
+                              <div className="space-y-2">
+                                {patientAnalysis?.events?.length ? patientAnalysis.events.map((event) => (
+                                  <div key={event.id} className="border-l-2 border-primary/40 pl-3 py-1">
+                                    <p className="text-sm font-medium">{event.summary}</p>
+                                    <p className="text-xs text-muted-foreground">
+                                      {event.eventDate || (event.createdAt ? new Date(event.createdAt).toLocaleDateString() : "Unknown date")} · {event.eventType}
+                                    </p>
+                                  </div>
+                                )) : (
+                                  <p className="text-sm text-muted-foreground">No patient timeline is available.</p>
+                                )}
+                              </div>
+                            </div>
+
+                            <div>
+                              <p className="mb-2 flex items-center gap-2 text-sm font-semibold">
+                                <TableProperties className="w-4 h-4 text-primary" /> Horizontal clinical comparison
+                              </p>
+                              {horizontalAnalysis.rows.length ? (
+                                <div className="overflow-x-auto rounded-lg border">
+                                  <table className="min-w-full text-sm">
+                                    <thead className="bg-muted/60">
+                                      <tr>
+                                        <th className="sticky left-0 bg-muted px-3 py-2 text-left font-medium">Clinical field</th>
+                                        {horizontalAnalysis.dates.map((date) => (
+                                          <th key={date} className="whitespace-nowrap px-3 py-2 text-left font-medium">{date}</th>
+                                        ))}
+                                      </tr>
+                                    </thead>
+                                    <tbody className="divide-y">
+                                      {horizontalAnalysis.rows.map((row) => (
+                                        <tr key={`${row.category}:${row.name}`}>
+                                          <td className="sticky left-0 bg-background px-3 py-2">
+                                            <p className="font-medium">{row.name}</p>
+                                            <p className="text-xs text-muted-foreground">{row.category.replace(/_/g, " ")}</p>
+                                          </td>
+                                          {horizontalAnalysis.dates.map((date) => (
+                                            <td key={date} className="min-w-36 px-3 py-2 align-top">
+                                              {(row.values.get(date) || []).map((observation, index) => (
+                                                <div
+                                                  key={`${date}-${index}`}
+                                                  className={observation.flag && observation.flag !== "normal" && observation.flag !== "unknown"
+                                                    ? "font-medium text-destructive"
+                                                    : ""}
+                                                  title={observation.reference_range ? `Reference: ${observation.reference_range}` : undefined}
+                                                >
+                                                  {formatObservation(observation)}
+                                                  {observation.flag && observation.flag !== "unknown" ? ` (${observation.flag})` : ""}
+                                                  {observation.needs_confirmation ? " · verify" : ""}
+                                                </div>
+                                              ))}
+                                            </td>
+                                          ))}
+                                        </tr>
+                                      ))}
+                                    </tbody>
+                                  </table>
+                                </div>
+                              ) : (
+                                <p className="text-sm text-muted-foreground">
+                                  No standardized observations yet. New documents parsed with clinical-record-v2 will populate this comparison.
+                                </p>
+                              )}
+                            </div>
+                          </>
+                        )}
+                      </div>
+                    )}
                     <div className="space-y-2">
                       <p className="text-xs font-medium text-muted-foreground flex items-center gap-1">
                         <CalendarClock className="w-3 h-3" /> Recent Timeline
@@ -194,7 +344,7 @@ export function DataManagementPanel() {
                     </span>
                   </div>
                   {record.rawText && <p className="text-sm mt-3 bg-accent/30 rounded-lg px-3 py-2">{record.rawText}</p>}
-                  {record.structuredData && Object.keys(record.structuredData as Record<string, unknown>).length > 0 && (
+                  {Boolean(record.structuredData) && Object.keys(record.structuredData as Record<string, unknown>).length > 0 && (
                     <pre className="text-xs mt-3 overflow-auto bg-muted rounded-lg p-3">
                       {JSON.stringify(record.structuredData, null, 2)}
                     </pre>

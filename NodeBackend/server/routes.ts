@@ -1031,6 +1031,36 @@ export async function registerRoutes(app: Express): Promise<Server> {
     }
   });
 
+  app.get('/api/data-management/patients/:patientId/analysis', requireAuth, async (req, res) => {
+    try {
+      const tenant = getTenantFromRequest(req);
+      const conditions = and(
+        eq(dataPatients.id, req.params.patientId),
+        eq(dataPatients.organizationId, tenant.organizationId),
+        eq(dataPatients.userId, tenant.userId),
+      );
+      const patient = (await db.select().from(dataPatients).where(conditions).limit(1))[0];
+      if (!patient) return res.status(404).json({ message: 'Patient not found' });
+
+      const [events, documents] = await Promise.all([
+        db.select().from(dataPatientEvents).where(and(
+          eq(dataPatientEvents.organizationId, tenant.organizationId),
+          eq(dataPatientEvents.userId, tenant.userId),
+          eq(dataPatientEvents.patientId, patient.id),
+        )).orderBy(desc(dataPatientEvents.createdAt)).limit(250),
+        db.select().from(dataDocuments).where(and(
+          eq(dataDocuments.organizationId, tenant.organizationId),
+          eq(dataDocuments.userId, tenant.userId),
+          eq(dataDocuments.patientId, patient.id),
+        )).orderBy(desc(dataDocuments.createdAt)).limit(250),
+      ]);
+
+      res.json({ patient, events, documents });
+    } catch (error: any) {
+      res.status(500).json({ message: error.message });
+    }
+  });
+
   // Platform stats for super admin dashboard
   app.get('/api/admin/stats', requireSuperAdmin, async (_req, res) => {
     try {

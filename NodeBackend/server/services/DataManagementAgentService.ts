@@ -57,15 +57,28 @@ type DataExtraction = {
   needs_confirmation?: boolean;
 };
 
+type ClinicalObservation = {
+  category: string;
+  name: string;
+  value?: string | null;
+  numeric_value?: number | null;
+  unit?: string | null;
+  reference_range?: string | null;
+  flag?: "normal" | "high" | "low" | "abnormal" | "critical" | "unknown" | null;
+  source_text?: string | null;
+  confidence?: number | null;
+  needs_confirmation?: boolean;
+};
+
 type DataToolResult = {
   success: boolean;
   data?: unknown;
   error?: string;
 };
 
-const DEFAULT_DATA_MANAGEMENT_PROMPT = `You are a clinical data management agent for a doctor's private WhatsApp/data app.
+const DEFAULT_DATA_MANAGEMENT_PROMPT = `You are a highly accurate clinical document extraction system for a doctor's private WhatsApp/data app.
 
-Your job is to read text, report images, PDF documents, and short doctor notes, then return strict JSON only.
+Read every visible page of report images, PDF documents, prescriptions, case papers, discharge summaries, and short doctor notes.
 
 Classify the input into one of:
 - patient: report, prescription, discharge summary, surgery note, invoice, or any record tied to a patient.
@@ -74,21 +87,54 @@ Classify the input into one of:
 
 Rules:
 - Never invent missing data.
-- Preserve medical values exactly.
+- Preserve medical values, spellings, dosage, frequency, duration, units, and reference ranges as written.
 - Use null for missing fields.
 - Use ISO dates (YYYY-MM-DD) when visible or clearly stated.
 - Set confidence from 0 to 1.
-- Set needs_confirmation true when patient matching should not be automatic.
-- Return JSON only. No markdown.
+- Set needs_confirmation true when patient identity or any clinically important field is uncertain.
+- Put each measurable or comparable fact in emr_fields.observations. This is required for longitudinal analysis.
+- Keep source_text for clinical facts so a doctor can verify them against the document.
+- Do not fill missing prescription fields with defaults.
+- Do not infer an ICD code unless explicitly printed or unambiguous.
+- Separate tests ordered from test results.
+- Include all visible pages. Do not silently ignore later PDF pages.
 
 For patient records, return:
 {
   "record_scope": "patient",
-  "document_type": "lab_report|prescription|discharge_summary|surgery_note|invoice|imaging_report|unknown",
+  "document_type": "case_paper|lab_report|prescription|discharge_summary|surgery_note|invoice|imaging_report|pathology_report|procedure_note|unknown",
   "patient": { "name": string|null, "age": number|null, "gender": string|null, "phone": string|null, "dob": string|null },
   "event_date": "YYYY-MM-DD"|null,
   "summary": string,
-  "emr_fields": object,
+  "raw_text": string|null,
+  "emr_fields": {
+    "chief_complaint": string|null,
+    "symptoms": [{ "name": string, "severity": string|null, "duration": string|null, "notes": string|null, "source_text": string|null }],
+    "vitals": [{ "name": string, "value": string|null, "numeric_value": number|null, "unit": string|null, "source_text": string|null }],
+    "diagnoses": [{ "name": string, "icd10_code": string|null, "notes": string|null, "is_primary": boolean, "source_text": string|null }],
+    "prescriptions": [{ "medicine": string, "dosage": string|null, "frequency": string|null, "duration": string|null, "instructions": string|null, "quantity": string|null, "source_text": string|null }],
+    "tests_ordered": [{ "name": string, "type": string|null, "instructions": string|null, "urgency": string|null, "source_text": string|null }],
+    "results": [{ "name": string, "value": string|null, "numeric_value": number|null, "unit": string|null, "reference_range": string|null, "flag": string|null, "source_text": string|null }],
+    "procedures": [{ "name": string, "date": string|null, "notes": string|null, "source_text": string|null }],
+    "allergies": [string],
+    "history": [string],
+    "advice": [string],
+    "follow_up": string|null,
+    "doctor_notes": string|null,
+    "warnings": [string],
+    "observations": [{
+      "category": "vital|lab_result|symptom|diagnosis|medicine|procedure|other",
+      "name": string,
+      "value": string|null,
+      "numeric_value": number|null,
+      "unit": string|null,
+      "reference_range": string|null,
+      "flag": "normal|high|low|abnormal|critical|unknown"|null,
+      "source_text": string|null,
+      "confidence": number|null,
+      "needs_confirmation": boolean
+    }]
+  },
   "confidence": number,
   "needs_confirmation": boolean
 }
@@ -104,6 +150,58 @@ For general records, return:
   "structured_data": object,
   "confidence": number
 }`;
+
+const DATA_EXTRACTION_TOOL: Anthropic.Tool = {
+  name: "save_parsed_record",
+  description: "Return the structured record extracted from the supplied message or document.",
+  input_schema: {
+    type: "object",
+    properties: {
+      record_scope: { type: "string", enum: ["patient", "general", "unknown"] },
+      document_type: { type: ["string", "null"] },
+      record_type: { type: ["string", "null"] },
+      title: { type: ["string", "null"] },
+      patient: {
+        type: ["object", "null"],
+        properties: {
+          name: { type: ["string", "null"] },
+          age: { type: ["number", "null"] },
+          gender: { type: ["string", "null"] },
+          phone: { type: ["string", "null"] },
+          dob: { type: ["string", "null"] },
+        },
+        required: ["name", "age", "gender", "phone", "dob"],
+        additionalProperties: false,
+      },
+      event_date: { type: ["string", "null"] },
+      period_start: { type: ["string", "null"] },
+      period_end: { type: ["string", "null"] },
+      summary: { type: "string" },
+      raw_text: { type: ["string", "null"] },
+      emr_fields: { type: ["object", "null"], additionalProperties: true },
+      structured_data: { type: ["object", "null"], additionalProperties: true },
+      confidence: { type: "number" },
+      needs_confirmation: { type: "boolean" },
+    },
+    required: [
+      "record_scope",
+      "document_type",
+      "record_type",
+      "title",
+      "patient",
+      "event_date",
+      "period_start",
+      "period_end",
+      "summary",
+      "raw_text",
+      "emr_fields",
+      "structured_data",
+      "confidence",
+      "needs_confirmation",
+    ],
+    additionalProperties: false,
+  },
+};
 
 const DATA_QA_SYSTEM_PROMPT = `You are a private clinical data Q&A agent for a doctor on WhatsApp.
 
@@ -298,7 +396,7 @@ export class DataManagementAgentService {
       return "I received the file, but could not download it for parsing. Please resend it.";
     }
 
-      const extraction = await this.extractStructuredData(tenant, data);
+    const extraction = await this.extractStructuredData(tenant, data);
     return this.persistExtraction(tenant, data, extraction);
   }
 
@@ -610,10 +708,19 @@ export class DataManagementAgentService {
 
     const response = await this.anthropic.messages.create({
       model: process.env.DATA_AGENT_MODEL || "claude-sonnet-4-20250514",
-      max_tokens: 1800,
+      max_tokens: 5000,
       system: await this.getSystemPrompt(tenant.userId),
+      tools: [DATA_EXTRACTION_TOOL],
+      tool_choice: { type: "tool", name: DATA_EXTRACTION_TOOL.name },
       messages: [{ role: "user", content: contentBlocks }],
     } as any);
+
+    const toolUse = response.content.find(
+      (block: any) => block.type === "tool_use" && block.name === DATA_EXTRACTION_TOOL.name,
+    ) as Anthropic.ToolUseBlock | undefined;
+    if (toolUse?.input && typeof toolUse.input === "object") {
+      return this.normalizeExtraction(toolUse.input as DataExtraction);
+    }
 
     const text = response.content
       .filter((block: any) => block.type === "text")
@@ -621,7 +728,7 @@ export class DataManagementAgentService {
       .join("\n")
       .trim();
 
-    return this.parseExtractionJson(text);
+    return this.normalizeExtraction(this.parseExtractionJson(text));
   }
 
   private async persistExtraction(tenant: TenantContext, data: IncomingDataMessage, extraction: DataExtraction): Promise<string> {
@@ -940,6 +1047,159 @@ export class DataManagementAgentService {
       confidence: 0,
       needs_confirmation: true,
     };
+  }
+
+  private normalizeExtraction(input: DataExtraction): DataExtraction {
+    const scope = ["patient", "general", "unknown"].includes(input.record_scope)
+      ? input.record_scope
+      : "unknown";
+    const confidence = Math.max(0, Math.min(1, Number(input.confidence) || 0));
+
+    if (scope !== "patient") {
+      return {
+        ...input,
+        record_scope: scope,
+        confidence,
+        needs_confirmation: scope === "unknown" ? true : Boolean(input.needs_confirmation),
+      };
+    }
+
+    const source = this.asRecord(input.emr_fields);
+    const results = this.asRecordArray(source.results);
+    const vitals = this.asRecordArray(source.vitals);
+    const observations = this.asRecordArray(source.observations)
+      .map((value) => this.normalizeObservation(value))
+      .filter((value): value is ClinicalObservation => Boolean(value));
+
+    for (const vital of vitals) {
+      const observation = this.normalizeObservation({ ...vital, category: "vital" });
+      if (observation && !this.hasObservation(observations, observation)) observations.push(observation);
+    }
+    for (const result of results) {
+      const observation = this.normalizeObservation({ ...result, category: "lab_result" });
+      if (observation && !this.hasObservation(observations, observation)) observations.push(observation);
+    }
+    for (const symptom of this.asRecordArray(source.symptoms)) {
+      const observation = this.normalizeObservation({
+        category: "symptom",
+        name: symptom.name,
+        value: [symptom.severity, symptom.duration].filter(Boolean).join(", ") || symptom.notes,
+        source_text: symptom.source_text,
+        needs_confirmation: false,
+      });
+      if (observation && !this.hasObservation(observations, observation)) observations.push(observation);
+    }
+    for (const diagnosis of this.asRecordArray(source.diagnoses)) {
+      const observation = this.normalizeObservation({
+        category: "diagnosis",
+        name: diagnosis.name,
+        value: diagnosis.notes,
+        source_text: diagnosis.source_text,
+        needs_confirmation: false,
+      });
+      if (observation && !this.hasObservation(observations, observation)) observations.push(observation);
+    }
+    for (const prescription of this.asRecordArray(source.prescriptions)) {
+      const observation = this.normalizeObservation({
+        category: "medicine",
+        name: prescription.medicine,
+        value: [prescription.dosage, prescription.frequency, prescription.duration, prescription.instructions]
+          .filter(Boolean)
+          .join(" | "),
+        source_text: prescription.source_text,
+        needs_confirmation: false,
+      });
+      if (observation && !this.hasObservation(observations, observation)) observations.push(observation);
+    }
+    for (const procedure of this.asRecordArray(source.procedures)) {
+      const observation = this.normalizeObservation({
+        category: "procedure",
+        name: procedure.name,
+        value: [procedure.date, procedure.notes].filter(Boolean).join(" | "),
+        source_text: procedure.source_text,
+        needs_confirmation: false,
+      });
+      if (observation && !this.hasObservation(observations, observation)) observations.push(observation);
+    }
+
+    return {
+      ...input,
+      record_scope: "patient",
+      confidence,
+      needs_confirmation: Boolean(input.needs_confirmation),
+      emr_fields: {
+        chief_complaint: this.nullableString(source.chief_complaint),
+        symptoms: this.asRecordArray(source.symptoms),
+        vitals,
+        diagnoses: this.asRecordArray(source.diagnoses),
+        prescriptions: this.asRecordArray(source.prescriptions),
+        tests_ordered: this.asRecordArray(source.tests_ordered),
+        results,
+        procedures: this.asRecordArray(source.procedures),
+        allergies: this.stringArray(source.allergies),
+        history: this.stringArray(source.history),
+        advice: this.stringArray(source.advice),
+        follow_up: this.nullableString(source.follow_up),
+        doctor_notes: this.nullableString(source.doctor_notes),
+        warnings: this.stringArray(source.warnings),
+        observations,
+        schema_version: "clinical-record-v2",
+      },
+    };
+  }
+
+  private normalizeObservation(value: Record<string, unknown>): ClinicalObservation | null {
+    const name = this.nullableString(value.name);
+    if (!name) return null;
+    const allowedFlags = new Set(["normal", "high", "low", "abnormal", "critical", "unknown"]);
+    const flag = this.nullableString(value.flag)?.toLowerCase() || null;
+    const numericValue = typeof value.numeric_value === "number" && Number.isFinite(value.numeric_value)
+      ? value.numeric_value
+      : null;
+
+    return {
+      category: this.nullableString(value.category) || "other",
+      name,
+      value: this.nullableString(value.value),
+      numeric_value: numericValue,
+      unit: this.nullableString(value.unit),
+      reference_range: this.nullableString(value.reference_range),
+      flag: flag && allowedFlags.has(flag) ? flag as ClinicalObservation["flag"] : null,
+      source_text: this.nullableString(value.source_text),
+      confidence: typeof value.confidence === "number"
+        ? Math.max(0, Math.min(1, value.confidence))
+        : null,
+      needs_confirmation: Boolean(value.needs_confirmation),
+    };
+  }
+
+  private hasObservation(existing: ClinicalObservation[], candidate: ClinicalObservation): boolean {
+    const key = `${candidate.category}|${this.normalizeName(candidate.name)}|${candidate.value || ""}|${candidate.numeric_value ?? ""}`;
+    return existing.some((item) =>
+      `${item.category}|${this.normalizeName(item.name)}|${item.value || ""}|${item.numeric_value ?? ""}` === key,
+    );
+  }
+
+  private asRecord(value: unknown): Record<string, unknown> {
+    return value && typeof value === "object" && !Array.isArray(value)
+      ? value as Record<string, unknown>
+      : {};
+  }
+
+  private asRecordArray(value: unknown): Record<string, unknown>[] {
+    return Array.isArray(value)
+      ? value.filter((item): item is Record<string, unknown> => Boolean(item) && typeof item === "object" && !Array.isArray(item))
+      : [];
+  }
+
+  private stringArray(value: unknown): string[] {
+    return Array.isArray(value)
+      ? value.map((item) => String(item || "").trim()).filter(Boolean)
+      : [];
+  }
+
+  private nullableString(value: unknown): string | null {
+    return typeof value === "string" && value.trim() ? value.trim() : null;
   }
 
   private normalizeName(name: string): string {
