@@ -37,6 +37,7 @@ export interface WAServiceInstance {
   disconnect(): Promise<void>;
   getCurrentQR(): { qr: string; qrCode?: string; rawQR?: string; timestamp: number } | null;
   getStatus(): WhatsAppStatus;
+  isAuthenticatedSelfChat?(jid?: string | null): boolean;
   cleanup(): Promise<void>;
 }
 
@@ -574,8 +575,7 @@ class ManagedBaileysSession extends EventEmitter implements WAServiceInstance {
     this.rememberRecentJid(phoneNumber, from, senderPn);
 
     const isFromMe = msg.key.fromMe === true;
-    const isLidJid = !!from && from.endsWith('@lid');
-    const isSelfChat = this.isSelfChatJid(from) || (isFromMe && isLidJid);
+    const isSelfChat = this.isSelfChatJid(from);
     const messageId = msg.key.id as string | undefined;
     const isSentEcho = !!messageId && this.backendSentMessageIds.has(messageId);
 
@@ -941,7 +941,16 @@ class ManagedBaileysSession extends EventEmitter implements WAServiceInstance {
   }
 
   getStatus(): WhatsAppStatus & { waVersion?: number[]; waIsLatest?: boolean } {
-    return { ...this.status, waVersion: this.waVersion ?? undefined, waIsLatest: this.waIsLatest };
+    return {
+      ...this.status,
+      sessionInfo: this.socket?.user || this.status.sessionInfo,
+      waVersion: this.waVersion ?? undefined,
+      waIsLatest: this.waIsLatest,
+    };
+  }
+
+  isAuthenticatedSelfChat(jid?: string | null): boolean {
+    return this.isSelfChatJid(jid);
   }
 
   /**

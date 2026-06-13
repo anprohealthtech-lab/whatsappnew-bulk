@@ -32,6 +32,7 @@ type IncomingDataMessage = {
   };
   from?: string;
   replyTo?: string;
+  senderPn?: string;
   timestamp?: number;
 };
 
@@ -41,6 +42,7 @@ type DataWhatsAppService = {
   getStatus?(): {
     sessionInfo?: unknown;
   };
+  isAuthenticatedSelfChat?(jid?: string | null): boolean;
 };
 
 type ExtractedPatient = {
@@ -407,10 +409,16 @@ export class DataManagementAgentService {
   }
 
   private async isOwnerMessage(ownerUserId: string, data: IncomingDataMessage): Promise<boolean> {
+    const liveSenderIds = [data.from, data.replyTo].filter(Boolean);
+    if (liveSenderIds.some((jid) => this.whatsappService?.isAuthenticatedSelfChat?.(jid))) {
+      return true;
+    }
+
     const senderTokens = this.identityTokens([
       data.phoneNumber,
       data.from,
       data.replyTo,
+      data.senderPn,
     ]);
     if (senderTokens.size === 0) return false;
 
@@ -773,7 +781,11 @@ export class DataManagementAgentService {
       const events = await db
         .select()
         .from(dataPatientEvents)
-        .where(eq(dataPatientEvents.patientId, patient.id))
+        .where(and(
+          eq(dataPatientEvents.organizationId, tenant.organizationId),
+          eq(dataPatientEvents.userId, tenant.userId),
+          eq(dataPatientEvents.patientId, patient.id),
+        ))
         .orderBy(desc(dataPatientEvents.createdAt))
         .limit(5);
 
@@ -1117,7 +1129,11 @@ export class DataManagementAgentService {
           lastUpdatedAt: new Date(),
           updatedAt: new Date(),
         })
-        .where(eq(dataPatients.id, patient.id));
+        .where(and(
+          eq(dataPatients.id, patient.id),
+          eq(dataPatients.organizationId, tenant.organizationId),
+          eq(dataPatients.userId, tenant.userId),
+        ));
 
       return `Saved ${extraction.document_type || "document"} for ${patient.canonicalName}. Summary: ${extraction.summary || "No summary extracted."}`;
     }
