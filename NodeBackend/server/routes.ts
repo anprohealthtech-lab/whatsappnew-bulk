@@ -368,6 +368,7 @@ async function callVoiceRagAgent(params: {
   history: Array<{ role: string; content: string }>;
   ragAgentId?: string | null;
   systemPrompt?: string | null;
+  languageMode?: string | null;
   stream?: boolean;
   onChunk?: (chunk: string) => void;
 }): Promise<string> {
@@ -383,6 +384,10 @@ async function callVoiceRagAgent(params: {
         eq(userRagAgents.userId, params.tenant.userId),
       ))
     .limit(1);
+  const effectiveSystemPrompt = buildVoiceSystemPrompt(
+    params.systemPrompt || userRagConfig?.systemPrompt,
+    params.languageMode,
+  );
 
   if (userRagConfig?.ragBaseUrl && userRagConfig.ragBaseUrl !== "supabase-knowledge-base") {
     const endpoint = `${userRagConfig.ragBaseUrl}/api/v1/chat/completions`;
@@ -394,8 +399,8 @@ async function callVoiceRagAgent(params: {
       },
       body: JSON.stringify({
         messages: [
-          ...(params.systemPrompt || userRagConfig.systemPrompt
-            ? [{ role: "system", content: params.systemPrompt || userRagConfig.systemPrompt }]
+          ...(effectiveSystemPrompt
+            ? [{ role: "system", content: effectiveSystemPrompt }]
             : []),
           ...params.history,
           { role: "user", content: params.text },
@@ -436,7 +441,7 @@ async function callVoiceRagAgent(params: {
       conversation_history: params.history,
       stream: params.stream || false,
       channel: "voice",
-      system_prompt: params.systemPrompt || undefined,
+      system_prompt: effectiveSystemPrompt || undefined,
     }),
   });
 
@@ -483,6 +488,22 @@ async function callVoiceRagAgent(params: {
   const content = data.choices?.[0]?.message?.content;
   if (!content || typeof content !== "string") throw new Error("Voice Supabase RAG returned an empty response");
   return content.trim();
+}
+
+function buildVoiceSystemPrompt(basePrompt?: string | null, languageMode?: string | null): string | undefined {
+  const parts = [basePrompt?.trim()].filter(Boolean) as string[];
+  const mode = languageMode?.trim() || "match_speaker";
+  if (mode === "match_speaker") {
+    parts.push(
+      "Reply in the same language and script used in the user's latest message. " +
+      "If the user mixes languages, follow their dominant language and natural speaking style. " +
+      "Keep the answer suitable for being spoken aloud.",
+    );
+  } else if (mode !== "auto") {
+    const fixedLanguage = mode.replace(/^fixed:/i, "").trim();
+    parts.push(`Reply in ${fixedLanguage}. Keep the answer suitable for being spoken aloud.`);
+  }
+  return parts.length ? parts.join("\n\n") : undefined;
 }
 
 export async function registerRoutes(app: Express): Promise<Server> {
@@ -743,6 +764,7 @@ export async function registerRoutes(app: Express): Promise<Server> {
           history,
           ragAgentId: selectedVoiceAgent?.ragAgentId,
           systemPrompt: selectedVoiceAgent?.systemPrompt,
+          languageMode: selectedVoiceAgent?.languageMode,
           stream: true,
           onChunk: (chunk: string) => {
             fullText += chunk;
@@ -786,6 +808,7 @@ export async function registerRoutes(app: Express): Promise<Server> {
         history,
         ragAgentId: selectedVoiceAgent?.ragAgentId,
         systemPrompt: selectedVoiceAgent?.systemPrompt,
+        languageMode: selectedVoiceAgent?.languageMode,
       });
 
       await storage.createMessageForTenant(tenant, {

@@ -32,9 +32,9 @@ const defaultFlow = JSON.stringify({
 export function VoiceAgentPanel() {
   const queryClient = useQueryClient();
   const { toast } = useToast();
-  const [credential, setCredential] = useState({ provider: "fish", credentialType: "tts", name: "Fish Audio", secret: "" });
+  const [credential, setCredential] = useState({ provider: "fish", credentialType: "tts", name: "Fish Audio", secret: "", language: "auto" });
   const [profile, setProfile] = useState({ credentialId: "", name: "Default Voice", referenceId: "", model: "s2-pro" });
-  const [agent, setAgent] = useState({ name: "Voice Agent", sttCredentialId: "", voiceProfileId: "", defaultFlowKey: "welcome_flow" });
+  const [agent, setAgent] = useState({ name: "Voice Agent", sttCredentialId: "", voiceProfileId: "", defaultFlowKey: "welcome_flow", languageMode: "match_speaker" });
   const [flow, setFlow] = useState({ flowKey: "welcome_flow", name: "Welcome Flow", voiceAgentId: "", voiceProfileId: "", definition: defaultFlow });
   const [gatewayName, setGatewayName] = useState("Windows Gateway");
   const [campaign, setCampaign] = useState({ name: "Voice Campaign", voiceAgentId: "", flowId: "", gatewayDeviceId: "" });
@@ -61,7 +61,15 @@ export function VoiceAgentPanel() {
 
   const createCredential = useMutation({
     mutationFn: async () => {
-      const response = await apiRequest("POST", "/api/voice/credentials", credential);
+      const response = await apiRequest("POST", "/api/voice/credentials", {
+        provider: credential.provider,
+        credentialType: credential.credentialType,
+        name: credential.name,
+        secret: credential.secret,
+        settings: credential.credentialType === "stt" && credential.language !== "auto"
+          ? { language: credential.language }
+          : {},
+      });
       return response.json();
     },
     onSuccess: () => {
@@ -199,6 +207,26 @@ export function VoiceAgentPanel() {
               </select>
             </Field>
             <Field label="API key"><Input type="password" value={credential.secret} onChange={(e) => setCredential({ ...credential, secret: e.target.value })} /></Field>
+            {credential.credentialType === "stt" && (
+              <Field label="Recognition language">
+                <select className="w-full border rounded-md p-2 bg-background" value={credential.language} onChange={(e) => setCredential({ ...credential, language: e.target.value })}>
+                  <option value="auto">Detect automatically</option>
+                  <option value="en">English</option>
+                  <option value="hi">Hindi</option>
+                  <option value="bn">Bengali</option>
+                  <option value="ta">Tamil</option>
+                  <option value="te">Telugu</option>
+                  <option value="mr">Marathi</option>
+                  <option value="gu">Gujarati</option>
+                  <option value="kn">Kannada</option>
+                  <option value="ml">Malayalam</option>
+                  <option value="pa">Punjabi</option>
+                  <option value="es">Spanish</option>
+                  <option value="fr">French</option>
+                  <option value="ar">Arabic</option>
+                </select>
+              </Field>
+            )}
             <Button onClick={() => createCredential.mutate()} disabled={!credential.secret || createCredential.isPending}><Plus className="w-4 h-4 mr-2" />Save credential</Button>
           </CardContent>
         </Card>
@@ -222,6 +250,24 @@ export function VoiceAgentPanel() {
             <Field label="Agent name"><Input value={agent.name} onChange={(e) => setAgent({ ...agent, name: e.target.value })} /></Field>
             <Field label="STT credential"><Select optional value={agent.sttCredentialId} onChange={(value) => setAgent({ ...agent, sttCredentialId: value })} items={sttCredentials} /></Field>
             <Field label="Voice profile"><Select optional value={agent.voiceProfileId} onChange={(value) => setAgent({ ...agent, voiceProfileId: value })} items={profiles} /></Field>
+            <Field label="Response language">
+              <select className="w-full border rounded-md p-2 bg-background" value={agent.languageMode} onChange={(e) => setAgent({ ...agent, languageMode: e.target.value })}>
+                <option value="match_speaker">Match the speaker automatically</option>
+                <option value="fixed:English">Always English</option>
+                <option value="fixed:Hindi">Always Hindi</option>
+                <option value="fixed:Bengali">Always Bengali</option>
+                <option value="fixed:Tamil">Always Tamil</option>
+                <option value="fixed:Telugu">Always Telugu</option>
+                <option value="fixed:Marathi">Always Marathi</option>
+                <option value="fixed:Gujarati">Always Gujarati</option>
+                <option value="fixed:Kannada">Always Kannada</option>
+                <option value="fixed:Malayalam">Always Malayalam</option>
+                <option value="fixed:Punjabi">Always Punjabi</option>
+                <option value="fixed:Spanish">Always Spanish</option>
+                <option value="fixed:French">Always French</option>
+                <option value="fixed:Arabic">Always Arabic</option>
+              </select>
+            </Field>
             <Field label="Default flow key"><Input value={agent.defaultFlowKey} onChange={(e) => setAgent({ ...agent, defaultFlowKey: e.target.value })} /></Field>
             <Button onClick={() => createAgent.mutate()} disabled={!agent.name || createAgent.isPending}><Plus className="w-4 h-4 mr-2" />Create agent</Button>
           </CardContent>
