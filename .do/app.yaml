@@ -46,6 +46,14 @@ services:
     scope: RUN_TIME
     type: SECRET
 
+  - key: HIMS_SUPABASE_URL
+    scope: RUN_TIME
+    type: SECRET
+
+  - key: HIMS_BOT_SECRET
+    scope: RUN_TIME
+    type: SECRET
+
   - key: SUPER_ADMIN_USERNAME
     scope: RUN_TIME
     type: SECRET

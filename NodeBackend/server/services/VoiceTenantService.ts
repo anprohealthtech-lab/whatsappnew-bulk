@@ -122,6 +122,7 @@ export class VoiceTenantService {
     ragAgentId?: string;
     sttCredentialId?: string;
     voiceProfileId?: string;
+    widgetSettings?: Record<string, unknown>;
   }) {
     if (input.sttCredentialId) await this.requireOwnedCredential(tenant, input.sttCredentialId, "stt");
     if (input.voiceProfileId) await this.requireOwnedProfile(tenant, input.voiceProfileId);
@@ -136,9 +137,55 @@ export class VoiceTenantService {
       ragAgentId: input.ragAgentId || null,
       sttCredentialId: input.sttCredentialId || null,
       voiceProfileId: input.voiceProfileId || null,
+      widgetSettings: input.widgetSettings,
       updatedAt: new Date(),
     }).returning();
     return row;
+  }
+
+  async updateAgentWidget(tenant: Tenant, id: string, widgetSettings: Record<string, unknown>) {
+    await this.requireOwnedAgent(tenant, id);
+    const [row] = await db.update(voiceAgents).set({
+      widgetSettings,
+      updatedAt: new Date(),
+    }).where(and(
+      eq(voiceAgents.id, id),
+      eq(voiceAgents.organizationId, tenant.organizationId),
+      eq(voiceAgents.userId, tenant.userId),
+    )).returning();
+    return row;
+  }
+
+  async getPublicAgent(id: string) {
+    const [agent] = await db.select({
+      id: voiceAgents.id,
+      name: voiceAgents.name,
+      status: voiceAgents.status,
+      widgetSettings: voiceAgents.widgetSettings,
+    }).from(voiceAgents).where(and(
+      eq(voiceAgents.id, id),
+      eq(voiceAgents.status, "active"),
+    )).limit(1);
+    if (!agent) throw new Error("Voice agent not found");
+    return agent;
+  }
+
+  async createPublicSessionToken(id: string) {
+    if (!TOKEN_SECRET) throw new Error("VOICE_SESSION_TOKEN_SECRET is not configured");
+    const [agent] = await db.select().from(voiceAgents).where(and(
+      eq(voiceAgents.id, id),
+      eq(voiceAgents.status, "active"),
+    )).limit(1);
+    if (!agent) throw new Error("Voice agent not found");
+    return jwt.sign({
+      organizationId: agent.organizationId,
+      userId: agent.userId,
+      voiceAgentId: agent.id,
+      flowId: agent.defaultFlowKey,
+      voiceProfileId: agent.voiceProfileId,
+      channel: "browser",
+      type: "voice_session",
+    }, TOKEN_SECRET, { expiresIn: "10m", issuer: "anpro-main-app", audience: "voice-agent-service" });
   }
 
   async listFlows(tenant: Tenant) {

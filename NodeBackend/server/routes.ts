@@ -244,6 +244,7 @@ const voiceAgentRequestSchema = z.object({
   callerId: z.string().optional(),
   organizationId: z.string().trim().min(1),
   userId: z.string().trim().min(1),
+  voiceAgentId: z.string().trim().optional(),
   stream: z.boolean().optional().default(false),
 });
 
@@ -276,6 +277,14 @@ const voiceAgentConfigSchema = z.object({
   ragAgentId: z.string().trim().optional(),
   sttCredentialId: z.string().trim().optional(),
   voiceProfileId: z.string().trim().optional(),
+  widgetSettings: z.record(z.unknown()).optional(),
+});
+
+const voiceWidgetSettingsSchema = z.object({
+  title: z.string().trim().min(1).max(80),
+  welcomeMessage: z.string().trim().min(1).max(240),
+  accentColor: z.string().regex(/^#[0-9a-fA-F]{6}$/),
+  avatarUrl: z.string().max(1_500_000).nullable().optional(),
 });
 
 const voiceFlowSchema = z.object({
@@ -354,14 +363,22 @@ async function callVoiceRagAgent(params: {
   tenant: TenantContext;
   text: string;
   history: Array<{ role: string; content: string }>;
+  ragAgentId?: string | null;
+  systemPrompt?: string | null;
   stream?: boolean;
   onChunk?: (chunk: string) => void;
 }): Promise<string> {
   const [userRagConfig] = await db.select().from(userRagAgents)
-    .where(and(
-      eq(userRagAgents.organizationId, params.tenant.organizationId),
-      eq(userRagAgents.userId, params.tenant.userId)
-    ))
+    .where(params.ragAgentId
+      ? and(
+        eq(userRagAgents.id, params.ragAgentId),
+        eq(userRagAgents.organizationId, params.tenant.organizationId),
+        eq(userRagAgents.userId, params.tenant.userId),
+      )
+      : and(
+        eq(userRagAgents.organizationId, params.tenant.organizationId),
+        eq(userRagAgents.userId, params.tenant.userId),
+      ))
     .limit(1);
 
   if (userRagConfig?.ragBaseUrl && userRagConfig.ragBaseUrl !== "supabase-knowledge-base") {
@@ -374,7 +391,9 @@ async function callVoiceRagAgent(params: {
       },
       body: JSON.stringify({
         messages: [
-          ...(userRagConfig.systemPrompt ? [{ role: "system", content: userRagConfig.systemPrompt }] : []),
+          ...(params.systemPrompt || userRagConfig.systemPrompt
+            ? [{ role: "system", content: params.systemPrompt || userRagConfig.systemPrompt }]
+            : []),
           ...params.history,
           { role: "user", content: params.text },
         ],
@@ -414,6 +433,7 @@ async function callVoiceRagAgent(params: {
       conversation_history: params.history,
       stream: params.stream || false,
       channel: "voice",
+      system_prompt: params.systemPrompt || undefined,
     }),
   });
 
@@ -670,6 +690,18 @@ export async function registerRoutes(app: Express): Promise<Server> {
         return res.status(403).json({ message: 'Voice Agent is not enabled for this user' });
       }
 
+      const [selectedVoiceAgent] = input.voiceAgentId
+        ? await db.select().from(voiceAgents).where(and(
+          eq(voiceAgents.id, input.voiceAgentId),
+          eq(voiceAgents.organizationId, tenant.organizationId),
+          eq(voiceAgents.userId, tenant.userId),
+          eq(voiceAgents.status, "active"),
+        )).limit(1)
+        : [undefined];
+      if (input.voiceAgentId && !selectedVoiceAgent) {
+        return res.status(404).json({ message: 'Voice agent not found for this tenant' });
+      }
+
       const callerId = input.callerId || `voice:${input.sessionId}`;
       const historyRows = await storage.getConversationHistoryByTenant(tenant, callerId, 12);
       const history = toRagHistory(historyRows.reverse());
@@ -706,6 +738,8 @@ export async function registerRoutes(app: Express): Promise<Server> {
           tenant,
           text: input.text,
           history,
+          ragAgentId: selectedVoiceAgent?.ragAgentId,
+          systemPrompt: selectedVoiceAgent?.systemPrompt,
           stream: true,
           onChunk: (chunk: string) => {
             fullText += chunk;
@@ -747,6 +781,8 @@ export async function registerRoutes(app: Express): Promise<Server> {
         tenant,
         text: input.text,
         history,
+        ragAgentId: selectedVoiceAgent?.ragAgentId,
+        systemPrompt: selectedVoiceAgent?.systemPrompt,
       });
 
       await storage.createMessageForTenant(tenant, {
@@ -840,6 +876,37 @@ export async function registerRoutes(app: Express): Promise<Server> {
       res.status(201).json(await voiceTenantService.createAgent(getTenantFromRequest(req), input));
     } catch (error: any) {
       res.status(error instanceof z.ZodError ? 400 : error.status || 500).json({ message: error.message });
+    }
+  });
+
+  app.patch('/api/voice/agents/:id/widget', requireAuth, async (req, res) => {
+    try {
+      await requireVoiceFeature(req);
+      const widgetSettings = voiceWidgetSettingsSchema.parse(req.body);
+      res.json(await voiceTenantService.updateAgentWidget(
+        getTenantFromRequest(req),
+        req.params.id,
+        widgetSettings,
+      ));
+    } catch (error: any) {
+      res.status(error instanceof z.ZodError ? 400 : error.status || 500).json({ message: error.message });
+    }
+  });
+
+  app.get('/api/voice/public/agents/:id', async (req, res) => {
+    try {
+      res.json(await voiceTenantService.getPublicAgent(req.params.id));
+    } catch (error: any) {
+      res.status(404).json({ message: error.message });
+    }
+  });
+
+  app.post('/api/voice/public/agents/:id/session-token', async (req, res) => {
+    try {
+      const token = await voiceTenantService.createPublicSessionToken(req.params.id);
+      res.json({ token, expiresInSeconds: 600 });
+    } catch (error: any) {
+      res.status(error.message?.includes("not found") ? 404 : 500).json({ message: error.message });
     }
   });
 

@@ -669,9 +669,13 @@ export async function runMigrations(): Promise<void> {
         "rag_agent_id" varchar,
         "stt_credential_id" varchar REFERENCES "voice_provider_credentials"("id") ON DELETE SET NULL,
         "voice_profile_id" varchar REFERENCES "voice_profiles"("id") ON DELETE SET NULL,
+        "widget_settings" jsonb DEFAULT '{"title":"Ask our AI assistant","welcomeMessage":"Tap the microphone and ask a question.","accentColor":"#6d5dfc","avatarUrl":null}'::jsonb,
         "created_at" timestamp DEFAULT now(),
         "updated_at" timestamp DEFAULT now()
       );
+      ALTER TABLE "voice_agents"
+        ADD COLUMN IF NOT EXISTS "widget_settings" jsonb
+        DEFAULT '{"title":"Ask our AI assistant","welcomeMessage":"Tap the microphone and ask a question.","accentColor":"#6d5dfc","avatarUrl":null}'::jsonb;
       CREATE INDEX IF NOT EXISTS "voice_agents_tenant"
         ON "voice_agents" ("organization_id", "user_id", "status");
 

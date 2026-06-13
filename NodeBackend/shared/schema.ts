@@ -339,6 +339,12 @@ export const voiceAgents = pgTable("voice_agents", {
   ragAgentId: varchar("rag_agent_id").references(() => userRagAgents.id, { onDelete: "set null" }),
   sttCredentialId: varchar("stt_credential_id").references(() => voiceProviderCredentials.id, { onDelete: "set null" }),
   voiceProfileId: varchar("voice_profile_id").references(() => voiceProfiles.id, { onDelete: "set null" }),
+  widgetSettings: jsonb("widget_settings").default({
+    title: "Ask our AI assistant",
+    welcomeMessage: "Tap the microphone and ask a question.",
+    accentColor: "#6d5dfc",
+    avatarUrl: null,
+  }),
   createdAt: timestamp("created_at").defaultNow(),
   updatedAt: timestamp("updated_at").defaultNow(),
 });

@@ -540,7 +540,13 @@ export class HIMSChatbotService {
       );
 
       if (!resp.ok) {
-        return { success: false, error: data.error || `Edge function error: ${resp.status}` };
+        return {
+          success: false,
+          error:
+            data.error ||
+            data.message ||
+            `Edge function error: ${resp.status}`,
+        };
       }
       return { success: true, ...data };
     } catch (err: any) {

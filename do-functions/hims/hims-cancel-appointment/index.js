@@ -32,7 +32,7 @@ async function main(args) {
 
     const data = await resp.json();
     if (!resp.ok) {
-      return { body: { success: false, error: data.error || `Edge function error: ${resp.status}` } };
+      return { body: { success: false, error: data.error || data.message || `Edge function error: ${resp.status}` } };
     }
     return { body: { success: true, ...data } };
   } catch (err) {
