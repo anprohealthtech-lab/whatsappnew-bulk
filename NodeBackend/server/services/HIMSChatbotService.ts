@@ -27,6 +27,11 @@ import { sql as drizzleSql } from "drizzle-orm";
 const HIMS_SUPABASE_URL =
   process.env.HIMS_SUPABASE_URL || "https://nxbzrpmlnlvknmutyher.supabase.co";
 const HIMS_BOT_SECRET = process.env.HIMS_BOT_SECRET || "";
+const HIMS_SUPABASE_AUTH_KEY =
+  process.env.HIMS_SUPABASE_ANON_KEY ||
+  process.env.VITE_SUPABASE_ANON_KEY ||
+  process.env.SUPABASE_SERVICE_ROLE_KEY ||
+  "";
 
 // ───────────────────── Default system prompt ─────────────────────
 const DEFAULT_SYSTEM_PROMPT = `You are a friendly and professional hospital appointment assistant on WhatsApp.
@@ -525,16 +530,37 @@ export class HIMSChatbotService {
     console.log(`${tag} 📡 Calling HIMS Edge: ${functionName}`);
 
     try {
-      const resp = await fetch(url, {
-        method: "POST",
-        headers: {
+      const requestBody = JSON.stringify(mapped);
+      const callEdgeFunction = (includeSupabaseAuth: boolean) => {
+        const headers: Record<string, string> = {
           "Content-Type": "application/json",
           "x-hims-bot-secret": HIMS_BOT_SECRET,
-        },
-        body: JSON.stringify(mapped),
-      });
+        };
+        if (includeSupabaseAuth && HIMS_SUPABASE_AUTH_KEY) {
+          headers.Authorization = `Bearer ${HIMS_SUPABASE_AUTH_KEY}`;
+          headers.apikey = HIMS_SUPABASE_AUTH_KEY;
+        }
+        return fetch(url, {
+          method: "POST",
+          headers,
+          body: requestBody,
+        });
+      };
 
-      const data = await resp.json();
+      let resp = await callEdgeFunction(false);
+      let data = await resp.json();
+
+      if (
+        resp.status === 401 &&
+        data?.code === "UNAUTHORIZED_NO_AUTH_HEADER" &&
+        HIMS_SUPABASE_AUTH_KEY
+      ) {
+        console.log(
+          `${tag}    Supabase gateway requested authorization; retrying with configured app credential`,
+        );
+        resp = await callEdgeFunction(true);
+        data = await resp.json();
+      }
       console.log(
         `${tag}    Response: ${JSON.stringify(data).substring(0, 150)}...`,
       );
