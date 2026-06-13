@@ -312,7 +312,7 @@ export class ExternalWhatsAppProxy extends EventEmitter {
     };
   }
 
-  async sendMediaMessage(phoneNumber: string, filePath: string, caption?: string): Promise<any> {
+  async sendMediaMessage(phoneNumber: string, filePath: string, caption?: string, fileName?: string): Promise<any> {
     const path = await import('path');
     const fileUrl = this.resolveFileUrl(filePath);
 
@@ -326,7 +326,7 @@ export class ExternalWhatsAppProxy extends EventEmitter {
       userId: this.userId,
       phoneNumber: this.formatOutgoingPhoneNumber(phoneNumber),
       fileUrl,
-      fileName: path.basename(filePath),
+      fileName: fileName || path.basename(filePath),
       caption: caption || '',
     });
     const data = this.getNestedData<any>(response);

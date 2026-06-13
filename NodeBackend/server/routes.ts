@@ -1390,6 +1390,11 @@ export async function registerRoutes(app: Express): Promise<Server> {
       // separate prompt so clinical memory does not mix with chatbot prompts.
       // ========================================
       const dataAgentService = new DataManagementAgentService(waSession);
+      if (await dataAgentService.shouldSilentlyIgnoreMessage(ownerUserId, data)) {
+        console.log(`Data management silently ignored unauthorized ${data.messageType || 'media'} from ${data.phoneNumber}`);
+        broadcast('incoming-message', data);
+        return;
+      }
       if (await dataAgentService.shouldHandleMessage(ownerUserId, data)) {
         console.log(`Data management agent handling ${data.messageType || 'text'} from ${data.phoneNumber}`);
         const reply = await dataAgentService.handleIncomingMessage(scopedTenant, data);

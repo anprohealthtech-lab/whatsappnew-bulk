@@ -1,12 +1,15 @@
 import Anthropic from "@anthropic-ai/sdk";
 import { and, desc, eq, ilike, sql } from "drizzle-orm";
+import * as XLSX from "xlsx";
 import { db } from "../db";
+import { persistentFileService } from "./PersistentFileService";
 import {
   dataDocuments,
   dataGeneralRecords,
   dataPatientEvents,
   dataPatients,
   users,
+  whatsappSessions,
 } from "@shared/schema";
 
 type TenantContext = {
@@ -30,6 +33,14 @@ type IncomingDataMessage = {
   from?: string;
   replyTo?: string;
   timestamp?: number;
+};
+
+type DataWhatsAppService = {
+  sendTextMessage(phoneNumber: string, message: string): Promise<any>;
+  sendMediaMessage?(phoneNumber: string, filePath: string, caption?: string, fileName?: string): Promise<any>;
+  getStatus?(): {
+    sessionInfo?: unknown;
+  };
 };
 
 type ExtractedPatient = {
@@ -319,7 +330,7 @@ const DATA_QA_TOOLS: Anthropic.Tool[] = [
 export class DataManagementAgentService {
   private anthropic: Anthropic | null = null;
 
-  constructor(private whatsappService?: { sendTextMessage(phoneNumber: string, message: string): Promise<any> }) {
+  constructor(private whatsappService?: DataWhatsAppService) {
     const apiKey = process.env.ANTHROPIC_API_KEY;
     if (apiKey) {
       this.anthropic = new Anthropic({ apiKey });
@@ -331,18 +342,21 @@ export class DataManagementAgentService {
     return access.role === "super_admin" || access.features.dataManagement === true;
   }
 
+  async shouldSilentlyIgnoreMessage(ownerUserId: string, data: IncomingDataMessage): Promise<boolean> {
+    const messageType = data.messageType || "text";
+    if (messageType !== "image" && messageType !== "document") return false;
+    if (!await this.isEnabledForUser(ownerUserId)) return false;
+    return !await this.isOwnerMessage(ownerUserId, data);
+  }
+
   async shouldHandleMessage(ownerUserId: string, data: IncomingDataMessage): Promise<boolean> {
     const access = await this.getUserAccess(ownerUserId);
     const features = access.features;
     if (access.role !== "super_admin" && features.dataManagement !== true) return false;
 
-    const allowedNumbers = Array.isArray(features.dataManagementAllowedNumbers)
-      ? features.dataManagementAllowedNumbers.map((value: unknown) => String(value).replace(/\D/g, "").slice(-10)).filter(Boolean)
-      : [];
-    if (allowedNumbers.length > 0) {
-      const senderLast10 = String(data.phoneNumber || "").replace(/\D/g, "").slice(-10);
-      if (!allowedNumbers.includes(senderLast10)) return false;
-    }
+    // Clinical data is private to the connected account. Never fall back to
+    // accepting arbitrary senders when an allow-list is empty or misconfigured.
+    if (!await this.isOwnerMessage(ownerUserId, data)) return false;
 
     const messageType = data.messageType || "text";
     if (messageType === "image" || messageType === "document") return true;
@@ -364,6 +378,8 @@ export class DataManagementAgentService {
       /\badd .*patient\b/,
       /\bfind patient\b/,
       /\bdata\b/,
+      /\bexcel\b/,
+      /\bexport (?:all )?(?:patient |clinical )?data\b/,
     ];
 
     return commandPatterns.some((pattern) => pattern.test(text));
@@ -375,10 +391,322 @@ export class DataManagementAgentService {
       return this.processDocument(tenant, data);
     }
 
+    if (this.isExcelExportCommand(data.content || "")) {
+      try {
+        return await this.exportDataToExcel(tenant, data);
+      } catch (error: any) {
+        console.error("[DataManagementAgentService] Excel export failed:", error?.message || error);
+        return "I could not create or send the Excel export. Please try again.";
+      }
+    }
+
     const maybeSaved = await this.trySaveTextAsRecord(tenant, data);
     if (maybeSaved) return maybeSaved;
 
     return this.answerQuestionWithClaudeTools(tenant, data.content || "");
+  }
+
+  private async isOwnerMessage(ownerUserId: string, data: IncomingDataMessage): Promise<boolean> {
+    const senderTokens = this.identityTokens([
+      data.phoneNumber,
+      data.from,
+      data.replyTo,
+    ]);
+    if (senderTokens.size === 0) return false;
+
+    const ownerValues: unknown[] = [];
+    const sessionInfo = this.whatsappService?.getStatus?.().sessionInfo;
+    this.collectIdentityValues(sessionInfo, ownerValues);
+
+    const sessionRows = await db.select({ phoneNumber: whatsappSessions.phoneNumber })
+      .from(whatsappSessions)
+      .where(eq(whatsappSessions.userId, ownerUserId));
+    ownerValues.push(...sessionRows.map((row) => row.phoneNumber));
+
+    const ownerTokens = this.identityTokens(ownerValues);
+    if (ownerTokens.size === 0) {
+      console.warn(`[DataManagementAgentService] Owner identity unavailable for user ${ownerUserId}; denying data access`);
+      return false;
+    }
+
+    return Array.from(senderTokens).some((token) => ownerTokens.has(token));
+  }
+
+  private collectIdentityValues(value: unknown, output: unknown[], depth = 0): void {
+    if (depth > 3 || value === null || value === undefined) return;
+    if (typeof value === "string" || typeof value === "number") {
+      output.push(value);
+      return;
+    }
+    if (Array.isArray(value)) {
+      for (const item of value) this.collectIdentityValues(item, output, depth + 1);
+      return;
+    }
+    if (typeof value !== "object") return;
+
+    const record = value as Record<string, unknown>;
+    for (const key of ["id", "jid", "lid", "phoneNumber", "user", "me"]) {
+      if (key in record) this.collectIdentityValues(record[key], output, depth + 1);
+    }
+  }
+
+  private identityTokens(values: unknown[]): Set<string> {
+    const tokens = new Set<string>();
+    for (const value of values) {
+      if (value === null || value === undefined) continue;
+      const normalized = String(value)
+        .split(":")[0]
+        .replace(/@(s\.whatsapp\.net|lid)$/i, "")
+        .replace(/\D/g, "");
+      if (!normalized) continue;
+      tokens.add(normalized);
+      if (normalized.length >= 10) tokens.add(normalized.slice(-10));
+    }
+    return tokens;
+  }
+
+  private isExcelExportCommand(text: string): boolean {
+    const normalized = text.trim().toLowerCase().replace(/\s+/g, " ");
+    return /^(excel|export excel|excel export|download excel|export (?:all )?(?:patient |clinical )?data(?: to excel)?)$/.test(normalized);
+  }
+
+  private async exportDataToExcel(tenant: TenantContext, data: IncomingDataMessage): Promise<string> {
+    if (!this.whatsappService?.sendMediaMessage) {
+      return "Excel export is unavailable because document sending is not configured.";
+    }
+
+    const [patients, events, documents, generalRecords] = await Promise.all([
+      db.select().from(dataPatients).where(and(
+        eq(dataPatients.organizationId, tenant.organizationId),
+        eq(dataPatients.userId, tenant.userId),
+      )).orderBy(dataPatients.canonicalName),
+      db.select().from(dataPatientEvents).where(and(
+        eq(dataPatientEvents.organizationId, tenant.organizationId),
+        eq(dataPatientEvents.userId, tenant.userId),
+      )).orderBy(dataPatientEvents.eventDate, dataPatientEvents.createdAt),
+      db.select().from(dataDocuments).where(and(
+        eq(dataDocuments.organizationId, tenant.organizationId),
+        eq(dataDocuments.userId, tenant.userId),
+      )).orderBy(dataDocuments.createdAt),
+      db.select().from(dataGeneralRecords).where(and(
+        eq(dataGeneralRecords.organizationId, tenant.organizationId),
+        eq(dataGeneralRecords.userId, tenant.userId),
+      )).orderBy(dataGeneralRecords.createdAt),
+    ]);
+
+    const patientById = new Map(patients.map((patient) => [patient.id, patient]));
+    const observations: Record<string, unknown>[] = [];
+    const prescriptions: Record<string, unknown>[] = [];
+    const diagnoses: Record<string, unknown>[] = [];
+
+    const eventRows = events.map((event) => {
+      const patient = patientById.get(event.patientId);
+      const structured = this.asRecord(event.structuredData);
+      const common = {
+        Patient_ID: event.patientId,
+        Patient_Name: patient?.canonicalName || "",
+        Event_Date: event.eventDate || this.dateCell(event.createdAt),
+        Event_Type: event.eventType,
+        Document_ID: event.documentId || "",
+      };
+
+      for (const observation of this.asRecordArray(structured.observations)) {
+        observations.push({
+          ...common,
+          Category: observation.category,
+          Field_Name: observation.name,
+          Value: observation.value,
+          Numeric_Value: observation.numeric_value,
+          Unit: observation.unit,
+          Reference_Range: observation.reference_range,
+          Flag: observation.flag,
+          Confidence: observation.confidence,
+          Needs_Confirmation: Boolean(observation.needs_confirmation),
+          Source_Text: observation.source_text,
+        });
+      }
+      for (const prescription of this.asRecordArray(structured.prescriptions)) {
+        prescriptions.push({
+          ...common,
+          Medicine: prescription.medicine,
+          Dosage: prescription.dosage,
+          Frequency: prescription.frequency,
+          Duration: prescription.duration,
+          Instructions: prescription.instructions,
+          Quantity: prescription.quantity,
+          Source_Text: prescription.source_text,
+        });
+      }
+      for (const diagnosis of this.asRecordArray(structured.diagnoses)) {
+        diagnoses.push({
+          ...common,
+          Diagnosis: diagnosis.name,
+          ICD10_Code: diagnosis.icd10_code,
+          Is_Primary: Boolean(diagnosis.is_primary),
+          Notes: diagnosis.notes,
+          Source_Text: diagnosis.source_text,
+        });
+      }
+
+      return {
+        ...common,
+        Summary: event.summary,
+        Chief_Complaint: structured.chief_complaint,
+        Follow_Up: structured.follow_up,
+        Doctor_Notes: structured.doctor_notes,
+        Advice: this.joinCell(structured.advice),
+        Allergies: this.joinCell(structured.allergies),
+        History: this.joinCell(structured.history),
+        Warnings: this.joinCell(structured.warnings),
+        Created_At: this.dateTimeCell(event.createdAt),
+      };
+    });
+
+    const observationMatrix = new Map<string, Record<string, unknown>>();
+    for (const observation of observations) {
+      const patientId = String(observation.Patient_ID || "");
+      const category = String(observation.Category || "other");
+      const fieldName = String(observation.Field_Name || "");
+      const eventDate = String(observation.Event_Date || "Unknown date");
+      if (!fieldName) continue;
+
+      const key = `${patientId}|${category}|${fieldName.toLowerCase()}`;
+      const row = observationMatrix.get(key) || {
+        Patient_ID: patientId,
+        Patient_Name: observation.Patient_Name,
+        Category: category,
+        Field_Name: fieldName,
+      };
+      const value = observation.Value || (observation.Numeric_Value ?? "");
+      const display = [
+        value,
+        observation.Unit,
+        observation.Flag && observation.Flag !== "unknown" ? `(${observation.Flag})` : "",
+        observation.Needs_Confirmation ? "[verify]" : "",
+      ].filter(Boolean).join(" ");
+      row[eventDate] = row[eventDate] ? `${row[eventDate]} | ${display}` : display;
+      observationMatrix.set(key, row);
+    }
+
+    const workbook = XLSX.utils.book_new();
+    this.appendExcelSheet(workbook, "Patients", patients.map((patient) => ({
+      Patient_ID: patient.id,
+      Patient_Name: patient.canonicalName,
+      Age: patient.age,
+      Gender: patient.gender,
+      DOB: patient.dob,
+      Phone_Numbers: this.joinCell(patient.phoneNumbers),
+      Aliases: this.joinCell(patient.aliases),
+      Latest_Summary: patient.summary,
+      First_Seen: this.dateTimeCell(patient.firstSeenAt),
+      Last_Updated: this.dateTimeCell(patient.lastUpdatedAt),
+    })));
+    this.appendExcelSheet(workbook, "Timeline", eventRows);
+    this.appendExcelSheet(workbook, "Observations", observations);
+    this.appendExcelSheet(workbook, "Observation Matrix", Array.from(observationMatrix.values()));
+    this.appendExcelSheet(workbook, "Prescriptions", prescriptions);
+    this.appendExcelSheet(workbook, "Diagnoses", diagnoses);
+    this.appendExcelSheet(workbook, "Documents", documents.map((document) => ({
+      Document_ID: document.id,
+      Patient_ID: document.patientId,
+      Patient_Name: document.patientId ? patientById.get(document.patientId)?.canonicalName || "" : "",
+      Document_Type: document.documentType,
+      File_Name: document.fileName,
+      MIME_Type: document.mimeType,
+      Status: document.status,
+      Confidence: document.confidence,
+      Received_At: this.dateTimeCell(document.receivedAt),
+      Processed_At: this.dateTimeCell(document.processedAt),
+      Error: document.errorMessage,
+      OCR_Text: document.ocrText,
+      Extracted_JSON: this.jsonCell(document.extractedJson),
+    })));
+    this.appendExcelSheet(workbook, "General Records", generalRecords.map((record) => ({
+      Record_ID: record.id,
+      Record_Type: record.recordType,
+      Title: record.title,
+      Period_Start: record.periodStart,
+      Period_End: record.periodEnd,
+      Raw_Text: record.rawText,
+      Confidence: record.confidence,
+      Structured_Data: this.jsonCell(record.structuredData),
+      Created_At: this.dateTimeCell(record.createdAt),
+    })));
+
+    const dateStamp = new Date().toISOString().slice(0, 10);
+    const fileName = `patient-data-${dateStamp}.xlsx`;
+    const workbookBuffer = XLSX.write(workbook, { type: "buffer", bookType: "xlsx", compression: true }) as Buffer;
+    const savedFile = await persistentFileService.saveFile({
+      originalname: fileName,
+      size: workbookBuffer.length,
+      mimetype: "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+      buffer: workbookBuffer,
+    });
+    const target = data.replyTo || data.from || data.phoneNumber;
+
+    try {
+      await this.whatsappService.sendMediaMessage(
+        target,
+        savedFile.filePath,
+        `Clinical data export: ${patients.length} patients, ${events.length} timeline events, ${observations.length} observations.`,
+        fileName,
+      );
+    } catch (error) {
+      await persistentFileService.deleteFile(savedFile.fileName);
+      throw error;
+    }
+
+    const cleanupTimer = setTimeout(() => {
+      void persistentFileService.deleteFile(savedFile.fileName);
+    }, 5 * 60 * 1000);
+    cleanupTimer.unref?.();
+
+    return `Excel sent with ${patients.length} patients, ${events.length} timeline events, and ${observations.length} analysis-ready observations.`;
+  }
+
+  private appendExcelSheet(workbook: XLSX.WorkBook, name: string, rows: Record<string, unknown>[]): void {
+    const safeRows = (rows.length ? rows : [{ Status: "No records" }]).map((row) =>
+      Object.fromEntries(Object.entries(row).map(([key, value]) => [key, this.safeExcelCell(value)])),
+    );
+    const sheet = XLSX.utils.json_to_sheet(safeRows);
+    const headers = Object.keys(safeRows[0]);
+    sheet["!cols"] = headers.map((header) => ({
+      wch: Math.min(60, Math.max(12, header.length + 2)),
+    }));
+    XLSX.utils.book_append_sheet(workbook, sheet, name);
+  }
+
+  private safeExcelCell(value: unknown): string | number | boolean {
+    if (value === null || value === undefined) return "";
+    if (typeof value === "number" || typeof value === "boolean") return value;
+    const text = typeof value === "string" ? value : this.jsonCell(value);
+    return /^[=+\-@]/.test(text) ? `'${text}` : text;
+  }
+
+  private joinCell(value: unknown): string {
+    if (!Array.isArray(value)) return this.nullableString(value) || "";
+    return value.map((item) => typeof item === "string" ? item : this.jsonCell(item)).filter(Boolean).join(" | ");
+  }
+
+  private jsonCell(value: unknown): string {
+    if (value === null || value === undefined) return "";
+    try {
+      return JSON.stringify(value);
+    } catch {
+      return String(value);
+    }
+  }
+
+  private dateCell(value: Date | string | null | undefined): string {
+    if (!value) return "";
+    const date = value instanceof Date ? value : new Date(value);
+    return Number.isNaN(date.getTime()) ? String(value) : date.toISOString().slice(0, 10);
+  }
+
+  private dateTimeCell(value: Date | string | null | undefined): string {
+    if (!value) return "";
+    const date = value instanceof Date ? value : new Date(value);
+    return Number.isNaN(date.getTime()) ? String(value) : date.toISOString();
   }
 
   private async processDocument(tenant: TenantContext, data: IncomingDataMessage): Promise<string> {
