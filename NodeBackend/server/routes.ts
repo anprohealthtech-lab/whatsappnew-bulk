@@ -285,6 +285,9 @@ const voiceWidgetSettingsSchema = z.object({
   welcomeMessage: z.string().trim().min(1).max(240),
   accentColor: z.string().regex(/^#[0-9a-fA-F]{6}$/),
   avatarUrl: z.string().max(1_500_000).nullable().optional(),
+  starterText: z.string().trim().max(500).optional(),
+  starterAudioUrl: z.string().url().nullable().optional(),
+  starterAudioMimeType: z.string().max(100).nullable().optional(),
 });
 
 const voiceFlowSchema = z.object({
