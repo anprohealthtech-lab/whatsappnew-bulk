@@ -51,6 +51,18 @@ type DataSummary = {
 type PatientAnalysis = {
   patient: DataSummary["patientList"][number];
   events: DataSummary["recentEvents"];
+  caseBatches: Array<{
+    id: string;
+    patientNameHint: string;
+    status: string;
+    expectedAttachmentCount: number | null;
+    receivedAttachmentCount: number;
+    eventDate: string | null;
+    summary: string | null;
+    errorMessage: string | null;
+    createdAt: string | null;
+    completedAt: string | null;
+  }>;
   documents: Array<{
     id: string;
     documentType: string;
@@ -305,6 +317,37 @@ export function DataManagementPanel() {
                         ) : (
                           <>
                             <div>
+                              {patientAnalysis?.caseBatches?.length ? (
+                                <div className="mb-4">
+                                  <p className="mb-2 text-sm font-semibold">Multi-attachment cases</p>
+                                  <div className="space-y-2">
+                                    {patientAnalysis.caseBatches.map((batch) => (
+                                      <div key={batch.id} className="rounded-lg border px-3 py-2 text-sm">
+                                        <div className="flex flex-wrap items-center justify-between gap-2">
+                                          <p className="font-medium">
+                                            {batch.receivedAttachmentCount}
+                                            {batch.expectedAttachmentCount ? ` / ${batch.expectedAttachmentCount}` : ""} attachments
+                                          </p>
+                                          <span className={batch.status === "completed"
+                                            ? "text-green-600"
+                                            : batch.status === "failed" || batch.status === "needs_review"
+                                              ? "text-destructive"
+                                              : "text-muted-foreground"}
+                                          >
+                                            {batch.status.replace(/_/g, " ")}
+                                          </span>
+                                        </div>
+                                        {(batch.eventDate || batch.createdAt) && (
+                                          <p className="text-xs text-muted-foreground">
+                                            {batch.eventDate || (batch.createdAt ? new Date(batch.createdAt).toLocaleString() : "")}
+                                          </p>
+                                        )}
+                                        {batch.errorMessage && <p className="mt-1 text-xs text-destructive">{batch.errorMessage}</p>}
+                                      </div>
+                                    ))}
+                                  </div>
+                                </div>
+                              ) : null}
                               <p className="mb-2 flex items-center gap-2 text-sm font-semibold">
                                 <CalendarClock className="w-4 h-4 text-primary" /> Vertical patient timeline
                               </p>

@@ -27,7 +27,7 @@ import * as XLSX from 'xlsx';
 import { authService } from "./services/AuthService";
 import { requireAuth, optionalAuth, getTenant, requireSuperAdmin } from "./authMiddleware";
 import { sessionManager } from "./services/WhatsAppSessionManager";
-import { users, messages as messagesTable, chatbotConfigs, contacts as contactsTable, campaigns as campaignsTable, dataPatients, dataDocuments, dataGeneralRecords, dataPatientEvents, voiceAgents } from "@shared/schema";
+import { users, messages as messagesTable, chatbotConfigs, contacts as contactsTable, campaigns as campaignsTable, dataPatients, dataCaseBatches, dataDocuments, dataGeneralRecords, dataPatientEvents, voiceAgents } from "@shared/schema";
 import { sendNotificationForEvent } from "./services/UserNotificationService";
 
 // Configure CORS
@@ -1188,7 +1188,7 @@ export async function registerRoutes(app: Express): Promise<Server> {
       const patient = (await db.select().from(dataPatients).where(conditions).limit(1))[0];
       if (!patient) return res.status(404).json({ message: 'Patient not found' });
 
-      const [events, documents] = await Promise.all([
+      const [events, documents, caseBatches] = await Promise.all([
         db.select().from(dataPatientEvents).where(and(
           eq(dataPatientEvents.organizationId, tenant.organizationId),
           eq(dataPatientEvents.userId, tenant.userId),
@@ -1199,9 +1199,14 @@ export async function registerRoutes(app: Express): Promise<Server> {
           eq(dataDocuments.userId, tenant.userId),
           eq(dataDocuments.patientId, patient.id),
         )).orderBy(desc(dataDocuments.createdAt)).limit(250),
+        db.select().from(dataCaseBatches).where(and(
+          eq(dataCaseBatches.organizationId, tenant.organizationId),
+          eq(dataCaseBatches.userId, tenant.userId),
+          eq(dataCaseBatches.patientId, patient.id),
+        )).orderBy(desc(dataCaseBatches.createdAt)).limit(100),
       ]);
 
-      res.json({ patient, events, documents });
+      res.json({ patient, events, documents, caseBatches });
     } catch (error: any) {
       res.status(500).json({ message: error.message });
     }

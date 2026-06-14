@@ -19,6 +19,22 @@ import { ExternalWhatsAppProxy } from './ExternalWhatsAppProxy';
 import { clearDbAuthState, useDbAuthState, getDbAuthDiagnostics, countDbAuthKeys } from './useDbAuthState';
 import { getDbHealth } from '../db';
 
+const DOCUMENT_MIME_TYPES: Record<string, string> = {
+  '.csv': 'text/csv',
+  '.doc': 'application/msword',
+  '.docx': 'application/vnd.openxmlformats-officedocument.wordprocessingml.document',
+  '.pdf': 'application/pdf',
+  '.txt': 'text/plain',
+  '.xls': 'application/vnd.ms-excel',
+  '.xlsx': 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
+};
+
+function getDocumentMimeType(filePath: string, fileName?: string): string {
+  const displayExtension = path.extname(fileName || '').toLowerCase();
+  const fileExtension = displayExtension || path.extname(filePath).toLowerCase();
+  return DOCUMENT_MIME_TYPES[fileExtension] || 'application/octet-stream';
+}
+
 export interface WhatsAppStatus {
   isConnected: boolean;
   isAuthenticated: boolean;
@@ -604,6 +620,7 @@ class ManagedBaileysSession extends EventEmitter implements WAServiceInstance {
         replyTo,
         phoneNumber,
         senderPn,
+        sourceMessageId: messageId,
         timestamp: Date.now(),
       });
       return;
@@ -626,6 +643,7 @@ class ManagedBaileysSession extends EventEmitter implements WAServiceInstance {
         from,
         replyTo,
         senderPn,
+        sourceMessageId: messageId,
         timestamp: Date.now(),
         messageType: isVoiceNote ? 'voice_note' : 'audio',
         mediaInfo: {
@@ -659,6 +677,7 @@ class ManagedBaileysSession extends EventEmitter implements WAServiceInstance {
         from,
         replyTo,
         senderPn,
+        sourceMessageId: messageId,
         timestamp: Date.now(),
         messageType: 'image',
         mediaInfo: {
@@ -690,6 +709,7 @@ class ManagedBaileysSession extends EventEmitter implements WAServiceInstance {
         from,
         replyTo,
         senderPn,
+        sourceMessageId: messageId,
         timestamp: Date.now(),
         messageType: 'document',
         mediaInfo: {
@@ -722,6 +742,7 @@ class ManagedBaileysSession extends EventEmitter implements WAServiceInstance {
         from,
         replyTo,
         senderPn,
+        sourceMessageId: messageId,
         timestamp: Date.now(),
         messageType: 'video',
         mediaInfo: {
@@ -755,6 +776,7 @@ class ManagedBaileysSession extends EventEmitter implements WAServiceInstance {
       from,
       replyTo,
       senderPn,
+      sourceMessageId: messageId,
       timestamp: Date.now(),
       messageType: 'text',
     });
@@ -879,7 +901,13 @@ class ManagedBaileysSession extends EventEmitter implements WAServiceInstance {
         ptt: ext === '.ogg',
       };
     } else {
-      payload = { document: fileBuffer, fileName: fileName || path.basename(filePath), caption };
+      const displayFileName = fileName || path.basename(filePath);
+      payload = {
+        document: fileBuffer,
+        fileName: displayFileName,
+        mimetype: getDocumentMimeType(filePath, displayFileName),
+        caption,
+      };
     }
 
     const result = await this.socket.sendMessage(jid, payload);

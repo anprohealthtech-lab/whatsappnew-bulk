@@ -315,6 +315,17 @@ export class ExternalWhatsAppProxy extends EventEmitter {
   async sendMediaMessage(phoneNumber: string, filePath: string, caption?: string, fileName?: string): Promise<any> {
     const path = await import('path');
     const fileUrl = this.resolveFileUrl(filePath);
+    const displayFileName = fileName || path.basename(filePath);
+    const extension = path.extname(displayFileName).toLowerCase();
+    const mimeTypes: Record<string, string> = {
+      '.csv': 'text/csv',
+      '.doc': 'application/msword',
+      '.docx': 'application/vnd.openxmlformats-officedocument.wordprocessingml.document',
+      '.pdf': 'application/pdf',
+      '.txt': 'text/plain',
+      '.xls': 'application/vnd.ms-excel',
+      '.xlsx': 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
+    };
 
     if (!fileUrl) {
       throw new Error(
@@ -326,7 +337,8 @@ export class ExternalWhatsAppProxy extends EventEmitter {
       userId: this.userId,
       phoneNumber: this.formatOutgoingPhoneNumber(phoneNumber),
       fileUrl,
-      fileName: fileName || path.basename(filePath),
+      fileName: displayFileName,
+      mimeType: mimeTypes[extension] || 'application/octet-stream',
       caption: caption || '',
     });
     const data = this.getNestedData<any>(response);

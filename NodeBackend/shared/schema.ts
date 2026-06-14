@@ -478,6 +478,27 @@ export const dataPatients = pgTable("data_patients", {
   updatedAt: timestamp("updated_at").defaultNow(),
 });
 
+export const dataCaseBatches = pgTable("data_case_batches", {
+  id: varchar("id").primaryKey().default(sql`gen_random_uuid()`),
+  organizationId: text("organization_id").default("default_org").notNull(),
+  userId: text("user_id").default("default_user").notNull(),
+  patientId: varchar("patient_id").notNull().references(() => dataPatients.id, { onDelete: 'cascade' }),
+  patientNameHint: text("patient_name_hint").notNull(),
+  sourcePhoneNumber: text("source_phone_number"),
+  status: text("status").default("collecting").notNull(),
+  expectedAttachmentCount: integer("expected_attachment_count"),
+  receivedAttachmentCount: integer("received_attachment_count").default(0).notNull(),
+  eventDate: text("event_date"),
+  summary: text("summary"),
+  errorMessage: text("error_message"),
+  startedAt: timestamp("started_at").defaultNow(),
+  collectionCompletedAt: timestamp("collection_completed_at"),
+  processingStartedAt: timestamp("processing_started_at"),
+  completedAt: timestamp("completed_at"),
+  createdAt: timestamp("created_at").defaultNow(),
+  updatedAt: timestamp("updated_at").defaultNow(),
+});
+
 export const dataDocuments = pgTable("data_documents", {
   id: varchar("id").primaryKey().default(sql`gen_random_uuid()`),
   organizationId: text("organization_id").default("default_org").notNull(),
@@ -492,6 +513,9 @@ export const dataDocuments = pgTable("data_documents", {
   fileUrl: text("file_url"),
   storageBucket: text("storage_bucket"),
   storagePath: text("storage_path"),
+  caseBatchId: varchar("case_batch_id").references(() => dataCaseBatches.id, { onDelete: 'set null' }),
+  sequenceNumber: integer("sequence_number"),
+  caption: text("caption"),
   documentType: text("document_type").default("unknown").notNull(),
   ocrText: text("ocr_text"),
   extractedJson: jsonb("extracted_json").default({}),
@@ -576,6 +600,7 @@ export type WhatsAppSession = typeof whatsappSessions.$inferSelect;
 export type SessionConnectionHistory = typeof sessionConnectionHistory.$inferSelect;
 export type HIMSPatient = typeof himsPatients.$inferSelect;
 export type DataPatient = typeof dataPatients.$inferSelect;
+export type DataCaseBatch = typeof dataCaseBatches.$inferSelect;
 export type DataDocument = typeof dataDocuments.$inferSelect;
 export type DataPatientEvent = typeof dataPatientEvents.$inferSelect;
 export type DataGeneralRecord = typeof dataGeneralRecords.$inferSelect;

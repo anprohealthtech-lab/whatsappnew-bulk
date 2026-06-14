@@ -5,6 +5,7 @@ import { db } from "../db";
 import { persistentFileService } from "./PersistentFileService";
 import {
   dataDocuments,
+  dataCaseBatches,
   dataGeneralRecords,
   dataPatientEvents,
   dataPatients,
@@ -33,6 +34,7 @@ type IncomingDataMessage = {
   from?: string;
   replyTo?: string;
   senderPn?: string;
+  sourceMessageId?: string;
   timestamp?: number;
 };
 
@@ -418,6 +420,11 @@ export class DataManagementAgentService {
     if (!text) return false;
 
     const commandPatterns = [
+      /^(start|open|begin)\s+(case|batch)\b/,
+      /^(done|finish case|complete case)$/i,
+      /^(cancel case|cancel batch)$/i,
+      /^(show current case|current case|case status)$/i,
+      /^(remove last photo|remove last attachment|undo last)$/i,
       /\bhow many patients\b/,
       /\bcount patients\b/,
       /\b(patient|patients)\b/,
@@ -440,6 +447,14 @@ export class DataManagementAgentService {
 
   async handleIncomingMessage(tenant: TenantContext, data: IncomingDataMessage): Promise<string> {
     const messageType = data.messageType || "text";
+    const batchCommand = await this.handleCaseBatchCommand(tenant, data);
+    if (batchCommand) return batchCommand;
+
+    const activeBatch = await this.getActiveCaseBatch(tenant);
+    if (activeBatch && ["image", "document", "audio", "voice_note", "video"].includes(messageType)) {
+      return this.collectCaseBatchAttachment(tenant, data, activeBatch);
+    }
+
     if (messageType === "image" || messageType === "document") {
       return this.processDocument(tenant, data);
     }
@@ -460,6 +475,149 @@ export class DataManagementAgentService {
     if (maybeSaved) return maybeSaved;
 
     return this.answerQuestionWithClaudeTools(tenant, data.content || "");
+  }
+
+  private async handleCaseBatchCommand(tenant: TenantContext, data: IncomingDataMessage): Promise<string | null> {
+    if ((data.messageType || "text") !== "text") return null;
+    const text = (data.content || "").trim();
+    if (!text) return null;
+
+    const start = text.match(/^(?:start|open|begin)\s+(?:case|batch)(?:\s+for)?\s+(.+)$/i);
+    if (start) return this.startCaseBatch(tenant, data, start[1]);
+
+    if (/^(?:done|finish case|complete case)$/i.test(text)) {
+      return this.completeCaseBatchCollection(tenant, data);
+    }
+    if (/^(?:cancel case|cancel batch)$/i.test(text)) {
+      return this.cancelCaseBatch(tenant);
+    }
+    if (/^(?:show current case|current case|case status)$/i.test(text)) {
+      return this.describeCurrentCaseBatch(tenant);
+    }
+    if (/^(?:remove last photo|remove last attachment|undo last)$/i.test(text)) {
+      return this.removeLastCaseAttachment(tenant);
+    }
+    return null;
+  }
+
+  private async startCaseBatch(tenant: TenantContext, data: IncomingDataMessage, details: string): Promise<string> {
+    const existing = await this.getActiveCaseBatch(tenant);
+    if (existing) {
+      return `A case is already open for ${existing.patientNameHint} with ${existing.receivedAttachmentCount} attachment(s). Send DONE or CANCEL CASE first.`;
+    }
+
+    const expectedMatch = details.match(/(?:,|\s)\s*(\d{1,3})\s*(?:photos?|images?|attachments?|files?)\b/i);
+    const ageMatch = details.match(/(?:,|\s)\s*age\s*(\d{1,3})\b/i);
+    const dateMatch = details.match(/(?:,|\s)\s*(?:date|visit date)\s*(\d{4}-\d{2}-\d{2})\b/i);
+    const patientName = details
+      .replace(/(?:,|\s)\s*\d{1,3}\s*(?:photos?|images?|attachments?|files?)\b/ig, "")
+      .replace(/(?:,|\s)\s*age\s*\d{1,3}\b/ig, "")
+      .replace(/(?:,|\s)\s*(?:date|visit date)\s*\d{4}-\d{2}-\d{2}\b/ig, "")
+      .replace(/^[\s,:-]+|[\s,:-]+$/g, "")
+      .trim();
+    if (patientName.length < 2) {
+      return "Please include the patient name, for example: Start case for Ramesh Patel, age 52, 15 photos";
+    }
+
+    const patient = await this.findOrCreatePatient(tenant, {
+      name: patientName,
+      age: ageMatch ? Number(ageMatch[1]) : null,
+      name_source_text: `WhatsApp command: ${String(data.content || "").trim()}`,
+      identity_confidence: 1,
+    });
+    const rows = await db.insert(dataCaseBatches).values({
+      organizationId: tenant.organizationId,
+      userId: tenant.userId,
+      patientId: patient.id,
+      patientNameHint: patient.canonicalName,
+      sourcePhoneNumber: data.phoneNumber,
+      status: "collecting",
+      expectedAttachmentCount: expectedMatch ? Number(expectedMatch[1]) : null,
+      eventDate: dateMatch?.[1] || null,
+    }).returning();
+    const expected = rows[0].expectedAttachmentCount ? ` Expected: ${rows[0].expectedAttachmentCount}.` : "";
+    return `Case opened for ${patient.canonicalName}.${expected} Send all attachments, then send DONE.`;
+  }
+
+  private async completeCaseBatchCollection(tenant: TenantContext, data: IncomingDataMessage): Promise<string> {
+    const active = await this.getActiveCaseBatch(tenant);
+    if (!active) return "No open case found. Send: Start case for Patient Name";
+    if (active.receivedAttachmentCount === 0) return "This case has no attachments yet. Send the photos/files, then send DONE.";
+
+    const rows = await db.update(dataCaseBatches).set({
+      status: "processing",
+      collectionCompletedAt: new Date(),
+      processingStartedAt: new Date(),
+      updatedAt: new Date(),
+    }).where(and(
+      eq(dataCaseBatches.id, active.id),
+      eq(dataCaseBatches.organizationId, tenant.organizationId),
+      eq(dataCaseBatches.userId, tenant.userId),
+      eq(dataCaseBatches.status, "collecting"),
+    )).returning();
+    if (!rows[0]) return "This case is already being processed.";
+
+    const replyTarget = data.replyTo || data.from || data.phoneNumber;
+    void this.finalizeCaseBatch(tenant, rows[0])
+      .then((message) => this.whatsappService?.sendTextMessage(replyTarget, message))
+      .catch(async (error: any) => {
+        console.error("[DataManagementAgentService] Batch processing failed:", error?.message || error);
+        await db.update(dataCaseBatches).set({
+          status: "failed",
+          errorMessage: error?.message || "Batch processing failed",
+          updatedAt: new Date(),
+        }).where(eq(dataCaseBatches.id, active.id));
+        await this.whatsappService?.sendTextMessage(replyTarget, `Case processing failed for ${active.patientNameHint}. The attachments remain saved for retry.`);
+      });
+
+    return `Received ${active.receivedAttachmentCount} attachment(s) for ${active.patientNameHint}. Processing has started; I will send the consolidated result when ready.`;
+  }
+
+  private async cancelCaseBatch(tenant: TenantContext): Promise<string> {
+    const active = await this.getActiveCaseBatch(tenant);
+    if (!active) return "No open case found.";
+    await db.update(dataCaseBatches).set({
+      status: "cancelled",
+      collectionCompletedAt: new Date(),
+      updatedAt: new Date(),
+    }).where(eq(dataCaseBatches.id, active.id));
+    return `Cancelled the open case for ${active.patientNameHint}. Its ${active.receivedAttachmentCount} saved attachment(s) were retained.`;
+  }
+
+  private async describeCurrentCaseBatch(tenant: TenantContext): Promise<string> {
+    const active = await this.getActiveCaseBatch(tenant);
+    if (!active) return "No case is currently collecting attachments.";
+    const expected = active.expectedAttachmentCount ? ` of ${active.expectedAttachmentCount}` : "";
+    return `Current case: ${active.patientNameHint}. Received ${active.receivedAttachmentCount}${expected} attachment(s). Send DONE when complete.`;
+  }
+
+  private async removeLastCaseAttachment(tenant: TenantContext): Promise<string> {
+    const active = await this.getActiveCaseBatch(tenant);
+    if (!active) return "No open case found.";
+    const document = (await db.select().from(dataDocuments).where(and(
+      eq(dataDocuments.organizationId, tenant.organizationId),
+      eq(dataDocuments.userId, tenant.userId),
+      eq(dataDocuments.caseBatchId, active.id),
+    )).orderBy(desc(dataDocuments.sequenceNumber)).limit(1))[0];
+    if (!document) return "The current case has no attachments.";
+
+    if (document.storageBucket && document.storagePath) {
+      await this.deleteArchivedAttachment(document.storageBucket, document.storagePath);
+    }
+    await db.delete(dataDocuments).where(eq(dataDocuments.id, document.id));
+    await db.update(dataCaseBatches).set({
+      receivedAttachmentCount: Math.max(0, active.receivedAttachmentCount - 1),
+      updatedAt: new Date(),
+    }).where(eq(dataCaseBatches.id, active.id));
+    return `Removed attachment ${document.sequenceNumber || active.receivedAttachmentCount} from ${active.patientNameHint}.`;
+  }
+
+  private async getActiveCaseBatch(tenant: TenantContext) {
+    return (await db.select().from(dataCaseBatches).where(and(
+      eq(dataCaseBatches.organizationId, tenant.organizationId),
+      eq(dataCaseBatches.userId, tenant.userId),
+      eq(dataCaseBatches.status, "collecting"),
+    )).orderBy(desc(dataCaseBatches.createdAt)).limit(1))[0] || null;
   }
 
   private async isOwnerMessage(ownerUserId: string, data: IncomingDataMessage): Promise<boolean> {
@@ -537,11 +695,15 @@ export class DataManagementAgentService {
       return "Excel export is unavailable because document sending is not configured.";
     }
 
-    const [patients, events, documents, generalRecords] = await Promise.all([
+    const [patients, caseBatches, events, documents, generalRecords] = await Promise.all([
       db.select().from(dataPatients).where(and(
         eq(dataPatients.organizationId, tenant.organizationId),
         eq(dataPatients.userId, tenant.userId),
       )).orderBy(dataPatients.canonicalName),
+      db.select().from(dataCaseBatches).where(and(
+        eq(dataCaseBatches.organizationId, tenant.organizationId),
+        eq(dataCaseBatches.userId, tenant.userId),
+      )).orderBy(dataCaseBatches.createdAt),
       db.select().from(dataPatientEvents).where(and(
         eq(dataPatientEvents.organizationId, tenant.organizationId),
         eq(dataPatientEvents.userId, tenant.userId),
@@ -666,6 +828,19 @@ export class DataManagementAgentService {
       First_Seen: this.dateTimeCell(patient.firstSeenAt),
       Last_Updated: this.dateTimeCell(patient.lastUpdatedAt),
     })));
+    this.appendExcelSheet(workbook, "Case Batches", caseBatches.map((batch) => ({
+      Case_Batch_ID: batch.id,
+      Patient_ID: batch.patientId,
+      Patient_Name: batch.patientNameHint,
+      Status: batch.status,
+      Expected_Attachments: batch.expectedAttachmentCount,
+      Received_Attachments: batch.receivedAttachmentCount,
+      Event_Date: batch.eventDate,
+      Summary: batch.summary,
+      Error: batch.errorMessage,
+      Started_At: this.dateTimeCell(batch.startedAt),
+      Completed_At: this.dateTimeCell(batch.completedAt),
+    })));
     this.appendExcelSheet(workbook, "Timeline", eventRows);
     this.appendExcelSheet(workbook, "Observations", observations);
     this.appendExcelSheet(workbook, "Observation Matrix", Array.from(observationMatrix.values()));
@@ -681,6 +856,9 @@ export class DataManagementAgentService {
       File_URL: document.fileUrl,
       Storage_Bucket: document.storageBucket,
       Storage_Path: document.storagePath,
+      Case_Batch_ID: document.caseBatchId,
+      Sequence_Number: document.sequenceNumber,
+      Caption: document.caption,
       Status: document.status,
       Confidence: document.confidence,
       Received_At: this.dateTimeCell(document.receivedAt),
@@ -778,11 +956,15 @@ export class DataManagementAgentService {
   }
 
   private async processDocument(tenant: TenantContext, data: IncomingDataMessage): Promise<string> {
+    if (await this.findDocumentBySourceMessage(tenant, data.sourceMessageId)) {
+      return "That attachment is already saved.";
+    }
     if (!data.mediaData) {
       await db.insert(dataDocuments).values({
         organizationId: tenant.organizationId,
         userId: tenant.userId,
         sourcePhoneNumber: data.phoneNumber,
+        sourceMessageId: data.sourceMessageId || null,
         fileName: data.mediaInfo?.fileName || null,
         mimeType: data.mediaInfo?.mimetype || null,
         fileSize: this.toFileSize(data.mediaInfo?.fileLength),
@@ -801,6 +983,7 @@ export class DataManagementAgentService {
         organizationId: tenant.organizationId,
         userId: tenant.userId,
         sourcePhoneNumber: data.phoneNumber,
+        sourceMessageId: data.sourceMessageId || null,
         fileName: data.mediaInfo?.fileName || this.defaultAttachmentName(data),
         mimeType: data.mediaInfo?.mimetype || "application/octet-stream",
         fileSize: this.toFileSize(data.mediaInfo?.fileLength),
@@ -815,7 +998,222 @@ export class DataManagementAgentService {
     return this.persistExtraction(tenant, data, extraction, attachment);
   }
 
+  private async collectCaseBatchAttachment(
+    tenant: TenantContext,
+    data: IncomingDataMessage,
+    batch: typeof dataCaseBatches.$inferSelect,
+  ): Promise<string> {
+    if (!data.mediaData && !data.mediaBuffer) {
+      return "I received the attachment, but could not download it. Please resend it.";
+    }
+
+    if (data.sourceMessageId) {
+      const duplicate = (await db.select({ id: dataDocuments.id, sequenceNumber: dataDocuments.sequenceNumber })
+        .from(dataDocuments)
+        .where(and(
+          eq(dataDocuments.organizationId, tenant.organizationId),
+          eq(dataDocuments.userId, tenant.userId),
+          eq(dataDocuments.sourceMessageId, data.sourceMessageId),
+        )).limit(1))[0];
+      if (duplicate) {
+        return `That attachment is already saved as item ${duplicate.sequenceNumber || "?"}.`;
+      }
+    }
+
+    const attachment = await this.archiveAttachment(tenant, data, {
+      patientId: batch.patientId,
+      caseBatchId: batch.id,
+    });
+    try {
+      const updated = (await db.update(dataCaseBatches).set({
+        receivedAttachmentCount: sql`${dataCaseBatches.receivedAttachmentCount} + 1`,
+        updatedAt: new Date(),
+      }).where(and(
+        eq(dataCaseBatches.id, batch.id),
+        eq(dataCaseBatches.status, "collecting"),
+      )).returning())[0];
+      if (!updated) {
+        await this.deleteArchivedAttachment(attachment.storageBucket, attachment.storagePath);
+        return "This case was already closed; the attachment was not added.";
+      }
+
+      const sequenceNumber = updated.receivedAttachmentCount;
+      await db.insert(dataDocuments).values({
+        organizationId: tenant.organizationId,
+        userId: tenant.userId,
+        patientId: batch.patientId,
+        sourcePhoneNumber: data.phoneNumber,
+        sourceMessageId: data.sourceMessageId || null,
+        fileName: attachment.fileName,
+        mimeType: attachment.mimeType,
+        fileSize: attachment.fileSize,
+        fileUrl: attachment.fileUrl,
+        storageBucket: attachment.storageBucket,
+        storagePath: attachment.storagePath,
+        caseBatchId: batch.id,
+        sequenceNumber,
+        caption: data.mediaInfo?.caption || data.content || null,
+        documentType: data.messageType || "attachment",
+        extractedJson: {},
+        status: "pending",
+      });
+      const expected = updated.expectedAttachmentCount ? ` of ${updated.expectedAttachmentCount}` : "";
+      return `Received attachment ${sequenceNumber}${expected} for ${batch.patientNameHint}. Send DONE when all files are uploaded.`;
+    } catch (error) {
+      await this.deleteArchivedAttachment(attachment.storageBucket, attachment.storagePath);
+      await db.update(dataCaseBatches).set({
+        receivedAttachmentCount: sql`GREATEST(${dataCaseBatches.receivedAttachmentCount} - 1, 0)`,
+        updatedAt: new Date(),
+      }).where(eq(dataCaseBatches.id, batch.id));
+      throw error;
+    }
+  }
+
+  private async finalizeCaseBatch(
+    tenant: TenantContext,
+    batch: typeof dataCaseBatches.$inferSelect,
+  ): Promise<string> {
+    const patient = (await db.select().from(dataPatients).where(and(
+      eq(dataPatients.id, batch.patientId),
+      eq(dataPatients.organizationId, tenant.organizationId),
+      eq(dataPatients.userId, tenant.userId),
+    )).limit(1))[0];
+    if (!patient) throw new Error("Batch patient no longer exists");
+
+    const documents = await db.select().from(dataDocuments).where(and(
+      eq(dataDocuments.organizationId, tenant.organizationId),
+      eq(dataDocuments.userId, tenant.userId),
+      eq(dataDocuments.caseBatchId, batch.id),
+    )).orderBy(dataDocuments.sequenceNumber);
+    const parsed: Array<{ document: typeof dataDocuments.$inferSelect; extraction: DataExtraction }> = [];
+    let failedCount = 0;
+
+    for (const document of documents) {
+      if (!document.storageBucket || !document.storagePath) {
+        failedCount += 1;
+        await db.update(dataDocuments).set({
+          status: "failed",
+          errorMessage: "Stored attachment path is missing",
+          processedAt: new Date(),
+        }).where(eq(dataDocuments.id, document.id));
+        continue;
+      }
+
+      try {
+        const buffer = await this.downloadArchivedAttachment(document.storageBucket, document.storagePath);
+        const extraction = await this.extractStructuredData(tenant, {
+          phoneNumber: batch.sourcePhoneNumber || "",
+          messageType: document.mimeType?.startsWith("image/") ? "image" : "document",
+          content: [
+            `This is attachment ${document.sequenceNumber || "?"} in one multi-file case for patient ${patient.canonicalName}.`,
+            "Use this explicit batch patient identity; do not replace it with names printed elsewhere.",
+            document.caption ? `Original caption: ${document.caption}` : "",
+          ].filter(Boolean).join("\n"),
+          mediaInfo: {
+            mimetype: document.mimeType || "application/octet-stream",
+            fileName: document.fileName || undefined,
+            fileLength: document.fileSize || undefined,
+            caption: document.caption || undefined,
+          },
+          mediaBuffer: buffer,
+          mediaData: buffer.toString("base64"),
+          sourceMessageId: document.sourceMessageId || undefined,
+        });
+        extraction.record_scope = "patient";
+        extraction.patient = {
+          ...(extraction.patient || {}),
+          name: patient.canonicalName,
+          age: patient.age,
+          gender: patient.gender,
+          dob: patient.dob,
+          name_source_text: `Batch command for ${patient.canonicalName}`,
+          identity_confidence: 1,
+        };
+        extraction.needs_confirmation = Boolean(extraction.needs_confirmation);
+
+        await db.update(dataDocuments).set({
+          patientId: patient.id,
+          documentType: extraction.document_type || document.documentType || "unknown",
+          ocrText: extraction.raw_text || null,
+          extractedJson: extraction as any,
+          confidence: extraction.confidence || null,
+          status: extraction.needs_confirmation ? "needs_review" : "processed",
+          errorMessage: null,
+          processedAt: new Date(),
+          updatedAt: new Date(),
+        }).where(eq(dataDocuments.id, document.id));
+        parsed.push({ document, extraction });
+      } catch (error: any) {
+        failedCount += 1;
+        await db.update(dataDocuments).set({
+          status: "failed",
+          errorMessage: error?.message || "Attachment parsing failed",
+          processedAt: new Date(),
+          updatedAt: new Date(),
+        }).where(eq(dataDocuments.id, document.id));
+      }
+    }
+
+    if (parsed.length === 0) throw new Error("No attachment could be parsed");
+
+    const consolidated = await this.consolidateCaseBatch(tenant, patient, batch, parsed);
+    const sourceDocuments = parsed.map(({ document, extraction }) => ({
+      document_id: document.id,
+      sequence_number: document.sequenceNumber,
+      file_name: document.fileName,
+      document_type: extraction.document_type,
+      confidence: extraction.confidence,
+    }));
+    const structuredData = {
+      ...(consolidated.emr_fields || consolidated.structured_data || {}),
+      case_batch_id: batch.id,
+      source_documents: sourceDocuments,
+    };
+    const eventDate = batch.eventDate || consolidated.event_date || null;
+    const summary = consolidated.summary || `Consolidated ${parsed.length}-attachment case for ${patient.canonicalName}.`;
+
+    await db.insert(dataPatientEvents).values({
+      organizationId: tenant.organizationId,
+      userId: tenant.userId,
+      patientId: patient.id,
+      documentId: parsed[0].document.id,
+      eventType: "case_batch",
+      eventDate,
+      summary,
+      structuredData: structuredData as any,
+    });
+    await db.update(dataPatients).set({
+      age: consolidated.patient?.age ?? patient.age,
+      gender: consolidated.patient?.gender || patient.gender,
+      dob: consolidated.patient?.dob || patient.dob,
+      summary,
+      lastUpdatedAt: new Date(),
+      updatedAt: new Date(),
+    }).where(eq(dataPatients.id, patient.id));
+
+    const expectedMismatch = Boolean(
+      batch.expectedAttachmentCount
+      && batch.expectedAttachmentCount !== documents.length,
+    );
+    const needsReview = failedCount > 0 || expectedMismatch || Boolean(consolidated.needs_confirmation);
+    await db.update(dataCaseBatches).set({
+      status: needsReview ? "needs_review" : "completed",
+      summary,
+      errorMessage: failedCount ? `${failedCount} attachment(s) failed parsing` : null,
+      completedAt: new Date(),
+      updatedAt: new Date(),
+    }).where(eq(dataCaseBatches.id, batch.id));
+
+    const reviewNote = needsReview
+      ? ` Review needed${failedCount ? `: ${failedCount} attachment(s) failed` : ""}${expectedMismatch ? `; expected ${batch.expectedAttachmentCount}, received ${documents.length}` : ""}.`
+      : "";
+    return `Completed case for ${patient.canonicalName}: ${parsed.length} attachment(s) consolidated into one visit.${reviewNote} Summary: ${summary}`;
+  }
+
   private async processAttachmentOnly(tenant: TenantContext, data: IncomingDataMessage): Promise<string> {
+    if (await this.findDocumentBySourceMessage(tenant, data.sourceMessageId)) {
+      return "That attachment is already saved.";
+    }
     if (!data.mediaData && !data.mediaBuffer) {
       return "I received the attachment, but could not download it for secure storage. Please resend it.";
     }
@@ -826,12 +1224,14 @@ export class DataManagementAgentService {
         organizationId: tenant.organizationId,
         userId: tenant.userId,
         sourcePhoneNumber: data.phoneNumber,
+        sourceMessageId: data.sourceMessageId || null,
         fileName: attachment.fileName,
         mimeType: attachment.mimeType,
         fileSize: attachment.fileSize,
         fileUrl: attachment.fileUrl,
         storageBucket: attachment.storageBucket,
         storagePath: attachment.storagePath,
+        caption: data.mediaInfo?.caption || data.content || null,
         documentType: data.messageType || "attachment",
         extractedJson: {},
         confidence: null,
@@ -845,6 +1245,7 @@ export class DataManagementAgentService {
         organizationId: tenant.organizationId,
         userId: tenant.userId,
         sourcePhoneNumber: data.phoneNumber,
+        sourceMessageId: data.sourceMessageId || null,
         fileName: data.mediaInfo?.fileName || this.defaultAttachmentName(data),
         mimeType: data.mediaInfo?.mimetype || "application/octet-stream",
         fileSize: this.toFileSize(data.mediaInfo?.fileLength),
@@ -857,7 +1258,145 @@ export class DataManagementAgentService {
     }
   }
 
-  private async archiveAttachment(tenant: TenantContext, data: IncomingDataMessage): Promise<ArchivedAttachment> {
+  private async findDocumentBySourceMessage(tenant: TenantContext, sourceMessageId?: string) {
+    if (!sourceMessageId) return null;
+    return (await db.select().from(dataDocuments).where(and(
+      eq(dataDocuments.organizationId, tenant.organizationId),
+      eq(dataDocuments.userId, tenant.userId),
+      eq(dataDocuments.sourceMessageId, sourceMessageId),
+    )).limit(1))[0] || null;
+  }
+
+  private async consolidateCaseBatch(
+    tenant: TenantContext,
+    patient: typeof dataPatients.$inferSelect,
+    batch: typeof dataCaseBatches.$inferSelect,
+    parsed: Array<{ document: typeof dataDocuments.$inferSelect; extraction: DataExtraction }>,
+  ): Promise<DataExtraction> {
+    const fallback = this.mergeCaseBatchExtractions(patient, batch, parsed.map((item) => item.extraction));
+    if (!this.anthropic) return fallback;
+
+    const source = parsed.map(({ document, extraction }) => ({
+      sequence_number: document.sequenceNumber,
+      document_id: document.id,
+      file_name: document.fileName,
+      extraction,
+    }));
+    try {
+      const response = await this.anthropic.messages.create({
+        model: process.env.DATA_AGENT_MODEL || "claude-sonnet-4-20250514",
+        max_tokens: 8000,
+        system: await this.getSystemPrompt(tenant.userId),
+        tools: [DATA_EXTRACTION_TOOL],
+        tool_choice: { type: "tool", name: DATA_EXTRACTION_TOOL.name },
+        messages: [{
+          role: "user",
+          content: [{
+            type: "text",
+            text: [
+              `Consolidate these separately parsed attachments into one clinical visit for ${patient.canonicalName}.`,
+              `The patient identity was explicitly supplied by the doctor in the batch command. Event date hint: ${batch.eventDate || "none"}.`,
+              "Deduplicate repeated facts. Preserve conflicting values as separate observations with source_text. Do not invent facts.",
+              "Return one complete patient extraction. Include all examination findings, advice, medicines, tests, results, imaging findings, and doctor notes.",
+              JSON.stringify(source),
+            ].join("\n"),
+          }],
+        }],
+      } as any);
+      const toolUse = response.content.find(
+        (block: any) => block.type === "tool_use" && block.name === DATA_EXTRACTION_TOOL.name,
+      ) as Anthropic.ToolUseBlock | undefined;
+      if (!toolUse?.input || typeof toolUse.input !== "object") return fallback;
+
+      const consolidated = toolUse.input as DataExtraction;
+      consolidated.record_scope = "patient";
+      consolidated.patient = {
+        ...(consolidated.patient || {}),
+        name: patient.canonicalName,
+        age: consolidated.patient?.age ?? patient.age,
+        gender: consolidated.patient?.gender || patient.gender,
+        dob: consolidated.patient?.dob || patient.dob,
+        name_source_text: `Batch command for ${patient.canonicalName}`,
+        identity_confidence: 1,
+      };
+      consolidated.event_date = batch.eventDate || consolidated.event_date || null;
+      return this.normalizeExtraction(consolidated);
+    } catch (error: any) {
+      console.warn("[DataManagementAgentService] Batch consolidation fallback:", error?.message || error);
+      return fallback;
+    }
+  }
+
+  private mergeCaseBatchExtractions(
+    patient: typeof dataPatients.$inferSelect,
+    batch: typeof dataCaseBatches.$inferSelect,
+    extractions: DataExtraction[],
+  ): DataExtraction {
+    const emrSources = extractions.map((item) => this.asRecord(item.emr_fields));
+    const uniqueRecords = (field: string) => {
+      const seen = new Set<string>();
+      return emrSources.flatMap((source) => this.asRecordArray(source[field])).filter((item) => {
+        const key = JSON.stringify(item);
+        if (seen.has(key)) return false;
+        seen.add(key);
+        return true;
+      });
+    };
+    const uniqueStrings = (field: string) => Array.from(new Set(
+      emrSources.flatMap((source) => this.stringArray(source[field])),
+    ));
+    const joined = (field: string) => Array.from(new Set(
+      emrSources.map((source) => this.nullableString(source[field])).filter((value): value is string => Boolean(value)),
+    )).join("\n") || null;
+    const imaging = emrSources
+      .map((source) => this.asRecord(source.imaging_analysis))
+      .filter((value) => Object.keys(value).length);
+
+    return this.normalizeExtraction({
+      record_scope: "patient",
+      document_type: extractions.length === 1 ? extractions[0].document_type : "case_paper",
+      patient: {
+        name: patient.canonicalName,
+        age: patient.age,
+        gender: patient.gender,
+        phone: null,
+        dob: patient.dob,
+        name_source_text: `Batch command for ${patient.canonicalName}`,
+        identity_confidence: 1,
+      },
+      event_date: batch.eventDate || extractions.find((item) => item.event_date)?.event_date || null,
+      summary: extractions.map((item) => item.summary).filter(Boolean).join(" "),
+      raw_text: extractions.map((item, index) => `Attachment ${index + 1}\n${item.raw_text || ""}`).join("\n\n"),
+      emr_fields: {
+        chief_complaint: joined("chief_complaint"),
+        symptoms: uniqueRecords("symptoms"),
+        vitals: uniqueRecords("vitals"),
+        physical_examination: uniqueRecords("physical_examination"),
+        diagnoses: uniqueRecords("diagnoses"),
+        prescriptions: uniqueRecords("prescriptions"),
+        tests_ordered: uniqueRecords("tests_ordered"),
+        results: uniqueRecords("results"),
+        procedures: uniqueRecords("procedures"),
+        allergies: uniqueStrings("allergies"),
+        history: uniqueStrings("history"),
+        advice: uniqueStrings("advice"),
+        follow_up: joined("follow_up"),
+        follow_up_date: emrSources.map((source) => this.isoDateString(source.follow_up_date)).find(Boolean) || null,
+        doctor_notes: joined("doctor_notes"),
+        warnings: uniqueStrings("warnings"),
+        imaging_analysis: imaging.length === 1 ? imaging[0] : imaging.length ? { studies: imaging, needs_confirmation: true } : null,
+        observations: uniqueRecords("observations"),
+      },
+      confidence: Math.min(...extractions.map((item) => Number(item.confidence) || 0)),
+      needs_confirmation: extractions.some((item) => item.needs_confirmation),
+    });
+  }
+
+  private async archiveAttachment(
+    tenant: TenantContext,
+    data: IncomingDataMessage,
+    batchContext?: { patientId: string; caseBatchId: string },
+  ): Promise<ArchivedAttachment> {
     const supabaseUrl = process.env.SUPABASE_URL || process.env.VITE_SUPABASE_URL || "";
     const serviceKey = process.env.SUPABASE_SERVICE_ROLE_KEY || "";
     const storageBucket = process.env.DATA_ATTACHMENTS_BUCKET || "ocruploads";
@@ -878,7 +1417,8 @@ export class DataManagementAgentService {
       tenant.organizationId,
       tenant.userId,
       "clinical-attachments",
-      datePath,
+      batchContext?.patientId || "unassigned",
+      batchContext?.caseBatchId || datePath,
       uniqueName,
     ].map((part) => encodeURIComponent(part)).join("/");
 
@@ -908,6 +1448,36 @@ export class DataManagementAgentService {
       storagePath: decodeURIComponent(storagePath),
       fileUrl: `${supabaseUrl.replace(/\/+$/, "")}/storage/v1/object/authenticated/${encodeURIComponent(storageBucket)}/${storagePath}`,
     };
+  }
+
+  private async downloadArchivedAttachment(storageBucket: string, storagePath: string): Promise<Buffer> {
+    const supabaseUrl = process.env.SUPABASE_URL || process.env.VITE_SUPABASE_URL || "";
+    const serviceKey = process.env.SUPABASE_SERVICE_ROLE_KEY || "";
+    if (!supabaseUrl || !serviceKey) throw new Error("Supabase attachment storage is not configured");
+    const objectPath = storagePath.split("/").map((part) => encodeURIComponent(part)).join("/");
+    const response = await fetch(
+      `${supabaseUrl.replace(/\/+$/, "")}/storage/v1/object/${encodeURIComponent(storageBucket)}/${objectPath}`,
+      { headers: { Authorization: `Bearer ${serviceKey}`, apikey: serviceKey } },
+    );
+    if (!response.ok) throw new Error(`Stored attachment download failed (${response.status})`);
+    return Buffer.from(await response.arrayBuffer());
+  }
+
+  private async deleteArchivedAttachment(storageBucket: string, storagePath: string): Promise<void> {
+    const supabaseUrl = process.env.SUPABASE_URL || process.env.VITE_SUPABASE_URL || "";
+    const serviceKey = process.env.SUPABASE_SERVICE_ROLE_KEY || "";
+    if (!supabaseUrl || !serviceKey) return;
+    const objectPath = storagePath.split("/").map((part) => encodeURIComponent(part)).join("/");
+    const response = await fetch(
+      `${supabaseUrl.replace(/\/+$/, "")}/storage/v1/object/${encodeURIComponent(storageBucket)}/${objectPath}`,
+      {
+        method: "DELETE",
+        headers: { Authorization: `Bearer ${serviceKey}`, apikey: serviceKey },
+      },
+    );
+    if (!response.ok && response.status !== 404) {
+      console.warn(`[DataManagementAgentService] Storage delete failed (${response.status}) for ${storagePath}`);
+    }
   }
 
   private defaultAttachmentName(data: IncomingDataMessage): string {
@@ -1271,16 +1841,20 @@ export class DataManagementAgentService {
     attachment?: ArchivedAttachment,
   ): Promise<string> {
     const attachmentValues = attachment ? {
+      sourceMessageId: data.sourceMessageId || null,
       fileName: attachment.fileName,
       mimeType: attachment.mimeType,
       fileSize: attachment.fileSize,
       fileUrl: attachment.fileUrl,
       storageBucket: attachment.storageBucket,
       storagePath: attachment.storagePath,
+      caption: data.mediaInfo?.caption || data.content || null,
     } : {
+      sourceMessageId: data.sourceMessageId || null,
       fileName: data.mediaInfo?.fileName || null,
       mimeType: data.mediaInfo?.mimetype || null,
       fileSize: this.toFileSize(data.mediaInfo?.fileLength),
+      caption: data.mediaInfo?.caption || data.content || null,
     };
 
     if (extraction.record_scope === "patient") {
