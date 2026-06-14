@@ -1424,8 +1424,39 @@ export async function registerRoutes(app: Express): Promise<Server> {
   // Message debouncing: concatenate rapid messages instead of discarding
   const messageDebounceMap = new Map<string, NodeJS.Timeout>();
   const messageBatchMap = new Map<string, { messages: string[]; latestData: any; userId: string; sessionName: string }>();
+  const mediaProcessingQueues = new Map<string, Promise<void>>();
   const DEBOUNCE_DELAY = 5000; // 5 seconds - wait for user to finish typing
   const getIncomingMessageKey = (userId: string, sessionName: string, phoneNumber: string) => `${userId}:${sessionName}:${phoneNumber}`;
+
+  const flushPendingTextBatch = async (incomingKey: string): Promise<void> => {
+    const timeout = messageDebounceMap.get(incomingKey);
+    if (timeout) clearTimeout(timeout);
+    messageDebounceMap.delete(incomingKey);
+
+    const batch = messageBatchMap.get(incomingKey);
+    messageBatchMap.delete(incomingKey);
+    if (!batch) return;
+
+    const processData = {
+      ...batch.latestData,
+      content: batch.messages.join('\n'),
+      _alreadyStored: true,
+      _batchCount: batch.messages.length,
+      _userId: batch.userId,
+      _sessionName: batch.sessionName,
+    };
+    console.log(`Processing text batch of ${batch.messages.length} message(s) from ${batch.latestData.phoneNumber}`);
+    await processIncomingMessage(processData);
+  };
+
+  const drainMediaQueue = async (incomingKey: string): Promise<void> => {
+    while (true) {
+      const queue = mediaProcessingQueues.get(incomingKey);
+      if (!queue) return;
+      await queue;
+      if (!mediaProcessingQueues.get(incomingKey)) return;
+    }
+  };
 
   // Handle incoming messages from any session
   const handleIncomingSessionMessage = async (userId: string, sessionName: string, data: any) => {
@@ -1451,6 +1482,40 @@ export async function registerRoutes(app: Express): Promise<Server> {
     }
 
     const incomingKey = getIncomingMessageKey(userId, sessionName, data.phoneNumber);
+    const messageType = data.messageType || 'text';
+    const isMediaMessage = ['image', 'document', 'audio', 'voice_note', 'video'].includes(messageType);
+
+    if (isMediaMessage) {
+      const existingMediaQueue = mediaProcessingQueues.get(incomingKey);
+      const previous = existingMediaQueue || Promise.resolve();
+      const queued = previous
+        .catch(() => undefined)
+        .then(async () => {
+          // Apply a rapidly-sent START CASE before photo 1. Later queued photos
+          // must not flush a DONE command that arrived while uploads continue.
+          if (!existingMediaQueue) {
+            await flushPendingTextBatch(incomingKey);
+          }
+          await processIncomingMessage({
+            ...data,
+            _alreadyStored: true,
+            _batchCount: 1,
+            _userId: userId,
+            _sessionName: sessionName,
+          });
+        })
+        .catch((error) => {
+          console.error(`Failed processing media ${data.sourceMessageId || ''} from ${data.phoneNumber}:`, error);
+        })
+        .finally(() => {
+          if (mediaProcessingQueues.get(incomingKey) === queued) {
+            mediaProcessingQueues.delete(incomingKey);
+          }
+        });
+      mediaProcessingQueues.set(incomingKey, queued);
+      console.log(`Queued ${messageType} ${data.sourceMessageId || ''} from ${data.phoneNumber} for individual processing`);
+      return;
+    }
 
     // Accumulate messages for this phone number within the owning user/session
     const existing = messageBatchMap.get(incomingKey);
@@ -1475,24 +1540,8 @@ export async function registerRoutes(app: Express): Promise<Server> {
 
     // Set new timeout - process all batched messages after debounce window
     const timeoutId = setTimeout(async () => {
-      messageDebounceMap.delete(incomingKey);
-      const batch = messageBatchMap.get(incomingKey);
-      messageBatchMap.delete(incomingKey);
-
-      if (batch) {
-        // Combine all batched messages into one for bot processing
-        const combinedContent = batch.messages.join('\n');
-        const processData = {
-          ...batch.latestData,
-          content: combinedContent,
-          _alreadyStored: true, // Flag: messages already saved to DB individually
-          _batchCount: batch.messages.length,
-          _userId: batch.userId,
-          _sessionName: batch.sessionName,
-        };
-        console.log(`📦 Processing batch of ${batch.messages.length} message(s) from ${data.phoneNumber}`);
-        await processIncomingMessage(processData);
-      }
+      await drainMediaQueue(incomingKey);
+      await flushPendingTextBatch(incomingKey);
     }, DEBOUNCE_DELAY);
 
     messageDebounceMap.set(incomingKey, timeoutId);
