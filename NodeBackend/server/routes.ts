@@ -419,7 +419,9 @@ async function callVoiceRagAgent(params: {
     const data = await response.json();
     const content = data.choices?.[0]?.message?.content;
     if (!content || typeof content !== "string") throw new Error("Voice RAG agent returned an empty response");
-    return content.trim();
+    const reply = content.trim();
+    if (params.stream && params.onChunk) params.onChunk(reply);
+    return reply;
   }
 
   const supabaseUrl = process.env.VITE_SUPABASE_URL;
@@ -456,6 +458,24 @@ async function callVoiceRagAgent(params: {
     const decoder = new TextDecoder();
     let fullText = "";
     let buffer = "";
+    let streamError: string | null = null;
+
+    const processSseLine = (line: string) => {
+      if (!line.startsWith("data:")) return;
+      const data = line.slice(5).trim();
+      if (!data || data === "[DONE]") return;
+      try {
+        const event = JSON.parse(data);
+        if (event.type === "chunk" && typeof event.text === "string" && event.text) {
+          fullText += event.text;
+          params.onChunk!(event.text);
+        } else if (event.type === "error") {
+          streamError = event.message || "Supabase RAG stream failed";
+        }
+      } catch {
+        // Ignore malformed keepalive or event lines.
+      }
+    };
 
     while (true) {
       const { done, value } = await reader.read();
@@ -466,21 +486,23 @@ async function callVoiceRagAgent(params: {
       buffer = lines.pop() || "";
 
       for (const line of lines) {
-        if (!line.startsWith("data: ")) continue;
-        const data = line.slice(6);
-        try {
-          const event = JSON.parse(data);
-          if (event.type === "chunk" && event.text) {
-            fullText += event.text;
-            params.onChunk(event.text);
-          }
-        } catch {
-          // Skip invalid JSON
-        }
+        processSseLine(line);
       }
     }
 
-    if (!fullText) throw new Error("Voice Supabase RAG returned an empty streaming response");
+    buffer += decoder.decode();
+    for (const line of buffer.split("\n")) processSseLine(line);
+
+    if (!fullText) {
+      log(`Voice Supabase RAG stream was empty${streamError ? `: ${streamError}` : ""}; retrying without streaming`);
+      const fallback = await callVoiceRagAgent({
+        ...params,
+        stream: false,
+        onChunk: undefined,
+      });
+      params.onChunk(fallback);
+      return fallback;
+    }
     return fullText.trim();
   }
 
@@ -758,26 +780,36 @@ export async function registerRoutes(app: Express): Promise<Server> {
           }
         };
 
-        const replyText = await callVoiceRagAgent({
-          tenant,
-          text: input.text,
-          history,
-          ragAgentId: selectedVoiceAgent?.ragAgentId,
-          systemPrompt: selectedVoiceAgent?.systemPrompt,
-          languageMode: selectedVoiceAgent?.languageMode,
-          stream: true,
-          onChunk: (chunk: string) => {
-            fullText += chunk;
-            sentenceBuffer += chunk;
+        let replyText: string;
+        try {
+          replyText = await callVoiceRagAgent({
+            tenant,
+            text: input.text,
+            history,
+            ragAgentId: selectedVoiceAgent?.ragAgentId,
+            systemPrompt: selectedVoiceAgent?.systemPrompt,
+            languageMode: selectedVoiceAgent?.languageMode,
+            stream: true,
+            onChunk: (chunk: string) => {
+              fullText += chunk;
+              sentenceBuffer += chunk;
 
-            const parts = sentenceBuffer.split(sentenceEnders);
-            while (parts.length > 1) {
-              const sentence = parts.shift()!;
-              flushSentence(sentence, false);
-            }
-            sentenceBuffer = parts[0] || "";
-          },
-        });
+              const parts = sentenceBuffer.split(sentenceEnders);
+              while (parts.length > 1) {
+                const sentence = parts.shift()!;
+                flushSentence(sentence, false);
+              }
+              sentenceBuffer = parts[0] || "";
+            },
+          });
+        } catch (streamError: any) {
+          log(`Voice agent streaming failed: ${streamError.message}`);
+          if (!res.writableEnded) {
+            res.write(`data: ${JSON.stringify({ type: "error", message: streamError.message || "Voice agent failed" })}\n\n`);
+            res.end();
+          }
+          return;
+        }
 
         if (sentenceBuffer.trim()) {
           flushSentence(sentenceBuffer, true);
@@ -834,6 +866,13 @@ export async function registerRoutes(app: Express): Promise<Server> {
     } catch (error: any) {
       const status = error instanceof z.ZodError ? 400 : 500;
       log(`Voice agent respond error: ${error.message}`);
+      if (res.headersSent) {
+        if (!res.writableEnded) {
+          res.write(`data: ${JSON.stringify({ type: "error", message: error.message || "Voice agent failed" })}\n\n`);
+          res.end();
+        }
+        return;
+      }
       res.status(status).json({ message: error.message || 'Voice agent failed' });
     }
   });
