@@ -468,6 +468,9 @@ export async function runMigrations(): Promise<void> {
         "file_name" text,
         "mime_type" text,
         "file_size" integer,
+        "file_url" text,
+        "storage_bucket" text,
+        "storage_path" text,
         "document_type" text DEFAULT 'unknown' NOT NULL,
         "ocr_text" text,
         "extracted_json" jsonb DEFAULT '{}'::jsonb,
@@ -479,6 +482,11 @@ export async function runMigrations(): Promise<void> {
         "created_at" timestamp DEFAULT now(),
         "updated_at" timestamp DEFAULT now()
       );
+
+      ALTER TABLE "data_documents"
+        ADD COLUMN IF NOT EXISTS "file_url" text,
+        ADD COLUMN IF NOT EXISTS "storage_bucket" text,
+        ADD COLUMN IF NOT EXISTS "storage_path" text;
 
       CREATE TABLE IF NOT EXISTS "data_patient_events" (
         "id" varchar PRIMARY KEY DEFAULT gen_random_uuid() NOT NULL,

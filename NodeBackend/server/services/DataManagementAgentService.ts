@@ -51,6 +51,8 @@ type ExtractedPatient = {
   gender?: string | null;
   phone?: string | null;
   dob?: string | null;
+  name_source_text?: string | null;
+  identity_confidence?: number | null;
 };
 
 type DataExtraction = {
@@ -89,9 +91,18 @@ type DataToolResult = {
   error?: string;
 };
 
+type ArchivedAttachment = {
+  fileName: string;
+  mimeType: string;
+  fileSize: number;
+  fileUrl: string;
+  storageBucket: string;
+  storagePath: string;
+};
+
 const DEFAULT_DATA_MANAGEMENT_PROMPT = `You are a highly accurate clinical document extraction system for a doctor's private WhatsApp/data app.
 
-Read every visible page of report images, PDF documents, prescriptions, case papers, discharge summaries, and short doctor notes.
+Read every visible page of report images, PDF documents, prescriptions, case papers, discharge summaries, short doctor notes, and clinical images.
 
 Classify the input into one of:
 - patient: report, prescription, discharge summary, surgery note, invoice, or any record tied to a patient.
@@ -101,12 +112,25 @@ Classify the input into one of:
 Rules:
 - Never invent missing data.
 - Preserve medical values, spellings, dosage, frequency, duration, units, and reference ranges as written.
+- Read printed text and handwriting separately. Transcribe every legible handwritten clinical line, including examination findings, history, assessment, investigations, advice, follow-up, and medicine instructions.
+- raw_text must be a comprehensive line-by-line transcription of all clinically relevant visible text, not a short summary. Use [unclear] for an unreadable word or phrase instead of guessing or omitting the line.
 - Use null for missing fields.
 - Use ISO dates (YYYY-MM-DD) when visible or clearly stated.
 - Set confidence from 0 to 1.
 - Set needs_confirmation true when patient identity or any clinically important field is uncertain.
+- Patient identity is a high-risk field. A doctor name printed in a letterhead, department roster, degree/registration block, signature, stamp, or "consultant/surgeon" line is NEVER the patient name.
+- Accept a patient name only from an explicit patient-identification area such as "Patient", "Name", "Mr/Mrs/Ms", UHID/IPD/OPD label, barcode sticker, registration label, or an unambiguous message caption. Return the exact supporting text in patient.name_source_text.
+- If the only visible names are clinicians, or the patient label is unreadable/ambiguous, set patient.name to null, patient.name_source_text to null, patient.identity_confidence below 0.5, and needs_confirmation to true.
+- Do not describe all doctors printed on stationery as participating in the consultation. Record a clinician only when the clinical note, signature, or explicit treating-doctor field ties that clinician to this encounter.
 - Put each measurable or comparable fact in emr_fields.observations. This is required for longitudinal analysis.
 - Keep source_text for clinical facts so a doctor can verify them against the document.
+- Put the complete clinical narrative in emr_fields.doctor_notes as well as distributing facts into the structured arrays. Do not omit a line merely because it does not fit another field.
+- For numeric observations, value must not repeat unit. Example: value "95", numeric_value 95, unit "bpm"; not value "95 bpm" with unit "bpm".
+- Put examination findings in emr_fields.physical_examination, grouped by body system or examined area. Preserve negative findings such as "no tenderness" and "no organomegaly".
+- Set emr_fields.follow_up_date only when an exact date is printed or can be calculated unambiguously from a dated instruction. Keep the original wording in follow_up.
+- For an X-ray, CT, MRI, ultrasound, ECG, wound photograph, pathology image, or other clinical image, populate imaging_analysis. Distinguish direct visual findings from text transcribed from a printed radiology report.
+- Imaging analysis is preliminary decision support, not a definitive diagnosis. Describe only visible findings, image quality, limitations, and urgent warning signs. Never claim that an image is normal when quality or views are inadequate, and never invent modality, body part, laterality, or view.
+- If an uploaded image is only a photographed document, prescription, or report, leave imaging_analysis null and parse it as a document.
 - Do not fill missing prescription fields with defaults.
 - Do not infer an ICD code unless explicitly printed or unambiguous.
 - Separate tests ordered from test results.
@@ -115,8 +139,16 @@ Rules:
 For patient records, return:
 {
   "record_scope": "patient",
-  "document_type": "case_paper|lab_report|prescription|discharge_summary|surgery_note|invoice|imaging_report|pathology_report|procedure_note|unknown",
-  "patient": { "name": string|null, "age": number|null, "gender": string|null, "phone": string|null, "dob": string|null },
+  "document_type": "case_paper|lab_report|prescription|discharge_summary|surgery_note|invoice|imaging_report|radiology_image|clinical_photo|pathology_report|procedure_note|unknown",
+  "patient": {
+    "name": string|null,
+    "age": number|null,
+    "gender": string|null,
+    "phone": string|null,
+    "dob": string|null,
+    "name_source_text": string|null,
+    "identity_confidence": number|null
+  },
   "event_date": "YYYY-MM-DD"|null,
   "summary": string,
   "raw_text": string|null,
@@ -124,6 +156,7 @@ For patient records, return:
     "chief_complaint": string|null,
     "symptoms": [{ "name": string, "severity": string|null, "duration": string|null, "notes": string|null, "source_text": string|null }],
     "vitals": [{ "name": string, "value": string|null, "numeric_value": number|null, "unit": string|null, "source_text": string|null }],
+    "physical_examination": [{ "system": string, "finding": string, "source_text": string|null, "confidence": number|null, "needs_confirmation": boolean }],
     "diagnoses": [{ "name": string, "icd10_code": string|null, "notes": string|null, "is_primary": boolean, "source_text": string|null }],
     "prescriptions": [{ "medicine": string, "dosage": string|null, "frequency": string|null, "duration": string|null, "instructions": string|null, "quantity": string|null, "source_text": string|null }],
     "tests_ordered": [{ "name": string, "type": string|null, "instructions": string|null, "urgency": string|null, "source_text": string|null }],
@@ -133,10 +166,26 @@ For patient records, return:
     "history": [string],
     "advice": [string],
     "follow_up": string|null,
+    "follow_up_date": "YYYY-MM-DD"|null,
     "doctor_notes": string|null,
     "warnings": [string],
+    "imaging_analysis": {
+      "analysis_type": "direct_image|report_text"|null,
+      "modality": string|null,
+      "body_part": string|null,
+      "laterality": string|null,
+      "view": string|null,
+      "image_quality": string|null,
+      "findings": [{ "finding": string, "location": string|null, "source_text": string|null }],
+      "impression": string|null,
+      "limitations": [string],
+      "urgent_findings": [string],
+      "comparison": string|null,
+      "confidence": number|null,
+      "needs_confirmation": boolean
+    }|null,
     "observations": [{
-      "category": "vital|lab_result|symptom|diagnosis|medicine|procedure|other",
+      "category": "vital|lab_result|symptom|diagnosis|medicine|procedure|examination|imaging_finding|other",
       "name": string,
       "value": string|null,
       "numeric_value": number|null,
@@ -182,8 +231,10 @@ const DATA_EXTRACTION_TOOL: Anthropic.Tool = {
           gender: { type: ["string", "null"] },
           phone: { type: ["string", "null"] },
           dob: { type: ["string", "null"] },
+          name_source_text: { type: ["string", "null"] },
+          identity_confidence: { type: ["number", "null"] },
         },
-        required: ["name", "age", "gender", "phone", "dob"],
+        required: ["name", "age", "gender", "phone", "dob", "name_source_text", "identity_confidence"],
         additionalProperties: false,
       },
       event_date: { type: ["string", "null"] },
@@ -346,7 +397,7 @@ export class DataManagementAgentService {
 
   async shouldSilentlyIgnoreMessage(ownerUserId: string, data: IncomingDataMessage): Promise<boolean> {
     const messageType = data.messageType || "text";
-    if (messageType !== "image" && messageType !== "document") return false;
+    if (!["image", "document", "audio", "voice_note", "video"].includes(messageType)) return false;
     if (!await this.isEnabledForUser(ownerUserId)) return false;
     return !await this.isOwnerMessage(ownerUserId, data);
   }
@@ -361,7 +412,7 @@ export class DataManagementAgentService {
     if (!await this.isOwnerMessage(ownerUserId, data)) return false;
 
     const messageType = data.messageType || "text";
-    if (messageType === "image" || messageType === "document") return true;
+    if (["image", "document", "audio", "voice_note", "video"].includes(messageType)) return true;
 
     const text = (data.content || "").trim().toLowerCase();
     if (!text) return false;
@@ -391,6 +442,9 @@ export class DataManagementAgentService {
     const messageType = data.messageType || "text";
     if (messageType === "image" || messageType === "document") {
       return this.processDocument(tenant, data);
+    }
+    if (messageType === "audio" || messageType === "voice_note" || messageType === "video") {
+      return this.processAttachmentOnly(tenant, data);
     }
 
     if (this.isExcelExportCommand(data.content || "")) {
@@ -561,7 +615,10 @@ export class DataManagementAgentService {
         Summary: event.summary,
         Chief_Complaint: structured.chief_complaint,
         Follow_Up: structured.follow_up,
+        Follow_Up_Date: structured.follow_up_date,
+        Physical_Examination: this.jsonCell(structured.physical_examination),
         Doctor_Notes: structured.doctor_notes,
+        Imaging_Analysis: this.jsonCell(structured.imaging_analysis),
         Advice: this.joinCell(structured.advice),
         Allergies: this.joinCell(structured.allergies),
         History: this.joinCell(structured.history),
@@ -621,6 +678,9 @@ export class DataManagementAgentService {
       Document_Type: document.documentType,
       File_Name: document.fileName,
       MIME_Type: document.mimeType,
+      File_URL: document.fileUrl,
+      Storage_Bucket: document.storageBucket,
+      Storage_Path: document.storagePath,
       Status: document.status,
       Confidence: document.confidence,
       Received_At: this.dateTimeCell(document.receivedAt),
@@ -732,8 +792,141 @@ export class DataManagementAgentService {
       return "I received the file, but could not download it for parsing. Please resend it.";
     }
 
+    let attachment: ArchivedAttachment;
+    try {
+      attachment = await this.archiveAttachment(tenant, data);
+    } catch (error: any) {
+      const errorMessage = error?.message || "Attachment storage upload failed";
+      await db.insert(dataDocuments).values({
+        organizationId: tenant.organizationId,
+        userId: tenant.userId,
+        sourcePhoneNumber: data.phoneNumber,
+        fileName: data.mediaInfo?.fileName || this.defaultAttachmentName(data),
+        mimeType: data.mediaInfo?.mimetype || "application/octet-stream",
+        fileSize: this.toFileSize(data.mediaInfo?.fileLength),
+        status: "failed",
+        errorMessage,
+      });
+      console.error("[DataManagementAgentService] Attachment archive failed:", errorMessage);
+      return "I received the attachment, but could not save it to secure storage, so I did not process it. Please try again.";
+    }
+
     const extraction = await this.extractStructuredData(tenant, data);
-    return this.persistExtraction(tenant, data, extraction);
+    return this.persistExtraction(tenant, data, extraction, attachment);
+  }
+
+  private async processAttachmentOnly(tenant: TenantContext, data: IncomingDataMessage): Promise<string> {
+    if (!data.mediaData && !data.mediaBuffer) {
+      return "I received the attachment, but could not download it for secure storage. Please resend it.";
+    }
+
+    try {
+      const attachment = await this.archiveAttachment(tenant, data);
+      await db.insert(dataDocuments).values({
+        organizationId: tenant.organizationId,
+        userId: tenant.userId,
+        sourcePhoneNumber: data.phoneNumber,
+        fileName: attachment.fileName,
+        mimeType: attachment.mimeType,
+        fileSize: attachment.fileSize,
+        fileUrl: attachment.fileUrl,
+        storageBucket: attachment.storageBucket,
+        storagePath: attachment.storagePath,
+        documentType: data.messageType || "attachment",
+        extractedJson: {},
+        confidence: null,
+        status: "processed",
+        processedAt: new Date(),
+      });
+      return `Saved ${data.messageType || "attachment"} securely.`;
+    } catch (error: any) {
+      const errorMessage = error?.message || "Attachment storage upload failed";
+      await db.insert(dataDocuments).values({
+        organizationId: tenant.organizationId,
+        userId: tenant.userId,
+        sourcePhoneNumber: data.phoneNumber,
+        fileName: data.mediaInfo?.fileName || this.defaultAttachmentName(data),
+        mimeType: data.mediaInfo?.mimetype || "application/octet-stream",
+        fileSize: this.toFileSize(data.mediaInfo?.fileLength),
+        documentType: data.messageType || "attachment",
+        status: "failed",
+        errorMessage,
+      });
+      console.error("[DataManagementAgentService] Attachment archive failed:", errorMessage);
+      return "I received the attachment, but could not save it to secure storage. Please try again.";
+    }
+  }
+
+  private async archiveAttachment(tenant: TenantContext, data: IncomingDataMessage): Promise<ArchivedAttachment> {
+    const supabaseUrl = process.env.SUPABASE_URL || process.env.VITE_SUPABASE_URL || "";
+    const serviceKey = process.env.SUPABASE_SERVICE_ROLE_KEY || "";
+    const storageBucket = process.env.DATA_ATTACHMENTS_BUCKET || "ocruploads";
+    if (!supabaseUrl || !serviceKey) {
+      throw new Error("Supabase attachment storage is not configured");
+    }
+
+    const buffer = data.mediaBuffer || (data.mediaData ? Buffer.from(data.mediaData, "base64") : null);
+    if (!buffer?.length) throw new Error("Attachment data is empty");
+
+    const mimeType = data.mediaInfo?.mimetype || "application/octet-stream";
+    const originalName = data.mediaInfo?.fileName || this.defaultAttachmentName(data);
+    const safeName = originalName.replace(/[^a-zA-Z0-9._-]+/g, "_").replace(/^_+|_+$/g, "") || "attachment";
+    const date = new Date(data.timestamp || Date.now());
+    const datePath = Number.isNaN(date.getTime()) ? new Date().toISOString().slice(0, 10) : date.toISOString().slice(0, 10);
+    const uniqueName = `${Date.now()}-${Math.random().toString(36).slice(2, 10)}-${safeName}`;
+    const storagePath = [
+      tenant.organizationId,
+      tenant.userId,
+      "clinical-attachments",
+      datePath,
+      uniqueName,
+    ].map((part) => encodeURIComponent(part)).join("/");
+
+    const response = await fetch(
+      `${supabaseUrl.replace(/\/+$/, "")}/storage/v1/object/${encodeURIComponent(storageBucket)}/${storagePath}`,
+      {
+        method: "POST",
+        headers: {
+          Authorization: `Bearer ${serviceKey}`,
+          apikey: serviceKey,
+          "Content-Type": mimeType,
+          "x-upsert": "false",
+        },
+        body: buffer,
+      },
+    );
+    if (!response.ok) {
+      const detail = (await response.text()).slice(0, 500);
+      throw new Error(`Storage upload failed (${response.status}): ${detail}`);
+    }
+
+    return {
+      fileName: originalName,
+      mimeType,
+      fileSize: buffer.length,
+      storageBucket,
+      storagePath: decodeURIComponent(storagePath),
+      fileUrl: `${supabaseUrl.replace(/\/+$/, "")}/storage/v1/object/authenticated/${encodeURIComponent(storageBucket)}/${storagePath}`,
+    };
+  }
+
+  private defaultAttachmentName(data: IncomingDataMessage): string {
+    const mimeType = data.mediaInfo?.mimetype || "";
+    const extensionByMime: Record<string, string> = {
+      "image/jpeg": "jpg",
+      "image/png": "png",
+      "image/webp": "webp",
+      "image/heic": "heic",
+      "image/heif": "heif",
+      "application/pdf": "pdf",
+      "audio/ogg": "ogg",
+      "audio/mpeg": "mp3",
+      "audio/mp4": "m4a",
+      "video/mp4": "mp4",
+      "video/quicktime": "mov",
+    };
+    const extension = extensionByMime[mimeType.toLowerCase()] || "bin";
+    return `${data.messageType || "attachment"}-${data.timestamp || Date.now()}.${extension}`;
   }
 
   private async trySaveTextAsRecord(tenant: TenantContext, data: IncomingDataMessage): Promise<string | null> {
@@ -1048,7 +1241,7 @@ export class DataManagementAgentService {
 
     const response = await this.anthropic.messages.create({
       model: process.env.DATA_AGENT_MODEL || "claude-sonnet-4-20250514",
-      max_tokens: 5000,
+      max_tokens: 8000,
       system: await this.getSystemPrompt(tenant.userId),
       tools: [DATA_EXTRACTION_TOOL],
       tool_choice: { type: "tool", name: DATA_EXTRACTION_TOOL.name },
@@ -1071,7 +1264,25 @@ export class DataManagementAgentService {
     return this.normalizeExtraction(this.parseExtractionJson(text));
   }
 
-  private async persistExtraction(tenant: TenantContext, data: IncomingDataMessage, extraction: DataExtraction): Promise<string> {
+  private async persistExtraction(
+    tenant: TenantContext,
+    data: IncomingDataMessage,
+    extraction: DataExtraction,
+    attachment?: ArchivedAttachment,
+  ): Promise<string> {
+    const attachmentValues = attachment ? {
+      fileName: attachment.fileName,
+      mimeType: attachment.mimeType,
+      fileSize: attachment.fileSize,
+      fileUrl: attachment.fileUrl,
+      storageBucket: attachment.storageBucket,
+      storagePath: attachment.storagePath,
+    } : {
+      fileName: data.mediaInfo?.fileName || null,
+      mimeType: data.mediaInfo?.mimetype || null,
+      fileSize: this.toFileSize(data.mediaInfo?.fileLength),
+    };
+
     if (extraction.record_scope === "patient") {
       const patientName = extraction.patient?.name?.trim();
       if (!patientName) {
@@ -1079,9 +1290,7 @@ export class DataManagementAgentService {
           organizationId: tenant.organizationId,
           userId: tenant.userId,
           sourcePhoneNumber: data.phoneNumber,
-          fileName: data.mediaInfo?.fileName || null,
-          mimeType: data.mediaInfo?.mimetype || null,
-          fileSize: this.toFileSize(data.mediaInfo?.fileLength),
+          ...attachmentValues,
           documentType: extraction.document_type || "unknown",
           extractedJson: extraction as any,
           confidence: extraction.confidence || 0,
@@ -1098,9 +1307,7 @@ export class DataManagementAgentService {
         userId: tenant.userId,
         patientId: patient.id,
         sourcePhoneNumber: data.phoneNumber,
-        fileName: data.mediaInfo?.fileName || null,
-        mimeType: data.mediaInfo?.mimetype || null,
-        fileSize: this.toFileSize(data.mediaInfo?.fileLength),
+        ...attachmentValues,
         documentType: extraction.document_type || "unknown",
         ocrText: extraction.raw_text || null,
         extractedJson: extraction as any,
@@ -1143,9 +1350,7 @@ export class DataManagementAgentService {
         organizationId: tenant.organizationId,
         userId: tenant.userId,
         sourcePhoneNumber: data.phoneNumber,
-        fileName: data.mediaInfo?.fileName || null,
-        mimeType: data.mediaInfo?.mimetype || null,
-        fileSize: this.toFileSize(data.mediaInfo?.fileLength),
+        ...attachmentValues,
         documentType: extraction.record_type || "general",
         ocrText: extraction.raw_text || extraction.summary || data.content || null,
         extractedJson: extraction as any,
@@ -1174,9 +1379,7 @@ export class DataManagementAgentService {
       organizationId: tenant.organizationId,
       userId: tenant.userId,
       sourcePhoneNumber: data.phoneNumber,
-      fileName: data.mediaInfo?.fileName || null,
-      mimeType: data.mediaInfo?.mimetype || null,
-      fileSize: this.toFileSize(data.mediaInfo?.fileLength),
+      ...attachmentValues,
       documentType: "unknown",
       extractedJson: extraction as any,
       confidence: extraction.confidence || 0,
@@ -1411,6 +1614,22 @@ export class DataManagementAgentService {
     const source = this.asRecord(input.emr_fields);
     const results = this.asRecordArray(source.results);
     const vitals = this.asRecordArray(source.vitals);
+    const patient = input.patient ? { ...input.patient } : input.patient;
+    if (patient) {
+      const identityConfidence = typeof patient.identity_confidence === "number"
+        ? Math.max(0, Math.min(1, patient.identity_confidence))
+        : null;
+      patient.identity_confidence = identityConfidence;
+
+      const name = patient.name?.trim() || "";
+      const identitySource = patient.name_source_text?.trim() || "";
+      const clinicianSource = /(?:^|\b)dr\.?\s|consultant|surgeon|neurosurg|m\.?\s*ch|dnb|reg(?:istration)?\s*no/i;
+      if (/^dr\.?\s/i.test(name) || clinicianSource.test(identitySource)) {
+        patient.name = null;
+        patient.name_source_text = null;
+        patient.identity_confidence = 0;
+      }
+    }
     const observations = this.asRecordArray(source.observations)
       .map((value) => this.normalizeObservation(value))
       .filter((value): value is ClinicalObservation => Boolean(value));
@@ -1465,16 +1684,44 @@ export class DataManagementAgentService {
       });
       if (observation && !this.hasObservation(observations, observation)) observations.push(observation);
     }
+    const physicalExamination = this.asRecordArray(source.physical_examination);
+    for (const examination of physicalExamination) {
+      const observation = this.normalizeObservation({
+        category: "examination",
+        name: examination.system || "Physical examination",
+        value: examination.finding,
+        source_text: examination.source_text,
+        confidence: examination.confidence,
+        needs_confirmation: examination.needs_confirmation,
+      });
+      if (observation && !this.hasObservation(observations, observation)) observations.push(observation);
+    }
+    const imagingAnalysis = this.asRecord(source.imaging_analysis);
+    for (const finding of this.asRecordArray(imagingAnalysis.findings)) {
+      const observation = this.normalizeObservation({
+        category: "imaging_finding",
+        name: [imagingAnalysis.modality, imagingAnalysis.body_part].filter(Boolean).join(" ") || "Imaging finding",
+        value: [finding.finding, finding.location].filter(Boolean).join(" | "),
+        source_text: finding.source_text,
+        confidence: imagingAnalysis.confidence,
+        needs_confirmation: imagingAnalysis.needs_confirmation ?? true,
+      });
+      if (observation && !this.hasObservation(observations, observation)) observations.push(observation);
+    }
 
     return {
       ...input,
       record_scope: "patient",
+      patient,
       confidence,
-      needs_confirmation: Boolean(input.needs_confirmation),
+      needs_confirmation: Boolean(input.needs_confirmation)
+        || !patient?.name_source_text
+        || (typeof patient?.identity_confidence === "number" && patient.identity_confidence < 0.75),
       emr_fields: {
         chief_complaint: this.nullableString(source.chief_complaint),
         symptoms: this.asRecordArray(source.symptoms),
         vitals,
+        physical_examination: physicalExamination,
         diagnoses: this.asRecordArray(source.diagnoses),
         prescriptions: this.asRecordArray(source.prescriptions),
         tests_ordered: this.asRecordArray(source.tests_ordered),
@@ -1484,8 +1731,10 @@ export class DataManagementAgentService {
         history: this.stringArray(source.history),
         advice: this.stringArray(source.advice),
         follow_up: this.nullableString(source.follow_up),
+        follow_up_date: this.isoDateString(source.follow_up_date),
         doctor_notes: this.nullableString(source.doctor_notes),
         warnings: this.stringArray(source.warnings),
+        imaging_analysis: Object.keys(imagingAnalysis).length ? imagingAnalysis : null,
         observations,
         schema_version: "clinical-record-v2",
       },
@@ -1544,6 +1793,11 @@ export class DataManagementAgentService {
 
   private nullableString(value: unknown): string | null {
     return typeof value === "string" && value.trim() ? value.trim() : null;
+  }
+
+  private isoDateString(value: unknown): string | null {
+    const date = this.nullableString(value);
+    return date && /^\d{4}-\d{2}-\d{2}$/.test(date) ? date : null;
   }
 
   private normalizeName(name: string): string {

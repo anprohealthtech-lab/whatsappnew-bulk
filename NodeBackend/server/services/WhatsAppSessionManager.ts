@@ -635,6 +635,8 @@ class ManagedBaileysSession extends EventEmitter implements WAServiceInstance {
         },
         audioData: audioBase64,
         audioBuffer,
+        mediaData: audioBase64,
+        mediaBuffer: audioBuffer,
       });
       return;
     }
@@ -703,14 +705,32 @@ class ManagedBaileysSession extends EventEmitter implements WAServiceInstance {
     }
 
     if (message.videoMessage) {
+      const videoMsg = message.videoMessage;
+      let mediaBuffer: Buffer | null = null;
+      let mediaBase64: string | null = null;
+
+      try {
+        mediaBuffer = await downloadMediaMessage(msg, 'buffer', {}) as Buffer;
+        mediaBase64 = mediaBuffer.toString('base64');
+      } catch (error) {
+        log(`[WA] Failed to download video for ${this.userId}/${this.sessionName}: ${(error as Error).message}`);
+      }
+
       this.emit('incoming-message', {
         phoneNumber,
-        content: message.videoMessage.caption || '[Video]',
+        content: videoMsg.caption || '[Video]',
         from,
         replyTo,
         senderPn,
         timestamp: Date.now(),
         messageType: 'video',
+        mediaInfo: {
+          mimetype: videoMsg.mimetype || 'video/mp4',
+          fileLength: videoMsg.fileLength,
+          caption: videoMsg.caption,
+        },
+        mediaData: mediaBase64,
+        mediaBuffer,
       });
       return;
     }

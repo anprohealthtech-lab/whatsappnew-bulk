@@ -72,6 +72,87 @@ type Observation = {
   needs_confirmation?: boolean;
 };
 
+type StructuredClinicalData = {
+  chief_complaint?: string | null;
+  doctor_notes?: string | null;
+  follow_up?: string | null;
+  follow_up_date?: string | null;
+  history?: unknown[];
+  advice?: unknown[];
+  warnings?: unknown[];
+  physical_examination?: Array<Record<string, unknown>>;
+  diagnoses?: Array<Record<string, unknown>>;
+  tests_ordered?: Array<Record<string, unknown>>;
+  prescriptions?: Array<Record<string, unknown>>;
+  imaging_analysis?: Record<string, unknown> | null;
+};
+
+function formatRecordItems(items: unknown, keys: string[]) {
+  if (!Array.isArray(items)) return [];
+  return items.map((item) => {
+    if (typeof item === "string") return item.trim();
+    if (!item || typeof item !== "object") return "";
+    const record = item as Record<string, unknown>;
+    return keys.map((key) => String(record[key] || "").trim()).filter(Boolean).join(" | ");
+  }).filter(Boolean);
+}
+
+function ClinicalEventDetails({ structuredData }: { structuredData: unknown }) {
+  const clinical = structuredData && typeof structuredData === "object"
+    ? structuredData as StructuredClinicalData
+    : {};
+  const imaging = clinical.imaging_analysis && typeof clinical.imaging_analysis === "object"
+    ? clinical.imaging_analysis
+    : {};
+  const imagingSummary = [
+    ["Type", imaging.analysis_type],
+    ["Modality", imaging.modality],
+    ["Body part", imaging.body_part],
+    ["Laterality", imaging.laterality],
+    ["View", imaging.view],
+    ["Image quality", imaging.image_quality],
+    ["Impression", imaging.impression],
+    ["Comparison", imaging.comparison],
+  ].filter(([, value]) => value)
+    .map(([label, value]) => `${label}: ${String(value)}`);
+  imagingSummary.push(...formatRecordItems(imaging.findings, ["finding", "location"]));
+  imagingSummary.push(...formatRecordItems(imaging.limitations, []).map((value) => `Limitation: ${value}`));
+  imagingSummary.push(...formatRecordItems(imaging.urgent_findings, []).map((value) => `Urgent finding: ${value}`));
+
+  const sections = [
+    { label: "Chief complaint", values: clinical.chief_complaint ? [clinical.chief_complaint] : [] },
+    { label: "Doctor notes", values: clinical.doctor_notes ? [clinical.doctor_notes] : [] },
+    { label: "History", values: formatRecordItems(clinical.history, []) },
+    { label: "Physical examination", values: formatRecordItems(clinical.physical_examination, ["system", "finding"]) },
+    { label: "Diagnoses", values: formatRecordItems(clinical.diagnoses, ["name", "notes"]) },
+    { label: "Tests ordered", values: formatRecordItems(clinical.tests_ordered, ["name", "type", "instructions"]) },
+    { label: "Prescriptions", values: formatRecordItems(clinical.prescriptions, ["medicine", "dosage", "frequency", "duration", "instructions"]) },
+    { label: "Advice", values: formatRecordItems(clinical.advice, []) },
+    { label: "Follow-up", values: clinical.follow_up ? [clinical.follow_up] : [] },
+    { label: "Follow-up date", values: clinical.follow_up_date ? [clinical.follow_up_date] : [] },
+    { label: "Imaging analysis (preliminary)", values: imagingSummary },
+    { label: "Warnings", values: formatRecordItems(clinical.warnings, []) },
+  ].filter((section) => section.values.length);
+
+  if (!sections.length) return null;
+
+  return (
+    <details className="mt-2 text-sm">
+      <summary className="cursor-pointer font-medium text-primary">View extracted clinical note</summary>
+      <div className="mt-2 space-y-2 rounded-lg bg-muted/30 p-3">
+        {sections.map((section) => (
+          <div key={section.label}>
+            <p className="text-xs font-semibold uppercase tracking-wide text-muted-foreground">{section.label}</p>
+            {section.values.map((value, index) => (
+              <p key={`${section.label}-${index}`} className="whitespace-pre-wrap">{value}</p>
+            ))}
+          </div>
+        ))}
+      </div>
+    </details>
+  );
+}
+
 export function DataManagementPanel() {
   const [activeTab, setActiveTab] = useState<"patients" | "documents" | "general">("patients");
   const [selectedPatientId, setSelectedPatientId] = useState<string | null>(null);
@@ -132,7 +213,9 @@ export function DataManagementPanel() {
 
   const formatObservation = (observation: Observation) => {
     const value = observation.value || (typeof observation.numeric_value === "number" ? String(observation.numeric_value) : "-");
-    return `${value}${observation.unit ? ` ${observation.unit}` : ""}`;
+    const unit = observation.unit?.trim();
+    const alreadyHasUnit = unit && value.toLowerCase().endsWith(unit.toLowerCase());
+    return `${value}${unit && !alreadyHasUnit ? ` ${unit}` : ""}`;
   };
 
   return (
@@ -229,6 +312,7 @@ export function DataManagementPanel() {
                                 {patientAnalysis?.events?.length ? patientAnalysis.events.map((event) => (
                                   <div key={event.id} className="border-l-2 border-primary/40 pl-3 py-1">
                                     <p className="text-sm font-medium">{event.summary}</p>
+                                    <ClinicalEventDetails structuredData={event.structuredData} />
                                     <p className="text-xs text-muted-foreground">
                                       {event.eventDate || (event.createdAt ? new Date(event.createdAt).toLocaleDateString() : "Unknown date")} · {event.eventType}
                                     </p>
