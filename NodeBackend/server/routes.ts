@@ -378,12 +378,22 @@ async function callVoiceRagAgent(params: {
         eq(userRagAgents.id, params.ragAgentId),
         eq(userRagAgents.organizationId, params.tenant.organizationId),
         eq(userRagAgents.userId, params.tenant.userId),
+        eq(userRagAgents.isActive, "true"),
       )
       : and(
         eq(userRagAgents.organizationId, params.tenant.organizationId),
         eq(userRagAgents.userId, params.tenant.userId),
+        eq(userRagAgents.isActive, "true"),
       ))
+    .orderBy(desc(userRagAgents.updatedAt))
     .limit(1);
+  if (params.ragAgentId && !userRagConfig) {
+    throw new Error("The voice agent's linked RAG configuration is missing or inactive");
+  }
+  log(
+    `Voice RAG selected ${userRagConfig?.id || "Supabase knowledge base"} ` +
+    `for ${params.tenant.organizationId}/${params.tenant.userId}`,
+  );
   const effectiveSystemPrompt = buildVoiceSystemPrompt(
     params.systemPrompt || userRagConfig?.systemPrompt,
     params.languageMode,
@@ -929,6 +939,15 @@ export async function registerRoutes(app: Express): Promise<Server> {
     try {
       await requireVoiceFeature(req);
       res.json(await voiceTenantService.listAgents(getTenantFromRequest(req)));
+    } catch (error: any) {
+      res.status(error.status || 500).json({ message: error.message });
+    }
+  });
+
+  app.get('/api/voice/rag-agents', requireAuth, async (req, res) => {
+    try {
+      await requireVoiceFeature(req);
+      res.json(await voiceTenantService.listRagAgents(getTenantFromRequest(req)));
     } catch (error: any) {
       res.status(error.status || 500).json({ message: error.message });
     }

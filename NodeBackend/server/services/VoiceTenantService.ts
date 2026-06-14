@@ -12,6 +12,7 @@ import {
   voiceCallSessions,
   voiceGatewayDevices,
   voiceUsage,
+  userRagAgents,
 } from "@shared/schema";
 
 type Tenant = { organizationId: string; userId: string };
@@ -113,6 +114,19 @@ export class VoiceTenantService {
     )).orderBy(desc(voiceAgents.createdAt));
   }
 
+  async listRagAgents(tenant: Tenant) {
+    return db.select({
+      id: userRagAgents.id,
+      name: userRagAgents.agentName,
+      isActive: userRagAgents.isActive,
+      updatedAt: userRagAgents.updatedAt,
+    }).from(userRagAgents).where(and(
+      eq(userRagAgents.organizationId, tenant.organizationId),
+      eq(userRagAgents.userId, tenant.userId),
+      eq(userRagAgents.isActive, "true"),
+    )).orderBy(desc(userRagAgents.updatedAt));
+  }
+
   async createAgent(tenant: Tenant, input: {
     name: string;
     systemPrompt?: string;
@@ -126,6 +140,7 @@ export class VoiceTenantService {
   }) {
     if (input.sttCredentialId) await this.requireOwnedCredential(tenant, input.sttCredentialId, "stt");
     if (input.voiceProfileId) await this.requireOwnedProfile(tenant, input.voiceProfileId);
+    if (input.ragAgentId) await this.requireOwnedRagAgent(tenant, input.ragAgentId);
     const [row] = await db.insert(voiceAgents).values({
       ...tenant,
       name: input.name,
@@ -486,6 +501,17 @@ export class VoiceTenantService {
       eq(voiceAgents.userId, tenant.userId),
     )).limit(1);
     if (!row) throw new Error("Tenant voice agent not found");
+    return row;
+  }
+
+  private async requireOwnedRagAgent(tenant: Tenant, id: string) {
+    const [row] = await db.select().from(userRagAgents).where(and(
+      eq(userRagAgents.id, id),
+      eq(userRagAgents.organizationId, tenant.organizationId),
+      eq(userRagAgents.userId, tenant.userId),
+      eq(userRagAgents.isActive, "true"),
+    )).limit(1);
+    if (!row) throw new Error("Tenant RAG agent not found or inactive");
     return row;
   }
 }

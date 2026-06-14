@@ -34,7 +34,7 @@ export function VoiceAgentPanel() {
   const { toast } = useToast();
   const [credential, setCredential] = useState({ provider: "fish", credentialType: "tts", name: "Fish Audio", secret: "", language: "auto" });
   const [profile, setProfile] = useState({ credentialId: "", name: "Default Voice", referenceId: "", model: "s2-pro" });
-  const [agent, setAgent] = useState({ name: "Voice Agent", sttCredentialId: "", voiceProfileId: "", defaultFlowKey: "welcome_flow", languageMode: "match_speaker" });
+  const [agent, setAgent] = useState({ name: "Voice Agent", ragAgentId: "", sttCredentialId: "", voiceProfileId: "", defaultFlowKey: "welcome_flow", languageMode: "match_speaker" });
   const [flow, setFlow] = useState({ flowKey: "welcome_flow", name: "Welcome Flow", voiceAgentId: "", voiceProfileId: "", definition: defaultFlow });
   const [gatewayName, setGatewayName] = useState("Windows Gateway");
   const [campaign, setCampaign] = useState({ name: "Voice Campaign", voiceAgentId: "", flowId: "", gatewayDeviceId: "" });
@@ -45,6 +45,7 @@ export function VoiceAgentPanel() {
   const { data: credentials = [], isLoading } = useQuery<any[]>({ queryKey: ["/api/voice/credentials"] });
   const { data: profiles = [] } = useQuery<any[]>({ queryKey: ["/api/voice/profiles"] });
   const { data: agents = [] } = useQuery<any[]>({ queryKey: ["/api/voice/agents"] });
+  const { data: ragAgents = [] } = useQuery<any[]>({ queryKey: ["/api/voice/rag-agents"] });
   const { data: flows = [] } = useQuery<any[]>({ queryKey: ["/api/voice/flows"] });
   const { data: gateways = [] } = useQuery<any[]>({ queryKey: ["/api/voice/gateways"], refetchInterval: 5000 });
   const { data: campaigns = [] } = useQuery<any[]>({ queryKey: ["/api/voice/campaigns"], refetchInterval: 5000 });
@@ -55,7 +56,7 @@ export function VoiceAgentPanel() {
   const sttCredentials = useMemo(() => credentials.filter((item) => item.credentialType === "stt"), [credentials]);
 
   const refresh = () => {
-    ["/api/voice/credentials", "/api/voice/profiles", "/api/voice/agents", "/api/voice/flows", "/api/voice/gateways", "/api/voice/campaigns", "/api/voice/calls", "/api/voice/usage"]
+    ["/api/voice/credentials", "/api/voice/profiles", "/api/voice/agents", "/api/voice/rag-agents", "/api/voice/flows", "/api/voice/gateways", "/api/voice/campaigns", "/api/voice/calls", "/api/voice/usage"]
       .forEach((key) => queryClient.invalidateQueries({ queryKey: [key] }));
   };
 
@@ -101,6 +102,7 @@ export function VoiceAgentPanel() {
     mutationFn: async () => {
       const response = await apiRequest("POST", "/api/voice/agents", {
         ...agent,
+        ragAgentId: agent.ragAgentId || undefined,
         sttCredentialId: agent.sttCredentialId || undefined,
         voiceProfileId: agent.voiceProfileId || undefined,
       });
@@ -248,6 +250,7 @@ export function VoiceAgentPanel() {
           <CardHeader><CardTitle>Voice Agent</CardTitle></CardHeader>
           <CardContent className="space-y-3">
             <Field label="Agent name"><Input value={agent.name} onChange={(e) => setAgent({ ...agent, name: e.target.value })} /></Field>
+            <Field label="Knowledge agent"><Select optional value={agent.ragAgentId} onChange={(value) => setAgent({ ...agent, ragAgentId: value })} items={ragAgents} /></Field>
             <Field label="STT credential"><Select optional value={agent.sttCredentialId} onChange={(value) => setAgent({ ...agent, sttCredentialId: value })} items={sttCredentials} /></Field>
             <Field label="Voice profile"><Select optional value={agent.voiceProfileId} onChange={(value) => setAgent({ ...agent, voiceProfileId: value })} items={profiles} /></Field>
             <Field label="Response language">
