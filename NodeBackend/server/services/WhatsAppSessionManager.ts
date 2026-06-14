@@ -83,6 +83,7 @@ class ManagedBaileysSession extends EventEmitter implements WAServiceInstance {
   private badSessionRetryCount = 0;
   private presenceRefreshTimer: NodeJS.Timeout | null = null;
   private readonly backendSentMessageIds = new Map<string, number>();
+  private authCreds: any = null;
 
   constructor(
     private readonly userId: string,
@@ -109,6 +110,7 @@ class ManagedBaileysSession extends EventEmitter implements WAServiceInstance {
       await this.loadBrowserIdentity();
 
       const { state, saveCreds, hasExistingCreds } = await useDbAuthState(this.dbSessionId);
+      this.authCreds = state.creds;
       this.restoredFromStoredCreds = hasExistingCreds;
       const { version, isLatest } = await fetchLatestBaileysVersion();
       this.waVersion = version;
@@ -542,6 +544,7 @@ class ManagedBaileysSession extends EventEmitter implements WAServiceInstance {
       await new Promise((resolve) => setTimeout(resolve, 2000));
       await this.loadBrowserIdentity();
       const { state, saveCreds, hasExistingCreds } = await useDbAuthState(this.dbSessionId);
+      this.authCreds = state.creds;
       this.restoredFromStoredCreds = hasExistingCreds;
 
       log(
@@ -603,7 +606,10 @@ class ManagedBaileysSession extends EventEmitter implements WAServiceInstance {
     }
 
     if (isFromMe && !isSelfChat) {
-      log(`[WA] Ignoring incoming event for ${this.userId}/${this.sessionName}: message is fromMe (${from})`);
+      log(
+        `[WA] Ignoring incoming event for ${this.userId}/${this.sessionName}: message is fromMe (${from}); ` +
+        `self identities=${this.selfChatIdentityCandidates().join(',') || 'none'}`
+      );
       return;
     }
 
@@ -1123,9 +1129,21 @@ class ManagedBaileysSession extends EventEmitter implements WAServiceInstance {
     const current = normalize(jid);
     if (!current) return false;
 
+    return this.selfChatIdentityCandidates().includes(current);
+  }
+
+  private selfChatIdentityCandidates(): string[] {
+    const normalize = (value?: string | null): string | null => {
+      if (!value) return null;
+      return String(value)
+        .split(':')[0]
+        .replace(/@(s\.whatsapp\.net|lid)$/i, '')
+        .trim();
+    };
     const socketUser = (this.socket?.user || {}) as any;
     const statusUser = (this.status.sessionInfo || {}) as any;
-    const candidates = [
+    const authMe = (this.authCreds?.me || {}) as any;
+    return Array.from(new Set([
       socketUser.id,
       socketUser.jid,
       socketUser.lid,
@@ -1140,11 +1158,12 @@ class ManagedBaileysSession extends EventEmitter implements WAServiceInstance {
       statusUser.me?.id,
       statusUser.me?.jid,
       statusUser.me?.lid,
+      authMe.id,
+      authMe.jid,
+      authMe.lid,
     ]
       .map(normalize)
-      .filter(Boolean);
-
-    return candidates.includes(current);
+      .filter((value): value is string => Boolean(value))));
   }
 
   private rememberBackendSentMessageId(messageId?: string | null): void {
