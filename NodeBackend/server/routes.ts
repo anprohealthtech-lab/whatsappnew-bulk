@@ -27,7 +27,7 @@ import * as XLSX from 'xlsx';
 import { authService } from "./services/AuthService";
 import { requireAuth, optionalAuth, getTenant, requireSuperAdmin } from "./authMiddleware";
 import { sessionManager } from "./services/WhatsAppSessionManager";
-import { users, messages as messagesTable, chatbotConfigs, contacts as contactsTable, campaigns as campaignsTable, dataPatients, dataDocuments, dataGeneralRecords, dataPatientEvents } from "@shared/schema";
+import { users, messages as messagesTable, chatbotConfigs, contacts as contactsTable, campaigns as campaignsTable, dataPatients, dataDocuments, dataGeneralRecords, dataPatientEvents, voiceAgents } from "@shared/schema";
 import { sendNotificationForEvent } from "./services/UserNotificationService";
 
 // Configure CORS
