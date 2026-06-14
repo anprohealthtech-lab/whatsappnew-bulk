@@ -372,26 +372,21 @@ async function callVoiceRagAgent(params: {
   stream?: boolean;
   onChunk?: (chunk: string) => void;
 }): Promise<string> {
-  const [userRagConfig] = await db.select().from(userRagAgents)
-    .where(params.ragAgentId
-      ? and(
+  const userRagConfig = params.ragAgentId
+    ? (await db.select().from(userRagAgents)
+      .where(and(
         eq(userRagAgents.id, params.ragAgentId),
         eq(userRagAgents.organizationId, params.tenant.organizationId),
         eq(userRagAgents.userId, params.tenant.userId),
         eq(userRagAgents.isActive, "true"),
-      )
-      : and(
-        eq(userRagAgents.organizationId, params.tenant.organizationId),
-        eq(userRagAgents.userId, params.tenant.userId),
-        eq(userRagAgents.isActive, "true"),
       ))
-    .orderBy(desc(userRagAgents.updatedAt))
-    .limit(1);
+      .limit(1))[0]
+    : undefined;
   if (params.ragAgentId && !userRagConfig) {
     throw new Error("The voice agent's linked RAG configuration is missing or inactive");
   }
   log(
-    `Voice RAG selected ${userRagConfig?.id || "Supabase knowledge base"} ` +
+    `Voice RAG selected ${userRagConfig ? `${userRagConfig.agentName} (${userRagConfig.id})` : "Supabase knowledge base"} ` +
     `for ${params.tenant.organizationId}/${params.tenant.userId}`,
   );
   const effectiveSystemPrompt = buildVoiceSystemPrompt(
