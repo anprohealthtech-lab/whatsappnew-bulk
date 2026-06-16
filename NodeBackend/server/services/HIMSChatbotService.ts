@@ -29,8 +29,7 @@ const HIMS_SUPABASE_URL =
 const HIMS_BOT_SECRET = process.env.HIMS_BOT_SECRET || "";
 const HIMS_SUPABASE_AUTH_KEY =
   process.env.HIMS_SUPABASE_ANON_KEY ||
-  process.env.VITE_SUPABASE_ANON_KEY ||
-  process.env.SUPABASE_SERVICE_ROLE_KEY ||
+  process.env.HIMS_SUPABASE_SERVICE_ROLE_KEY ||
   "";
 
 // ───────────────────── Default system prompt ─────────────────────
