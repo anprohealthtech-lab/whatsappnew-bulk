@@ -921,7 +921,7 @@ IMPORTANT: Always use organizationId="${patient.organizationId}" and patientPhon
 
     try {
       let response = await this.anthropic.messages.create({
-        model: "claude-sonnet-4-20250514",
+        model: "claude-sonnet-4-6-20260217",
         max_tokens: 1024,
         system: fullSystemPrompt,
         tools: TOOLS,
@@ -966,7 +966,7 @@ IMPORTANT: Always use organizationId="${patient.organizationId}" and patientPhon
           ];
 
           response = await this.anthropic.messages.create({
-            model: "claude-sonnet-4-20250514",
+            model: "claude-sonnet-4-6-20260217",
             max_tokens: 1024,
             system: fullSystemPrompt,
             messages: forcedAnswerMessages,
@@ -1002,7 +1002,7 @@ IMPORTANT: Always use organizationId="${patient.organizationId}" and patientPhon
         ];
 
         response = await this.anthropic.messages.create({
-          model: "claude-sonnet-4-20250514",
+          model: "claude-sonnet-4-6-20260217",
           max_tokens: 1024,
           system: fullSystemPrompt,
           tools: TOOLS,

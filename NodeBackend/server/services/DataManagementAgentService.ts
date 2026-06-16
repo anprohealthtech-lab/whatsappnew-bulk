@@ -13,9 +13,16 @@ import {
   whatsappSessions,
 } from "@shared/schema";
 
-type TenantContext = {
+export type TenantContext = {
   organizationId: string;
   userId: string;
+};
+
+export type AppPatientUploadFile = {
+  originalname: string;
+  mimetype: string;
+  size: number;
+  buffer: Buffer;
 };
 
 type IncomingDataMessage = {
@@ -475,6 +482,128 @@ export class DataManagementAgentService {
     if (maybeSaved) return maybeSaved;
 
     return this.answerQuestionWithClaudeTools(tenant, data.content || "");
+  }
+
+  async processAppPatientDocuments(
+    tenant: TenantContext,
+    input: {
+      patientId: string;
+      files: AppPatientUploadFile[];
+      eventDate?: string | null;
+      caption?: string | null;
+    },
+  ): Promise<{
+    batchId: string;
+    patientId: string;
+    patientName: string;
+    uploadedCount: number;
+    requestedCount: number;
+    errors: string[];
+  }> {
+    const patient = (await db.select().from(dataPatients).where(and(
+      eq(dataPatients.id, input.patientId),
+      eq(dataPatients.organizationId, tenant.organizationId),
+      eq(dataPatients.userId, tenant.userId),
+    )).limit(1))[0];
+    if (!patient) throw new Error("Patient not found");
+    if (!input.files.length) throw new Error("Select at least one image or PDF");
+
+    const batch = (await db.insert(dataCaseBatches).values({
+      organizationId: tenant.organizationId,
+      userId: tenant.userId,
+      patientId: patient.id,
+      patientNameHint: patient.canonicalName,
+      status: "processing",
+      expectedAttachmentCount: input.files.length,
+      receivedAttachmentCount: 0,
+      eventDate: input.eventDate || null,
+      collectionCompletedAt: new Date(),
+      processingStartedAt: new Date(),
+    }).returning())[0];
+
+    const errors: string[] = [];
+    let uploadedCount = 0;
+    for (let index = 0; index < input.files.length; index += 1) {
+      const file = input.files[index];
+      try {
+        const attachment = await this.archiveAttachment(tenant, {
+          phoneNumber: "",
+          messageType: file.mimetype.startsWith("image/") ? "image" : "document",
+          content: input.caption || undefined,
+          mediaBuffer: file.buffer,
+          mediaInfo: {
+            mimetype: file.mimetype,
+            fileName: file.originalname,
+            fileLength: file.size,
+            caption: input.caption || undefined,
+          },
+        }, {
+          patientId: patient.id,
+          caseBatchId: batch.id,
+        });
+        uploadedCount += 1;
+        await db.insert(dataDocuments).values({
+          organizationId: tenant.organizationId,
+          userId: tenant.userId,
+          patientId: patient.id,
+          source: "app_upload",
+          fileName: attachment.fileName,
+          mimeType: attachment.mimeType,
+          fileSize: attachment.fileSize,
+          fileUrl: attachment.fileUrl,
+          storageBucket: attachment.storageBucket,
+          storagePath: attachment.storagePath,
+          caseBatchId: batch.id,
+          sequenceNumber: index + 1,
+          caption: input.caption || null,
+          documentType: file.mimetype.startsWith("image/") ? "image" : "document",
+          extractedJson: {},
+          status: "pending",
+        });
+      } catch (error: any) {
+        errors.push(`${file.originalname}: ${error?.message || "Upload failed"}`);
+      }
+    }
+
+    await db.update(dataCaseBatches).set({
+      receivedAttachmentCount: uploadedCount,
+      errorMessage: errors.length ? `${errors.length} file(s) could not be archived` : null,
+      updatedAt: new Date(),
+    }).where(eq(dataCaseBatches.id, batch.id));
+
+    if (uploadedCount === 0) {
+      await db.update(dataCaseBatches).set({
+        status: "failed",
+        completedAt: new Date(),
+        updatedAt: new Date(),
+      }).where(eq(dataCaseBatches.id, batch.id));
+      throw new Error(errors[0] || "No file could be uploaded");
+    }
+
+    const processingBatch = {
+      ...batch,
+      receivedAttachmentCount: uploadedCount,
+      errorMessage: errors.length ? `${errors.length} file(s) could not be archived` : null,
+    };
+    void this.finalizeCaseBatch(tenant, processingBatch)
+      .catch(async (error: any) => {
+        console.error("[DataManagementAgentService] App batch processing failed:", error?.message || error);
+        await db.update(dataCaseBatches).set({
+          status: "failed",
+          errorMessage: error?.message || "Batch processing failed",
+          completedAt: new Date(),
+          updatedAt: new Date(),
+        }).where(eq(dataCaseBatches.id, batch.id));
+      });
+
+    return {
+      batchId: batch.id,
+      patientId: patient.id,
+      patientName: patient.canonicalName,
+      uploadedCount,
+      requestedCount: input.files.length,
+      errors,
+    };
   }
 
   private async handleCaseBatchCommand(tenant: TenantContext, data: IncomingDataMessage): Promise<string | null> {
@@ -1284,7 +1413,7 @@ export class DataManagementAgentService {
     }));
     try {
       const response = await this.anthropic.messages.create({
-        model: process.env.DATA_AGENT_MODEL || "claude-sonnet-4-20250514",
+        model: process.env.DATA_AGENT_MODEL || "claude-sonnet-4-6-20260217",
         max_tokens: 8000,
         system: await this.getSystemPrompt(tenant.userId),
         tools: [DATA_EXTRACTION_TOOL],
@@ -1598,7 +1727,7 @@ export class DataManagementAgentService {
 
     try {
       let response = await this.anthropic.messages.create({
-        model: process.env.DATA_AGENT_MODEL || "claude-sonnet-4-20250514",
+        model: process.env.DATA_AGENT_MODEL || "claude-sonnet-4-6-20260217",
         max_tokens: 1200,
         system: systemPrompt,
         tools: DATA_QA_TOOLS,
@@ -1626,7 +1755,7 @@ export class DataManagementAgentService {
         messages.push({ role: "user", content: toolResults });
 
         response = await this.anthropic.messages.create({
-          model: process.env.DATA_AGENT_MODEL || "claude-sonnet-4-20250514",
+          model: process.env.DATA_AGENT_MODEL || "claude-sonnet-4-6-20260217",
           max_tokens: 1200,
           system: systemPrompt,
           tools: DATA_QA_TOOLS,
@@ -1810,7 +1939,7 @@ export class DataManagementAgentService {
     }
 
     const response = await this.anthropic.messages.create({
-      model: process.env.DATA_AGENT_MODEL || "claude-sonnet-4-20250514",
+      model: process.env.DATA_AGENT_MODEL || "claude-sonnet-4-6-20260217",
       max_tokens: 8000,
       system: await this.getSystemPrompt(tenant.userId),
       tools: [DATA_EXTRACTION_TOOL],

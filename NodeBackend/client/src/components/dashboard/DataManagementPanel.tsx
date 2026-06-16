@@ -1,6 +1,14 @@
 import { useMemo, useState } from "react";
-import { useQuery } from "@tanstack/react-query";
-import { Activity, CalendarClock, ClipboardList, Database, FileText, TableProperties, UserRound, Users } from "lucide-react";
+import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
+import { Activity, CalendarClock, ClipboardList, Database, Edit3, FileText, Loader2, Plus, TableProperties, Upload, UserRound, Users } from "lucide-react";
+import { apiRequest } from "@/lib/queryClient";
+import { getAuthToken } from "@/lib/AuthContext";
+import { useToast } from "@/hooks/use-toast";
+import { Button } from "@/components/ui/button";
+import { Dialog, DialogContent, DialogDescription, DialogFooter, DialogHeader, DialogTitle } from "@/components/ui/dialog";
+import { Input } from "@/components/ui/input";
+import { Label } from "@/components/ui/label";
+import { Textarea } from "@/components/ui/textarea";
 
 type DataSummary = {
   patients: number;
@@ -12,6 +20,8 @@ type DataSummary = {
     documentType: string;
     status: string;
     confidence: number | null;
+    ocrText?: string | null;
+    extractedJson?: unknown;
     createdAt: string | null;
   }>;
   patientList: Array<{
@@ -20,6 +30,7 @@ type DataSummary = {
     age: number | null;
     gender: string | null;
     phoneNumbers: unknown;
+    dob?: string | null;
     summary: string | null;
     metadata: unknown;
     lastUpdatedAt: string | null;
@@ -168,6 +179,27 @@ function ClinicalEventDetails({ structuredData }: { structuredData: unknown }) {
 export function DataManagementPanel() {
   const [activeTab, setActiveTab] = useState<"patients" | "documents" | "general">("patients");
   const [selectedPatientId, setSelectedPatientId] = useState<string | null>(null);
+  const [patientDialogOpen, setPatientDialogOpen] = useState(false);
+  const [editingPatientId, setEditingPatientId] = useState<string | null>(null);
+  const [patientForm, setPatientForm] = useState({
+    canonicalName: "",
+    age: "",
+    gender: "",
+    phoneNumbers: "",
+    dob: "",
+    summary: "",
+  });
+  const [uploadDialogOpen, setUploadDialogOpen] = useState(false);
+  const [uploadPatientId, setUploadPatientId] = useState("");
+  const [uploadEventDate, setUploadEventDate] = useState("");
+  const [uploadCaption, setUploadCaption] = useState("");
+  const [uploadFiles, setUploadFiles] = useState<File[]>([]);
+  const [editingEvent, setEditingEvent] = useState<DataSummary["recentEvents"][number] | null>(null);
+  const [eventForm, setEventForm] = useState({ eventDate: "", eventType: "", summary: "", structuredData: "{}" });
+  const [editingDocument, setEditingDocument] = useState<DataSummary["recentDocuments"][number] | null>(null);
+  const [documentForm, setDocumentForm] = useState({ documentType: "", status: "", ocrText: "", extractedJson: "{}" });
+  const queryClient = useQueryClient();
+  const { toast } = useToast();
   const { data, isLoading } = useQuery<DataSummary>({
     queryKey: ["/api/data-management/summary"],
     refetchInterval: 30000,
@@ -176,6 +208,167 @@ export function DataManagementPanel() {
     queryKey: [`/api/data-management/patients/${selectedPatientId}/analysis`],
     enabled: Boolean(selectedPatientId),
   });
+
+  const refreshData = async (patientId?: string | null) => {
+    await queryClient.invalidateQueries({ queryKey: ["/api/data-management/summary"] });
+    if (patientId) {
+      await queryClient.invalidateQueries({ queryKey: [`/api/data-management/patients/${patientId}/analysis`] });
+    }
+  };
+
+  const patientMutation = useMutation({
+    mutationFn: async () => {
+      const payload = {
+        canonicalName: patientForm.canonicalName.trim(),
+        age: patientForm.age ? Number(patientForm.age) : null,
+        gender: patientForm.gender.trim() || null,
+        phoneNumbers: patientForm.phoneNumbers.split(",").map((value) => value.trim()).filter(Boolean),
+        dob: patientForm.dob || null,
+        summary: patientForm.summary.trim() || null,
+      };
+      const response = await apiRequest(
+        editingPatientId ? "PATCH" : "POST",
+        editingPatientId ? `/api/data-management/patients/${editingPatientId}` : "/api/data-management/patients",
+        payload,
+      );
+      return response.json();
+    },
+    onSuccess: async (patient) => {
+      await refreshData(patient.id);
+      setPatientDialogOpen(false);
+      setEditingPatientId(null);
+      toast({ title: "Patient saved" });
+    },
+    onError: (error: any) => toast({ title: "Could not save patient", description: error.message, variant: "destructive" }),
+  });
+
+  const uploadMutation = useMutation({
+    mutationFn: async () => {
+      if (!uploadPatientId) throw new Error("Select a patient");
+      if (!uploadFiles.length) throw new Error("Select at least one image or PDF");
+      const formData = new FormData();
+      uploadFiles.forEach((file) => formData.append("files", file));
+      if (uploadEventDate) formData.append("eventDate", uploadEventDate);
+      if (uploadCaption.trim()) formData.append("caption", uploadCaption.trim());
+      const response = await fetch(`/api/data-management/patients/${uploadPatientId}/documents`, {
+        method: "POST",
+        headers: { Authorization: `Bearer ${getAuthToken() || ""}` },
+        body: formData,
+        credentials: "include",
+      });
+      const body = await response.json().catch(() => ({}));
+      if (!response.ok) throw new Error(body.message || "Upload failed");
+      return body;
+    },
+    onSuccess: async (result) => {
+      await refreshData(uploadPatientId);
+      setSelectedPatientId(uploadPatientId);
+      setUploadDialogOpen(false);
+      setUploadFiles([]);
+      setUploadCaption("");
+      setUploadEventDate("");
+      toast({
+        title: `${result.uploadedCount} document(s) uploaded`,
+        description: "AI parsing is running in the background. The patient timeline will update automatically.",
+      });
+    },
+    onError: (error: any) => toast({ title: "Document upload failed", description: error.message, variant: "destructive" }),
+  });
+
+  const eventMutation = useMutation({
+    mutationFn: async () => {
+      if (!editingEvent) throw new Error("No visit selected");
+      let structuredData: Record<string, unknown>;
+      try {
+        structuredData = JSON.parse(eventForm.structuredData);
+      } catch {
+        throw new Error("Extracted clinical data must be valid JSON");
+      }
+      const response = await apiRequest("PATCH", `/api/data-management/events/${editingEvent.id}`, {
+        eventDate: eventForm.eventDate || null,
+        eventType: eventForm.eventType.trim(),
+        summary: eventForm.summary.trim(),
+        structuredData,
+      });
+      return response.json();
+    },
+    onSuccess: async (event) => {
+      await refreshData(event.patientId);
+      setEditingEvent(null);
+      toast({ title: "Visit updated" });
+    },
+    onError: (error: any) => toast({ title: "Could not update visit", description: error.message, variant: "destructive" }),
+  });
+
+  const documentMutation = useMutation({
+    mutationFn: async () => {
+      if (!editingDocument) throw new Error("No document selected");
+      let extractedJson: Record<string, unknown>;
+      try {
+        extractedJson = JSON.parse(documentForm.extractedJson);
+      } catch {
+        throw new Error("Extracted document data must be valid JSON");
+      }
+      const response = await apiRequest("PATCH", `/api/data-management/documents/${editingDocument.id}`, {
+        documentType: documentForm.documentType.trim(),
+        status: documentForm.status,
+        ocrText: documentForm.ocrText || null,
+        extractedJson,
+      });
+      return response.json();
+    },
+    onSuccess: async () => {
+      await refreshData(selectedPatientId);
+      setEditingDocument(null);
+      toast({ title: "Document updated" });
+    },
+    onError: (error: any) => toast({ title: "Could not update document", description: error.message, variant: "destructive" }),
+  });
+
+  const openCreatePatient = () => {
+    setEditingPatientId(null);
+    setPatientForm({ canonicalName: "", age: "", gender: "", phoneNumbers: "", dob: "", summary: "" });
+    setPatientDialogOpen(true);
+  };
+
+  const openEditPatient = (patient: DataSummary["patientList"][number]) => {
+    setEditingPatientId(patient.id);
+    setPatientForm({
+      canonicalName: patient.canonicalName,
+      age: patient.age == null ? "" : String(patient.age),
+      gender: patient.gender || "",
+      phoneNumbers: Array.isArray(patient.phoneNumbers) ? patient.phoneNumbers.join(", ") : "",
+      dob: String((patient as any).dob || ""),
+      summary: patient.summary || "",
+    });
+    setPatientDialogOpen(true);
+  };
+
+  const openUpload = (patientId = selectedPatientId || data?.patientList?.[0]?.id || "") => {
+    setUploadPatientId(patientId);
+    setUploadFiles([]);
+    setUploadDialogOpen(true);
+  };
+
+  const openEditEvent = (event: DataSummary["recentEvents"][number]) => {
+    setEditingEvent(event);
+    setEventForm({
+      eventDate: event.eventDate || "",
+      eventType: event.eventType,
+      summary: event.summary,
+      structuredData: JSON.stringify(event.structuredData || {}, null, 2),
+    });
+  };
+
+  const openEditDocument = (document: DataSummary["recentDocuments"][number]) => {
+    setEditingDocument(document);
+    setDocumentForm({
+      documentType: document.documentType,
+      status: document.status,
+      ocrText: document.ocrText || "",
+      extractedJson: JSON.stringify(document.extractedJson || {}, null, 2),
+    });
+  };
 
   const eventsByPatient = useMemo(() => {
     const map = new Map<string, DataSummary["recentEvents"]>();
@@ -232,9 +425,19 @@ export function DataManagementPanel() {
 
   return (
     <div className="space-y-6 animate-fade-in-up">
-      <div>
-        <h2 className="text-2xl font-bold">Data Management</h2>
-        <p className="text-muted-foreground">Patient memory, parsed documents, and clinic data captured from WhatsApp.</p>
+      <div className="flex flex-col gap-3 md:flex-row md:items-start md:justify-between">
+        <div>
+          <h2 className="text-2xl font-bold">Data Management</h2>
+          <p className="text-muted-foreground">Create patients, upload records, and review data captured from the app or WhatsApp.</p>
+        </div>
+        <div className="flex flex-wrap gap-2">
+          <Button variant="outline" onClick={openCreatePatient}>
+            <Plus className="mr-2 h-4 w-4" /> Create Patient
+          </Button>
+          <Button onClick={() => openUpload()} disabled={!data?.patientList?.length}>
+            <Upload className="mr-2 h-4 w-4" /> Upload Documents
+          </Button>
+        </div>
       </div>
 
       <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
@@ -295,9 +498,17 @@ export function DataManagementPanel() {
                           {[patient.age ? `${patient.age} yrs` : "", patient.gender || "", phones].filter(Boolean).join(" · ") || "No demographics extracted"}
                         </p>
                       </div>
-                      <span className="text-xs text-muted-foreground">
-                        Updated {patient.lastUpdatedAt ? new Date(patient.lastUpdatedAt).toLocaleString() : "-"}
-                      </span>
+                      <div className="flex flex-wrap items-center gap-2">
+                        <Button size="sm" variant="outline" onClick={() => openEditPatient(patient)}>
+                          <Edit3 className="mr-1 h-3.5 w-3.5" /> Edit
+                        </Button>
+                        <Button size="sm" variant="outline" onClick={() => openUpload(patient.id)}>
+                          <Upload className="mr-1 h-3.5 w-3.5" /> Upload
+                        </Button>
+                        <span className="text-xs text-muted-foreground">
+                          Updated {patient.lastUpdatedAt ? new Date(patient.lastUpdatedAt).toLocaleString() : "-"}
+                        </span>
+                      </div>
                     </div>
                     {patient.summary && (
                       <p className="text-sm bg-accent/30 rounded-lg px-3 py-2">{patient.summary}</p>
@@ -354,7 +565,12 @@ export function DataManagementPanel() {
                               <div className="space-y-2">
                                 {patientAnalysis?.events?.length ? patientAnalysis.events.map((event) => (
                                   <div key={event.id} className="border-l-2 border-primary/40 pl-3 py-1">
-                                    <p className="text-sm font-medium">{event.summary}</p>
+                                    <div className="flex items-start justify-between gap-3">
+                                      <p className="text-sm font-medium">{event.summary}</p>
+                                      <Button size="sm" variant="ghost" onClick={() => openEditEvent(event)}>
+                                        <Edit3 className="mr-1 h-3.5 w-3.5" /> Edit visit
+                                      </Button>
+                                    </div>
                                     <ClinicalEventDetails structuredData={event.structuredData} />
                                     <p className="text-xs text-muted-foreground">
                                       {event.eventDate || (event.createdAt ? new Date(event.createdAt).toLocaleDateString() : "Unknown date")} · {event.eventType}
@@ -503,9 +719,14 @@ export function DataManagementPanel() {
                     {doc.documentType} · {doc.status} · {doc.createdAt ? new Date(doc.createdAt).toLocaleString() : ""}
                   </p>
                 </div>
-                <span className="text-xs text-muted-foreground">
-                  {typeof doc.confidence === "number" ? `${Math.round(doc.confidence * 100)}%` : ""}
-                </span>
+                <div className="flex items-center gap-2">
+                  <span className="text-xs text-muted-foreground">
+                    {typeof doc.confidence === "number" ? `${Math.round(doc.confidence * 100)}%` : ""}
+                  </span>
+                  <Button size="sm" variant="ghost" onClick={() => openEditDocument(doc)}>
+                    <Edit3 className="mr-1 h-3.5 w-3.5" /> Edit
+                  </Button>
+                </div>
               </div>
             ))
           ) : (
@@ -514,6 +735,255 @@ export function DataManagementPanel() {
         </div>
       </div>
       )}
+
+      <Dialog open={patientDialogOpen} onOpenChange={setPatientDialogOpen}>
+        <DialogContent className="max-w-2xl">
+          <DialogHeader>
+            <DialogTitle>{editingPatientId ? "Edit Patient" : "Create Patient"}</DialogTitle>
+            <DialogDescription>
+              Patient details entered here become the trusted identity for documents uploaded from the app.
+            </DialogDescription>
+          </DialogHeader>
+          <div className="grid gap-4 py-2 md:grid-cols-2">
+            <div className="space-y-2 md:col-span-2">
+              <Label htmlFor="patient-name">Patient name</Label>
+              <Input
+                id="patient-name"
+                value={patientForm.canonicalName}
+                onChange={(event) => setPatientForm((current) => ({ ...current, canonicalName: event.target.value }))}
+                placeholder="Full patient name"
+              />
+            </div>
+            <div className="space-y-2">
+              <Label htmlFor="patient-age">Age</Label>
+              <Input
+                id="patient-age"
+                type="number"
+                min="0"
+                max="150"
+                value={patientForm.age}
+                onChange={(event) => setPatientForm((current) => ({ ...current, age: event.target.value }))}
+              />
+            </div>
+            <div className="space-y-2">
+              <Label htmlFor="patient-gender">Gender</Label>
+              <Input
+                id="patient-gender"
+                value={patientForm.gender}
+                onChange={(event) => setPatientForm((current) => ({ ...current, gender: event.target.value }))}
+              />
+            </div>
+            <div className="space-y-2">
+              <Label htmlFor="patient-dob">Date of birth</Label>
+              <Input
+                id="patient-dob"
+                type="date"
+                value={patientForm.dob}
+                onChange={(event) => setPatientForm((current) => ({ ...current, dob: event.target.value }))}
+              />
+            </div>
+            <div className="space-y-2">
+              <Label htmlFor="patient-phone">Phone numbers</Label>
+              <Input
+                id="patient-phone"
+                value={patientForm.phoneNumbers}
+                onChange={(event) => setPatientForm((current) => ({ ...current, phoneNumbers: event.target.value }))}
+                placeholder="Comma-separated"
+              />
+            </div>
+            <div className="space-y-2 md:col-span-2">
+              <Label htmlFor="patient-summary">Patient summary</Label>
+              <Textarea
+                id="patient-summary"
+                rows={4}
+                value={patientForm.summary}
+                onChange={(event) => setPatientForm((current) => ({ ...current, summary: event.target.value }))}
+                placeholder="Important history or current summary"
+              />
+            </div>
+          </div>
+          <DialogFooter>
+            <Button variant="outline" onClick={() => setPatientDialogOpen(false)}>Cancel</Button>
+            <Button
+              onClick={() => patientMutation.mutate()}
+              disabled={patientMutation.isPending || patientForm.canonicalName.trim().length < 2}
+            >
+              {patientMutation.isPending && <Loader2 className="mr-2 h-4 w-4 animate-spin" />}
+              Save Patient
+            </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
+
+      <Dialog open={uploadDialogOpen} onOpenChange={setUploadDialogOpen}>
+        <DialogContent className="max-w-2xl">
+          <DialogHeader>
+            <DialogTitle>Upload Patient Documents</DialogTitle>
+            <DialogDescription>
+              Select up to 30 images or PDFs from one clinical visit. Each file is saved separately, then AI consolidates them into one timeline event.
+            </DialogDescription>
+          </DialogHeader>
+          <div className="space-y-4 py-2">
+            <div className="space-y-2">
+              <Label htmlFor="upload-patient">Patient</Label>
+              <select
+                id="upload-patient"
+                value={uploadPatientId}
+                onChange={(event) => setUploadPatientId(event.target.value)}
+                className="flex h-10 w-full rounded-md border border-input bg-background px-3 py-2 text-sm"
+              >
+                <option value="">Select patient</option>
+                {(data?.patientList || []).map((patient) => (
+                  <option key={patient.id} value={patient.id}>{patient.canonicalName}</option>
+                ))}
+              </select>
+            </div>
+            <div className="space-y-2">
+              <Label htmlFor="upload-date">Visit/report date</Label>
+              <Input
+                id="upload-date"
+                type="date"
+                value={uploadEventDate}
+                onChange={(event) => setUploadEventDate(event.target.value)}
+              />
+            </div>
+            <div className="space-y-2">
+              <Label htmlFor="upload-caption">Instructions or note</Label>
+              <Textarea
+                id="upload-caption"
+                rows={3}
+                value={uploadCaption}
+                onChange={(event) => setUploadCaption(event.target.value)}
+                placeholder="Example: All pages belong to the same neurosurgery visit"
+              />
+            </div>
+            <div className="space-y-2">
+              <Label htmlFor="patient-files">Images and PDFs</Label>
+              <Input
+                id="patient-files"
+                type="file"
+                multiple
+                accept=".pdf,image/jpeg,image/png,image/webp,image/gif"
+                onChange={(event) => {
+                  const files = Array.from(event.target.files || []);
+                  if (files.length > 30) {
+                    toast({ title: "Too many files", description: "Select no more than 30 files.", variant: "destructive" });
+                    event.target.value = "";
+                    setUploadFiles([]);
+                    return;
+                  }
+                  setUploadFiles(files);
+                }}
+              />
+              <p className="text-xs text-muted-foreground">
+                {uploadFiles.length ? `${uploadFiles.length} file(s) selected` : "PDF, JPG, PNG, WEBP, or GIF. Maximum 10 MB per file."}
+              </p>
+            </div>
+          </div>
+          <DialogFooter>
+            <Button variant="outline" onClick={() => setUploadDialogOpen(false)}>Cancel</Button>
+            <Button
+              onClick={() => uploadMutation.mutate()}
+              disabled={uploadMutation.isPending || !uploadPatientId || !uploadFiles.length}
+            >
+              {uploadMutation.isPending && <Loader2 className="mr-2 h-4 w-4 animate-spin" />}
+              Upload and Process
+            </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
+
+      <Dialog open={Boolean(editingEvent)} onOpenChange={(open) => !open && setEditingEvent(null)}>
+        <DialogContent className="max-h-[90vh] max-w-4xl overflow-y-auto">
+          <DialogHeader>
+            <DialogTitle>Edit Patient Visit</DialogTitle>
+            <DialogDescription>
+              Correct the visible summary or any extracted clinical field. Keep the structured data as a valid JSON object.
+            </DialogDescription>
+          </DialogHeader>
+          <div className="grid gap-4 py-2 md:grid-cols-2">
+            <div className="space-y-2">
+              <Label htmlFor="event-date">Event date</Label>
+              <Input id="event-date" type="date" value={eventForm.eventDate} onChange={(event) => setEventForm((current) => ({ ...current, eventDate: event.target.value }))} />
+            </div>
+            <div className="space-y-2">
+              <Label htmlFor="event-type">Event type</Label>
+              <Input id="event-type" value={eventForm.eventType} onChange={(event) => setEventForm((current) => ({ ...current, eventType: event.target.value }))} />
+            </div>
+            <div className="space-y-2 md:col-span-2">
+              <Label htmlFor="event-summary">Timeline summary</Label>
+              <Textarea id="event-summary" rows={4} value={eventForm.summary} onChange={(event) => setEventForm((current) => ({ ...current, summary: event.target.value }))} />
+            </div>
+            <div className="space-y-2 md:col-span-2">
+              <Label htmlFor="event-json">Extracted clinical data (JSON)</Label>
+              <Textarea
+                id="event-json"
+                rows={20}
+                className="font-mono text-xs"
+                value={eventForm.structuredData}
+                onChange={(event) => setEventForm((current) => ({ ...current, structuredData: event.target.value }))}
+              />
+            </div>
+          </div>
+          <DialogFooter>
+            <Button variant="outline" onClick={() => setEditingEvent(null)}>Cancel</Button>
+            <Button onClick={() => eventMutation.mutate()} disabled={eventMutation.isPending || !eventForm.summary.trim()}>
+              {eventMutation.isPending && <Loader2 className="mr-2 h-4 w-4 animate-spin" />}
+              Save Visit
+            </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
+
+      <Dialog open={Boolean(editingDocument)} onOpenChange={(open) => !open && setEditingDocument(null)}>
+        <DialogContent className="max-h-[90vh] max-w-4xl overflow-y-auto">
+          <DialogHeader>
+            <DialogTitle>Edit Parsed Document</DialogTitle>
+            <DialogDescription>Correct document classification, OCR text, status, or the complete extracted JSON.</DialogDescription>
+          </DialogHeader>
+          <div className="grid gap-4 py-2 md:grid-cols-2">
+            <div className="space-y-2">
+              <Label htmlFor="document-type">Document type</Label>
+              <Input id="document-type" value={documentForm.documentType} onChange={(event) => setDocumentForm((current) => ({ ...current, documentType: event.target.value }))} />
+            </div>
+            <div className="space-y-2">
+              <Label htmlFor="document-status">Status</Label>
+              <select
+                id="document-status"
+                value={documentForm.status}
+                onChange={(event) => setDocumentForm((current) => ({ ...current, status: event.target.value }))}
+                className="flex h-10 w-full rounded-md border border-input bg-background px-3 py-2 text-sm"
+              >
+                <option value="pending">Pending</option>
+                <option value="processed">Processed</option>
+                <option value="needs_review">Needs review</option>
+                <option value="failed">Failed</option>
+              </select>
+            </div>
+            <div className="space-y-2 md:col-span-2">
+              <Label htmlFor="document-ocr">OCR/raw text</Label>
+              <Textarea id="document-ocr" rows={8} value={documentForm.ocrText} onChange={(event) => setDocumentForm((current) => ({ ...current, ocrText: event.target.value }))} />
+            </div>
+            <div className="space-y-2 md:col-span-2">
+              <Label htmlFor="document-json">Extracted document data (JSON)</Label>
+              <Textarea
+                id="document-json"
+                rows={16}
+                className="font-mono text-xs"
+                value={documentForm.extractedJson}
+                onChange={(event) => setDocumentForm((current) => ({ ...current, extractedJson: event.target.value }))}
+              />
+            </div>
+          </div>
+          <DialogFooter>
+            <Button variant="outline" onClick={() => setEditingDocument(null)}>Cancel</Button>
+            <Button onClick={() => documentMutation.mutate()} disabled={documentMutation.isPending || !documentForm.documentType.trim()}>
+              {documentMutation.isPending && <Loader2 className="mr-2 h-4 w-4 animate-spin" />}
+              Save Document
+            </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
     </div>
   );
 }

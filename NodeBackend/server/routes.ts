@@ -107,6 +107,20 @@ async function requireVoiceFeature(req: Request): Promise<void> {
   }
 }
 
+async function requireDataManagementFeature(req: Request): Promise<void> {
+  if (req.auth?.role === "super_admin") return;
+  const tenant = getTenantFromRequest(req);
+  const [owner] = await db.select({ enabledFeatures: users.enabledFeatures })
+    .from(users)
+    .where(and(eq(users.id, tenant.userId), eq(users.organizationId, tenant.organizationId)))
+    .limit(1);
+  if ((owner?.enabledFeatures as any)?.dataManagement !== true) {
+    const error = new Error("Data Management is not enabled for this user");
+    (error as any).status = 403;
+    throw error;
+  }
+}
+
 async function resolveTenantForUserId(userId: string): Promise<TenantContext> {
   const ownerUser = await db.select().from(users).where(eq(users.id, userId)).limit(1);
   if (ownerUser[0]) {
@@ -1122,16 +1136,169 @@ export async function registerRoutes(app: Express): Promise<Server> {
     } catch (error: any) { res.status(error instanceof z.ZodError ? 400 : 401).json({ message: error.message }); }
   });
 
+  app.post('/api/data-management/patients', requireAuth, async (req, res) => {
+    try {
+      await requireDataManagementFeature(req);
+      const tenant = getTenantFromRequest(req);
+      const input = z.object({
+        canonicalName: z.string().trim().min(2).max(200),
+        age: z.number().int().min(0).max(150).nullable().optional(),
+        gender: z.string().trim().max(50).nullable().optional(),
+        phoneNumbers: z.array(z.string().trim().min(3).max(40)).max(10).optional(),
+        dob: z.string().trim().max(30).nullable().optional(),
+        summary: z.string().trim().max(5000).nullable().optional(),
+      }).parse(req.body);
+      const [patient] = await db.insert(dataPatients).values({
+        organizationId: tenant.organizationId,
+        userId: tenant.userId,
+        canonicalName: input.canonicalName,
+        age: input.age ?? null,
+        gender: input.gender || null,
+        phoneNumbers: input.phoneNumbers || [],
+        dob: input.dob || null,
+        summary: input.summary || null,
+        metadata: { source: "app" },
+      }).returning();
+      res.status(201).json(patient);
+    } catch (error: any) {
+      res.status(error instanceof z.ZodError ? 400 : error.status || 500).json({ message: error.message });
+    }
+  });
+
+  app.patch('/api/data-management/patients/:patientId', requireAuth, async (req, res) => {
+    try {
+      await requireDataManagementFeature(req);
+      const tenant = getTenantFromRequest(req);
+      const input = z.object({
+        canonicalName: z.string().trim().min(2).max(200).optional(),
+        age: z.number().int().min(0).max(150).nullable().optional(),
+        gender: z.string().trim().max(50).nullable().optional(),
+        phoneNumbers: z.array(z.string().trim().min(3).max(40)).max(10).optional(),
+        dob: z.string().trim().max(30).nullable().optional(),
+        summary: z.string().trim().max(5000).nullable().optional(),
+      }).parse(req.body);
+      const [patient] = await db.update(dataPatients).set({
+        ...input,
+        gender: input.gender === "" ? null : input.gender,
+        dob: input.dob === "" ? null : input.dob,
+        summary: input.summary === "" ? null : input.summary,
+        lastUpdatedAt: new Date(),
+        updatedAt: new Date(),
+      }).where(and(
+        eq(dataPatients.id, req.params.patientId),
+        eq(dataPatients.organizationId, tenant.organizationId),
+        eq(dataPatients.userId, tenant.userId),
+      )).returning();
+      if (!patient) return res.status(404).json({ message: "Patient not found" });
+      res.json(patient);
+    } catch (error: any) {
+      res.status(error instanceof z.ZodError ? 400 : error.status || 500).json({ message: error.message });
+    }
+  });
+
+  app.post('/api/data-management/patients/:patientId/documents', requireAuth, upload.array('files', 30), async (req, res) => {
+    try {
+      await requireDataManagementFeature(req);
+      const tenant = getTenantFromRequest(req);
+      const files = (((req as any).files || []) as Array<{
+        originalname: string;
+        mimetype: string;
+        size: number;
+        buffer: Buffer;
+      }>);
+      const allowedTypes = new Set([
+        "application/pdf",
+        "image/jpeg",
+        "image/png",
+        "image/webp",
+        "image/gif",
+      ]);
+      if (!files.length) return res.status(400).json({ message: "Select at least one image or PDF" });
+      const unsupported = files.find((file) => !allowedTypes.has(file.mimetype));
+      if (unsupported) {
+        return res.status(400).json({ message: `${unsupported.originalname} is not a supported image or PDF` });
+      }
+      const eventDate = String(req.body?.eventDate || "").trim();
+      if (eventDate && !/^\d{4}-\d{2}-\d{2}$/.test(eventDate)) {
+        return res.status(400).json({ message: "Event date must use YYYY-MM-DD" });
+      }
+      const service = new DataManagementAgentService();
+      const result = await service.processAppPatientDocuments(tenant, {
+        patientId: req.params.patientId,
+        files,
+        eventDate: eventDate || null,
+        caption: String(req.body?.caption || "").trim() || null,
+      });
+      res.status(202).json(result);
+    } catch (error: any) {
+      res.status(error.status || (/Patient not found/i.test(error.message) ? 404 : 500)).json({ message: error.message });
+    }
+  });
+
+  app.patch('/api/data-management/events/:eventId', requireAuth, async (req, res) => {
+    try {
+      await requireDataManagementFeature(req);
+      const tenant = getTenantFromRequest(req);
+      const input = z.object({
+        eventDate: z.string().trim().max(30).nullable().optional(),
+        eventType: z.string().trim().min(1).max(100).optional(),
+        summary: z.string().trim().min(1).max(10000).optional(),
+        structuredData: z.record(z.unknown()).optional(),
+      }).parse(req.body);
+      const [event] = await db.update(dataPatientEvents).set({
+        ...input,
+        eventDate: input.eventDate === "" ? null : input.eventDate,
+        updatedAt: new Date(),
+      }).where(and(
+        eq(dataPatientEvents.id, req.params.eventId),
+        eq(dataPatientEvents.organizationId, tenant.organizationId),
+        eq(dataPatientEvents.userId, tenant.userId),
+      )).returning();
+      if (!event) return res.status(404).json({ message: "Patient event not found" });
+      await db.update(dataPatients).set({
+        summary: event.summary,
+        lastUpdatedAt: new Date(),
+        updatedAt: new Date(),
+      }).where(and(
+        eq(dataPatients.id, event.patientId),
+        eq(dataPatients.organizationId, tenant.organizationId),
+        eq(dataPatients.userId, tenant.userId),
+      ));
+      res.json(event);
+    } catch (error: any) {
+      res.status(error instanceof z.ZodError ? 400 : error.status || 500).json({ message: error.message });
+    }
+  });
+
+  app.patch('/api/data-management/documents/:documentId', requireAuth, async (req, res) => {
+    try {
+      await requireDataManagementFeature(req);
+      const tenant = getTenantFromRequest(req);
+      const input = z.object({
+        documentType: z.string().trim().min(1).max(100).optional(),
+        status: z.enum(["pending", "processed", "needs_review", "failed"]).optional(),
+        ocrText: z.string().max(1000000).nullable().optional(),
+        extractedJson: z.record(z.unknown()).optional(),
+      }).parse(req.body);
+      const [document] = await db.update(dataDocuments).set({
+        ...input,
+        updatedAt: new Date(),
+      }).where(and(
+        eq(dataDocuments.id, req.params.documentId),
+        eq(dataDocuments.organizationId, tenant.organizationId),
+        eq(dataDocuments.userId, tenant.userId),
+      )).returning();
+      if (!document) return res.status(404).json({ message: "Document not found" });
+      res.json(document);
+    } catch (error: any) {
+      res.status(error instanceof z.ZodError ? 400 : error.status || 500).json({ message: error.message });
+    }
+  });
+
   app.get('/api/data-management/summary', requireAuth, async (req, res) => {
     try {
+      await requireDataManagementFeature(req);
       const tenant = getTenantFromRequest(req);
-      if (req.auth?.role !== 'super_admin') {
-        const owner = await db.select({ enabledFeatures: users.enabledFeatures }).from(users).where(eq(users.id, tenant.userId)).limit(1);
-        const features = (owner[0]?.enabledFeatures as any) || {};
-        if (features.dataManagement !== true) {
-          return res.status(403).json({ message: 'Data Management is not enabled for this user' });
-        }
-      }
       const [patientRows, documentRows, generalRows, recentDocuments, patientList, generalRecords, recentEvents] = await Promise.all([
         db.select({ count: drizzleSql<number>`count(*)` }).from(dataPatients).where(and(
           eq(dataPatients.organizationId, tenant.organizationId),
@@ -1173,12 +1340,13 @@ export async function registerRoutes(app: Express): Promise<Server> {
         recentEvents,
       });
     } catch (error: any) {
-      res.status(500).json({ message: error.message });
+      res.status(error.status || 500).json({ message: error.message });
     }
   });
 
   app.get('/api/data-management/patients/:patientId/analysis', requireAuth, async (req, res) => {
     try {
+      await requireDataManagementFeature(req);
       const tenant = getTenantFromRequest(req);
       const conditions = and(
         eq(dataPatients.id, req.params.patientId),
@@ -1208,7 +1376,7 @@ export async function registerRoutes(app: Express): Promise<Server> {
 
       res.json({ patient, events, documents, caseBatches });
     } catch (error: any) {
-      res.status(500).json({ message: error.message });
+      res.status(error.status || 500).json({ message: error.message });
     }
   });
 
