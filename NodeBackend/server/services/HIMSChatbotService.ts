@@ -67,6 +67,7 @@ Convert natural language dates to YYYY-MM-DD:
 
 ## HIMS API RULES (STRICT — follow exactly)
 - All dates MUST be in "YYYY-MM-DD" format (e.g. "2026-04-20")
+- Appointment slot checks and bookings are allowed only from today through the next 3 months. Do not call slot or booking tools for past dates or dates more than 3 months ahead; ask the patient to choose a valid date.
 - Patients may write natural times like "2 pm", "2pm", or "2:00 PM"; interpret these as the matching available slot and call tools with 24-hour HH:MM
 - All timeSlots MUST be in 24-hour "HH:MM" format (e.g. "14:00", "09:30", "17:00") — NEVER use AM/PM like "2:00 PM" or "02:00 PM"
 - ALWAYS call get_doctors FIRST to get the real doctorId UUID before calling get_available_slots or book_appointment
@@ -159,10 +160,60 @@ function parseIsoDate(date: unknown): { year: number; month: number; day: number
   return { year, month, day };
 }
 
+function toUtcDateOnly(parsed: { year: number; month: number; day: number }): Date {
+  return new Date(Date.UTC(parsed.year, parsed.month - 1, parsed.day));
+}
+
+function addMonthsClamped(date: Date, months: number): Date {
+  const year = date.getUTCFullYear();
+  const month = date.getUTCMonth();
+  const day = date.getUTCDate();
+  const target = new Date(Date.UTC(year, month + months, 1));
+  const lastDay = new Date(Date.UTC(target.getUTCFullYear(), target.getUTCMonth() + 1, 0)).getUTCDate();
+  target.setUTCDate(Math.min(day, lastDay));
+  return target;
+}
+
+function validateAppointmentDate(date: unknown): { valid: true; dateDisplay: string | null } | { valid: false; error: string } {
+  const parsed = parseIsoDate(date);
+  if (!parsed) {
+    return {
+      valid: false,
+      error: "Please provide the appointment date in YYYY-MM-DD format.",
+    };
+  }
+
+  const requested = toUtcDateOnly(parsed);
+  const currentIst = getCurrentIstContext();
+  const todayParsed = parseIsoDate(currentIst.date)!;
+  const today = toUtcDateOnly(todayParsed);
+  const maxDate = addMonthsClamped(today, 3);
+  const dateDisplay = getDateDisplay(date);
+  const maxDisplay = getDateDisplay(
+    `${maxDate.getUTCFullYear()}-${String(maxDate.getUTCMonth() + 1).padStart(2, "0")}-${String(maxDate.getUTCDate()).padStart(2, "0")}`,
+  );
+
+  if (requested < today) {
+    return {
+      valid: false,
+      error: `Appointments can only be checked or booked from today onward. ${dateDisplay || String(date)} is in the past. Please choose today or a future date.`,
+    };
+  }
+
+  if (requested > maxDate) {
+    return {
+      valid: false,
+      error: `Appointments can only be checked or booked within the next 3 months, up to ${maxDisplay}. Please choose an earlier date.`,
+    };
+  }
+
+  return { valid: true, dateDisplay };
+}
+
 function getDateDisplay(date: unknown): string | null {
   const parsed = parseIsoDate(date);
   if (!parsed) return null;
-  const utcDate = new Date(Date.UTC(parsed.year, parsed.month - 1, parsed.day));
+  const utcDate = toUtcDateOnly(parsed);
   const weekday = WEEKDAY_NAMES[utcDate.getUTCDay()];
   const suffix = getOrdinalSuffix(parsed.day);
   return `${weekday}, ${parsed.day}${suffix} ${MONTH_NAMES[parsed.month - 1]} ${parsed.year}`;
@@ -706,7 +757,14 @@ export class HIMSChatbotService {
         }
 
         case "get_available_slots": {
-          const dateDisplay = getDateDisplay(toolInput.date);
+          const dateValidation = validateAppointmentDate(toolInput.date);
+          if (!dateValidation.valid) {
+            return JSON.stringify({
+              success: false,
+              error: dateValidation.error,
+            });
+          }
+          const dateDisplay = dateValidation.dateDisplay;
           const result = await this.callHIMSEdgeFunction("hims-get-slots", {
             organizationId,
             doctorId: toolInput.doctorId,
@@ -728,6 +786,13 @@ export class HIMSChatbotService {
         }
 
         case "book_appointment": {
+          const dateValidation = validateAppointmentDate(toolInput.date);
+          if (!dateValidation.valid) {
+            return JSON.stringify({
+              success: false,
+              error: dateValidation.error,
+            });
+          }
           const normalizedTimeSlot = normalizeTimeSlot(toolInput.timeSlot);
           if (!normalizedTimeSlot) {
             return JSON.stringify({
