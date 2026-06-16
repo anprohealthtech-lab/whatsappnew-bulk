@@ -1,4 +1,4 @@
-import { useState } from "react";
+import { useEffect, useState } from "react";
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
 import { useForm } from "react-hook-form";
 import { zodResolver } from "@hookform/resolvers/zod";
@@ -29,7 +29,7 @@ import { Textarea } from "@/components/ui/textarea";
 const registerPatientSchema = z.object({
   phoneNumber: z.string().min(10, "Phone number must be at least 10 digits"),
   name: z.string().optional(),
-  organizationId: z.string().min(1, "Clinic ID (Organization ID) is required"),
+  organizationId: z.string().uuid("Clinic ID must be a valid HIMS UUID"),
   greetingMessage: z.string().optional(),
 });
 
@@ -49,12 +49,27 @@ export function OPDBotPanel() {
   const { user } = useAuth();
   const queryClient = useQueryClient();
 
-  const clinicId = user?.enabledFeatures?.himsClinicId || "";
+  const { data: latestUser } = useQuery<any>({
+    queryKey: ["/api/auth/me", "opd-user"],
+    queryFn: async () => {
+      const res = await fetch("/api/auth/me", {
+        headers: { Authorization: `Bearer ${localStorage.getItem("wa_auth_token")}` },
+      });
+      if (!res.ok) throw new Error("Failed to load user");
+      return res.json();
+    },
+  });
+
+  const clinicId = latestUser?.enabledFeatures?.himsClinicId || user?.enabledFeatures?.himsClinicId || "";
 
   const form = useForm<RegisterPatientFormData>({
     resolver: zodResolver(registerPatientSchema),
     defaultValues: { phoneNumber: "", name: "", organizationId: clinicId, greetingMessage: "" },
   });
+
+  useEffect(() => {
+    if (clinicId) form.setValue("organizationId", clinicId);
+  }, [clinicId, form]);
 
   // Fetch HIMS patients
   const { data: patientsData, isLoading } = useQuery<{ patients: any[]; count: number }>({

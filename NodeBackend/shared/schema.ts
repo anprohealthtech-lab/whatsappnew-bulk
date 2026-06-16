@@ -698,8 +698,8 @@ export const flagLeadSchema = z.object({
 export const registerHRAdminSchema = z.object({
   phoneNumber: z.string().min(1, "Phone number is required"),
   name: z.string().optional(),
-  organizationId: z.string().min(1, "Organization ID is required"),
-  userId: z.string().min(1, "User ID is required"),
+  organizationId: z.string().uuid("Organization ID must be a valid UUID"),
+  userId: z.string().uuid("User ID must be a valid UUID"),
   organizationName: z.string().optional(),
 });
 
@@ -718,7 +718,7 @@ export const hrChatbotConfigSchema = z.object({
 export const registerHIMSPatientSchema = z.object({
   phoneNumber: z.string().min(1, "Phone number is required"),
   name: z.string().optional(),
-  organizationId: z.string().min(1, "HIMS Organization ID is required"),
+  organizationId: z.string().uuid("HIMS Clinic ID must be a valid UUID"),
   systemPrompt: z.string().optional(),
   triggerKeywords: z.array(z.string()).optional(),
   greetingMessage: z.string().optional(),

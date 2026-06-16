@@ -22,7 +22,7 @@ import {
 } from "@/components/ui/alert-dialog";
 import { Skeleton } from "@/components/ui/skeleton";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
-import { UserPlus, Settings, Building2, User, Pause, Play, Trash2 } from "lucide-react";
+import { UserPlus, Settings, Building2, User, Pause, Play, Trash2, Pencil } from "lucide-react";
 import { useToast } from "@/hooks/use-toast";
 import { apiRequest } from "@/lib/queryClient";
 
@@ -30,8 +30,8 @@ import { apiRequest } from "@/lib/queryClient";
 const registerHRAdminSchema = z.object({
   phoneNumber: z.string().min(10, "Phone number must be at least 10 digits"),
   name: z.string().optional(),
-  organizationId: z.string().min(1, "Organization ID is required"),
-  userId: z.string().min(1, "User ID is required"),
+  organizationId: z.string().uuid("Organization ID must be a valid UUID"),
+  userId: z.string().uuid("User ID must be a valid UUID"),
   organizationName: z.string().optional(),
 });
 
@@ -53,6 +53,7 @@ export function HRAdminsPanel() {
   const [isDialogOpen, setIsDialogOpen] = useState(false);
   const [activeTab, setActiveTab] = useState("admins");
   const [deleteTarget, setDeleteTarget] = useState<string | null>(null);
+  const [editingAdminPhone, setEditingAdminPhone] = useState<string | null>(null);
   const { toast } = useToast();
   const queryClient = useQueryClient();
 
@@ -119,10 +120,11 @@ export function HRAdminsPanel() {
     onSuccess: () => {
       toast({
         title: "Success",
-        description: "HR Admin registered successfully",
+        description: editingAdminPhone ? "HR Admin updated successfully" : "HR Admin registered successfully",
       });
       queryClient.invalidateQueries({ queryKey: ["/api/hr-admins"] });
       adminForm.reset();
+      setEditingAdminPhone(null);
       setIsDialogOpen(false);
     },
     onError: (error: Error) => {
@@ -222,8 +224,39 @@ export function HRAdminsPanel() {
     },
   });
 
+  const openCreateDialog = () => {
+    setEditingAdminPhone(null);
+    adminForm.reset({
+      phoneNumber: "",
+      name: "",
+      organizationId: "",
+      userId: "",
+      organizationName: "",
+    });
+    setIsDialogOpen(true);
+  };
+
+  const openEditDialog = (admin: any) => {
+    setEditingAdminPhone(admin.phoneNumber);
+    adminForm.reset({
+      phoneNumber: admin.phoneNumber || "",
+      name: admin.name || "",
+      organizationId: admin.organizationId || "",
+      userId: admin.userId || "",
+      organizationName: admin.organizationName || "",
+    });
+    setIsDialogOpen(true);
+  };
+
   const onSubmitAdmin = (data: RegisterHRAdminFormData) => {
-    registerAdminMutation.mutate(data);
+    registerAdminMutation.mutate({
+      ...data,
+      phoneNumber: data.phoneNumber.trim(),
+      name: data.name?.trim(),
+      organizationId: data.organizationId.trim(),
+      userId: data.userId.trim(),
+      organizationName: data.organizationName?.trim(),
+    });
   };
 
   const onSubmitConfig = (data: HRChatbotConfigFormData) => {
@@ -261,18 +294,24 @@ export function HRAdminsPanel() {
         {/* HR Admins Tab */}
         <TabsContent value="admins" className="space-y-4">
           <div className="flex justify-end">
-            <Dialog open={isDialogOpen} onOpenChange={setIsDialogOpen}>
+            <Dialog open={isDialogOpen} onOpenChange={(open) => {
+              setIsDialogOpen(open);
+              if (!open) setEditingAdminPhone(null);
+            }}>
               <DialogTrigger asChild>
-                <Button className="bg-primary hover:bg-primary/90 text-primary-foreground shadow-lg shadow-primary/20">
+                <Button
+                  className="bg-primary hover:bg-primary/90 text-primary-foreground shadow-lg shadow-primary/20"
+                  onClick={openCreateDialog}
+                >
                   <UserPlus className="mr-2 h-4 w-4" />
                   Register HR Admin
                 </Button>
               </DialogTrigger>
               <DialogContent className="border-none shadow-2xl bg-white/95 dark:bg-zinc-900/95 backdrop-blur-xl">
                 <DialogHeader>
-                  <DialogTitle>Register HR Admin</DialogTitle>
+                  <DialogTitle>{editingAdminPhone ? "Edit HR Admin" : "Register HR Admin"}</DialogTitle>
                   <DialogDescription>
-                    Link a WhatsApp number to a Task Management user. They can then manage tasks via WhatsApp.
+                    Link a WhatsApp number to a Task Management user. The organization ID is used for all HRMS tool calls.
                   </DialogDescription>
                 </DialogHeader>
                 <form onSubmit={adminForm.handleSubmit(onSubmitAdmin)} className="space-y-4">
@@ -282,7 +321,8 @@ export function HRAdminsPanel() {
                       id="phoneNumber"
                       placeholder="919876543210"
                       {...adminForm.register("phoneNumber")}
-                      className="bg-white dark:bg-zinc-950 border-gray-200 dark:border-zinc-800 focus:ring-primary"
+                      readOnly={!!editingAdminPhone}
+                      className={`${editingAdminPhone ? "bg-muted" : "bg-white dark:bg-zinc-950"} border-gray-200 dark:border-zinc-800 focus:ring-primary`}
                     />
                     {adminForm.formState.errors.phoneNumber && (
                       <p className="text-sm text-destructive">
@@ -351,7 +391,10 @@ export function HRAdminsPanel() {
                     <Button
                       type="button"
                       variant="outline"
-                      onClick={() => setIsDialogOpen(false)}
+                      onClick={() => {
+                        setIsDialogOpen(false);
+                        setEditingAdminPhone(null);
+                      }}
                     >
                       Cancel
                     </Button>
@@ -360,7 +403,9 @@ export function HRAdminsPanel() {
                       disabled={registerAdminMutation.isPending}
                       className="bg-primary hover:bg-primary/90 text-primary-foreground shadow-md shadow-primary/20"
                     >
-                      {registerAdminMutation.isPending ? "Registering..." : "Register Admin"}
+                      {registerAdminMutation.isPending
+                        ? editingAdminPhone ? "Updating..." : "Registering..."
+                        : editingAdminPhone ? "Update Admin" : "Register Admin"}
                     </Button>
                   </div>
                 </form>
@@ -422,7 +467,10 @@ export function HRAdminsPanel() {
                           <TableCell>
                             <div className="flex items-center gap-2">
                               <Building2 className="h-4 w-4 text-muted-foreground" />
-                              <span className="text-foreground">{admin.organizationName || admin.organizationId?.substring(0, 8) + "..."}</span>
+                              <div className="min-w-0">
+                                <div className="text-foreground">{admin.organizationName || "Task Management org"}</div>
+                                <div className="font-mono text-xs text-muted-foreground break-all">{admin.organizationId}</div>
+                              </div>
                             </div>
                           </TableCell>
                           <TableCell>
@@ -456,6 +504,15 @@ export function HRAdminsPanel() {
                                 ) : (
                                   <Play className="h-4 w-4 text-green-600 dark:text-green-400" />
                                 )}
+                              </Button>
+                              <Button
+                                variant="ghost"
+                                size="sm"
+                                onClick={() => openEditDialog(admin)}
+                                title="Edit HR org/user IDs"
+                                className="hover:bg-accent"
+                              >
+                                <Pencil className="h-4 w-4" />
                               </Button>
                               <Button
                                 variant="ghost"

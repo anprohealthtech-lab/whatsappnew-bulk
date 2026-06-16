@@ -138,6 +138,11 @@ function firstNonEmpty(...values: Array<unknown>): string | undefined {
   return undefined;
 }
 
+function isUuid(value: unknown): value is string {
+  return typeof value === "string" &&
+    /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i.test(value);
+}
+
 function extractLineValue(text: string, label: string): string | undefined {
   const escaped = label.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
   const match = text.match(new RegExp(`^\\s*${escaped}\\s*:\\s*(.+)\\s*$`, "im"));
@@ -653,6 +658,10 @@ export async function registerRoutes(app: Express): Promise<Server> {
       const bcrypt = await import('bcryptjs');
       const passwordHash = await bcrypt.hash(password, 12);
 
+      if (enabledFeatures?.himsChatbot === true && !isUuid(enabledFeatures.himsClinicId)) {
+        return res.status(400).json({ message: 'A valid HIMS Clinic UUID is required to enable OPD Bot' });
+      }
+
       const result = await db.insert(users).values({
         username,
         password: passwordHash,
@@ -683,7 +692,12 @@ export async function registerRoutes(app: Express): Promise<Server> {
       }
       if (organizationId) updateData.organizationId = organizationId;
       if (email !== undefined) updateData.email = email || null;
-      if (enabledFeatures !== undefined) updateData.enabledFeatures = enabledFeatures;
+      if (enabledFeatures !== undefined) {
+        if (enabledFeatures.himsChatbot === true && !isUuid(enabledFeatures.himsClinicId)) {
+          return res.status(400).json({ message: 'A valid HIMS Clinic UUID is required to enable OPD Bot' });
+        }
+        updateData.enabledFeatures = enabledFeatures;
+      }
 
       const result = await db.update(users).set(updateData).where(eq(users.id, userId)).returning();
       if (result.length === 0) return res.status(404).json({ message: 'User not found' });
@@ -1850,8 +1864,28 @@ export async function registerRoutes(app: Express): Promise<Server> {
       if (isHIMSPatient) {
         console.log(`🏥 HIMS Patient detected: ${data.phoneNumber} (messageType: ${data.messageType || 'text'})`);
 
-        const himsPatient = await withRetry(() => storage.getHIMSPatient(data.phoneNumber));
+        let himsPatient = await withRetry(() => storage.getHIMSPatient(data.phoneNumber));
         console.log(`🔍 HIMS Chatbot status for ${data.phoneNumber}: ${himsPatient?.chatbotActive === 'false' ? 'PAUSED ⏸️' : 'ACTIVE ✅'}`);
+
+        if (himsPatient && !isUuid(himsPatient.organizationId)) {
+          const ownerRow = await db.select().from(users).where(eq(users.id, ownerUserId)).limit(1);
+          const ownerFeatures = (ownerRow[0]?.enabledFeatures as any) || {};
+          const clinicId = ownerFeatures.himsClinicId;
+          if (isUuid(clinicId)) {
+            console.log(`Updating HIMS patient ${data.phoneNumber} clinic from invalid value "${himsPatient.organizationId}" to ${clinicId}`);
+            himsPatient = await withRetry(() => storage.updateHIMSPatient(data.phoneNumber, {
+              organizationId: clinicId,
+            })) || himsPatient;
+          } else {
+            console.error(`HIMS patient ${data.phoneNumber} has invalid clinic "${himsPatient.organizationId}" and owner ${ownerUserId} has no valid himsClinicId`);
+            await waSession.sendTextMessage(
+              data.replyTo || data.from || data.phoneNumber,
+              "OPD bot is not fully configured yet. Please contact the clinic to complete setup."
+            );
+            broadcast('incoming-message', data);
+            return;
+          }
+        }
 
         if (himsPatient?.chatbotActive === 'false') {
           console.log(`⏸️ HIMS Chatbot paused for ${data.phoneNumber} - skipping`);
@@ -1926,7 +1960,16 @@ export async function registerRoutes(app: Express): Promise<Server> {
             if (matchedKeyword) {
               console.log(`🏥 HIMS trigger keyword "${matchedKeyword}" from ${data.phoneNumber} — auto-registering`);
 
-              const clinicId = ownerFeatures.himsClinicId || ownerRow[0]?.organizationId || 'default_org';
+              const clinicId = ownerFeatures.himsClinicId;
+              if (!isUuid(clinicId)) {
+                console.error(`OPD Bot enabled for owner ${ownerUserId}, but himsClinicId is missing/invalid: ${clinicId || 'not set'}`);
+                await waSession.sendTextMessage(
+                  data.replyTo || data.from || data.phoneNumber,
+                  "OPD bot is not fully configured yet. Please contact the clinic to complete setup."
+                );
+                broadcast('incoming-message', data);
+                return;
+              }
               const greetingMsg = ownerFeatures.himsGreetingMessage || undefined;
 
               // Auto-register as HIMS patient

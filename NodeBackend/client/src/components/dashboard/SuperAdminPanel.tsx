@@ -60,6 +60,10 @@ const DEFAULT_VISIBLE_TABS = [
   "data-management",
 ];
 
+function isUuid(value: string): boolean {
+  return /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i.test(value.trim());
+}
+
 interface AdminUser {
   id: string;
   username: string;
@@ -492,7 +496,7 @@ export function SuperAdminPanel() {
                             const current = u.enabledFeatures || {};
                             setHimsConfigUser(u);
                             setHimsConfigForm({
-                              himsClinicId: current.himsClinicId || u.organizationId || "",
+                              himsClinicId: current.himsClinicId || "",
                             });
                           }}
                           className={`flex items-center gap-1 px-2 py-1 rounded text-xs font-medium transition-colors ${
@@ -667,7 +671,7 @@ export function SuperAdminPanel() {
                 onChange={(e) => setHimsConfigForm({ ...himsConfigForm, himsClinicId: e.target.value })}
               />
               <p className="text-xs text-muted-foreground mt-1">
-                Defaults to user's org ID: {himsConfigUser.organizationId}
+                Must be the HIMS Supabase clinic UUID. Do not use this app org ID: {himsConfigUser.organizationId}
               </p>
             </div>
 
@@ -695,13 +699,22 @@ export function SuperAdminPanel() {
               <Button
                 className="flex-1"
                 onClick={() => {
+                  const clinicId = himsConfigForm.himsClinicId.trim();
+                  if (!isUuid(clinicId)) {
+                    toast({
+                      title: "Invalid HIMS Clinic ID",
+                      description: "Enter the real HIMS clinic UUID before enabling OPD Bot.",
+                      variant: "destructive",
+                    });
+                    return;
+                  }
                   const current = himsConfigUser.enabledFeatures || {};
                   toggleFeatureMutation.mutate({
                     userId: himsConfigUser.id,
                     features: {
                       ...current,
                       himsChatbot: true,
-                      himsClinicId: himsConfigForm.himsClinicId || himsConfigUser.organizationId,
+                      himsClinicId: clinicId,
                     },
                   });
                   setHimsConfigUser(null);
