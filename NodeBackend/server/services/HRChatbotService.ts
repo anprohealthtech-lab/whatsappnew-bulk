@@ -857,7 +857,7 @@ IMPORTANT: Always use userId="${hrAdmin.userId}" and organizationId="${hrAdmin.o
     try {
       // Initial API call
       let response = await this.anthropic.messages.create({
-        model: "claude-sonnet-4-6-20260217",
+        model: "claude-sonnet-4-6",
         max_tokens: 1024,
         system: fullSystemPrompt,
         tools: TOOLS,
@@ -899,7 +899,7 @@ IMPORTANT: Always use userId="${hrAdmin.userId}" and organizationId="${hrAdmin.o
         ];
 
         response = await this.anthropic.messages.create({
-          model: "claude-sonnet-4-6-20260217",
+          model: "claude-sonnet-4-6",
           max_tokens: 1024,
           system: fullSystemPrompt,
           tools: TOOLS,
@@ -1100,7 +1100,7 @@ What can I help you with?`;
 
       // Simple test call
       const response = await this.anthropic.messages.create({
-        model: "claude-sonnet-4-6-20260217",
+        model: "claude-sonnet-4-6",
         max_tokens: 100,
         messages: [{ role: "user", content: "Say 'Hello! Connection successful.' in exactly those words." }]
       });

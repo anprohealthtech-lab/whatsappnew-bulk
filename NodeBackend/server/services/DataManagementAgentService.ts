@@ -1413,7 +1413,7 @@ export class DataManagementAgentService {
     }));
     try {
       const response = await this.anthropic.messages.create({
-        model: process.env.DATA_AGENT_MODEL || "claude-sonnet-4-6-20260217",
+        model: process.env.DATA_AGENT_MODEL || "claude-sonnet-4-6",
         max_tokens: 8000,
         system: await this.getSystemPrompt(tenant.userId),
         tools: [DATA_EXTRACTION_TOOL],
@@ -1727,7 +1727,7 @@ export class DataManagementAgentService {
 
     try {
       let response = await this.anthropic.messages.create({
-        model: process.env.DATA_AGENT_MODEL || "claude-sonnet-4-6-20260217",
+        model: process.env.DATA_AGENT_MODEL || "claude-sonnet-4-6",
         max_tokens: 1200,
         system: systemPrompt,
         tools: DATA_QA_TOOLS,
@@ -1755,7 +1755,7 @@ export class DataManagementAgentService {
         messages.push({ role: "user", content: toolResults });
 
         response = await this.anthropic.messages.create({
-          model: process.env.DATA_AGENT_MODEL || "claude-sonnet-4-6-20260217",
+          model: process.env.DATA_AGENT_MODEL || "claude-sonnet-4-6",
           max_tokens: 1200,
           system: systemPrompt,
           tools: DATA_QA_TOOLS,
@@ -1939,7 +1939,7 @@ export class DataManagementAgentService {
     }
 
     const response = await this.anthropic.messages.create({
-      model: process.env.DATA_AGENT_MODEL || "claude-sonnet-4-6-20260217",
+      model: process.env.DATA_AGENT_MODEL || "claude-sonnet-4-6",
       max_tokens: 8000,
       system: await this.getSystemPrompt(tenant.userId),
       tools: [DATA_EXTRACTION_TOOL],

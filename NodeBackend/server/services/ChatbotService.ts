@@ -1344,7 +1344,7 @@ export class ChatbotService {
       else if (audioData.mimetype.includes('flac')) mediaType = "audio/flac";
 
       const response = await anthropic.messages.create({
-        model: "claude-sonnet-4-6-20260217",
+        model: "claude-sonnet-4-6",
         max_tokens: 1024,
         messages: [
           {
