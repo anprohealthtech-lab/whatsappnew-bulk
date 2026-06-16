@@ -143,6 +143,22 @@ function isUuid(value: unknown): value is string {
     /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i.test(value);
 }
 
+const LEAD_STAGES = ["new_lead", "qualified", "enrolled", "no_response", "follow_up", "lost"] as const;
+type LeadStage = typeof LEAD_STAGES[number];
+
+function isLeadStage(value: unknown): value is LeadStage {
+  return typeof value === "string" && (LEAD_STAGES as readonly string[]).includes(value);
+}
+
+function getLeadStageCounts(leads: Array<{ leadStage?: string | null }>): Record<LeadStage, number> {
+  const counts = Object.fromEntries(LEAD_STAGES.map((stage) => [stage, 0])) as Record<LeadStage, number>;
+  for (const lead of leads) {
+    const stage = isLeadStage(lead.leadStage) ? lead.leadStage : "new_lead";
+    counts[stage] += 1;
+  }
+  return counts;
+}
+
 function extractLineValue(text: string, label: string): string | undefined {
   const escaped = label.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
   const match = text.match(new RegExp(`^\\s*${escaped}\\s*:\\s*(.+)\\s*$`, "im"));
@@ -4183,10 +4199,12 @@ export async function registerRoutes(app: Express): Promise<Server> {
       const offset = parseInt(req.query.offset as string) || 0;
 
       const leads = await withRetry(() => storage.getLeadsByTenant(tenant, { limit, offset }));
+      const countLeads = await withRetry(() => storage.getLeadsByTenant(tenant, { limit: 1000, offset: 0 }));
 
       res.json({
         success: true,
         leads,
+        stageCounts: getLeadStageCounts(countLeads),
         count: leads.length,
       });
     } catch (error) {
@@ -4251,6 +4269,42 @@ export async function registerRoutes(app: Express): Promise<Server> {
     } catch (error) {
       const errorMessage = error instanceof Error ? error.message : 'Unknown error';
       log(`Flag lead error: ${errorMessage}`);
+      res.status(400).json({ success: false, error: errorMessage });
+    }
+  });
+
+  // Update lead pipeline stage (tenant-scoped)
+  app.patch('/api/leads/:phoneNumber/stage', requireAuth, async (req, res) => {
+    try {
+      const tenant = getTenantFromRequest(req);
+      const { phoneNumber } = req.params;
+      const { stage, reason, score } = req.body;
+
+      if (!isLeadStage(stage)) {
+        return res.status(400).json({
+          success: false,
+          error: `stage must be one of: ${LEAD_STAGES.join(', ')}`,
+        });
+      }
+
+      const updates: any = {
+        leadStage: stage,
+        leadStageReason: typeof reason === 'string' ? reason.trim() || null : null,
+        leadStageUpdatedAt: new Date(),
+      };
+      if (typeof score === 'number' && Number.isFinite(score)) {
+        updates.leadScore = Math.max(0, Math.min(100, Math.round(score)));
+      }
+
+      const contact = await withRetry(() => storage.updateContactByTenant(tenant, phoneNumber, updates));
+      if (!contact) {
+        return res.status(404).json({ success: false, error: 'Lead not found' });
+      }
+
+      res.json({ success: true, contact });
+    } catch (error) {
+      const errorMessage = error instanceof Error ? error.message : 'Unknown error';
+      log(`Update lead stage error: ${errorMessage}`);
       res.status(400).json({ success: false, error: errorMessage });
     }
   });
@@ -5154,7 +5208,12 @@ export async function registerRoutes(app: Express): Promise<Server> {
 
       // Pause chatbot for this lead so they can interact freely around demo time
       try {
-        await storage.updateContactByTenant(tenant, cleanPhone, { chatbotActive: "false" });
+        await storage.updateContactByTenant(tenant, cleanPhone, {
+          chatbotActive: "false",
+          leadStage: "qualified",
+          leadStageReason: "Demo scheduled",
+          leadStageUpdatedAt: new Date(),
+        });
         log(`⏸ Chatbot paused for ${cleanPhone} (demo scheduled)`);
       } catch (e: any) {
         log(`⚠️ Could not pause chatbot for ${cleanPhone}: ${e.message}`);

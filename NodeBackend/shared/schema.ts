@@ -183,6 +183,10 @@ export const contacts = pgTable("contacts", {
   name: text("name"),
   isLead: text("is_lead").default("false").notNull(), // "true" or "false"
   leadTriggerKeyword: text("lead_trigger_keyword"),
+  leadStage: text("lead_stage").default("new_lead").notNull(), // new_lead | qualified | enrolled | no_response | follow_up | lost
+  leadStageReason: text("lead_stage_reason"),
+  leadStageUpdatedAt: timestamp("lead_stage_updated_at").defaultNow(),
+  leadScore: integer("lead_score").default(0),
   chatbotActive: text("chatbot_active").default("true").notNull(), // "true" or "false" - can pause chatbot per lead
   userType: text("user_type"), // null, "lead", "hr_admin" - determines which chatbot handles
   conversationState: jsonb("conversation_state"),

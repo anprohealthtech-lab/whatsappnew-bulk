@@ -241,6 +241,8 @@ export class DatabaseStorage implements IStorage {
         .set({
           isLead: 'true',
           leadTriggerKeyword: keyword,
+          leadStage: existing[0].leadStage || 'new_lead',
+          leadStageUpdatedAt: existing[0].leadStage ? existing[0].leadStageUpdatedAt : new Date(),
           lastMessageAt: new Date(),
           updatedAt: new Date(),
           ...(name && { name }),
@@ -257,6 +259,9 @@ export class DatabaseStorage implements IStorage {
           name: name || null,
           isLead: 'true',
           leadTriggerKeyword: keyword,
+          leadStage: 'new_lead',
+          leadStageReason: keyword,
+          leadStageUpdatedAt: new Date(),
           lastMessageAt: new Date(),
         })
         .returning();
@@ -945,6 +950,8 @@ export class DatabaseStorage implements IStorage {
       const result = await db.update(contacts).set({
         isLead: 'true',
         leadTriggerKeyword: keyword,
+        leadStage: existing[0].leadStage || 'new_lead',
+        leadStageUpdatedAt: existing[0].leadStage ? existing[0].leadStageUpdatedAt : new Date(),
         lastMessageAt: new Date(),
         updatedAt: new Date(),
         ...(name && { name }),
@@ -956,6 +963,9 @@ export class DatabaseStorage implements IStorage {
         name: name || null,
         isLead: 'true',
         leadTriggerKeyword: keyword,
+        leadStage: 'new_lead',
+        leadStageReason: keyword,
+        leadStageUpdatedAt: new Date(),
         lastMessageAt: new Date(),
         organizationId: tenant.organizationId,
         userId: tenant.userId,

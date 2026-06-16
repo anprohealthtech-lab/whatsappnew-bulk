@@ -21,9 +21,20 @@ import {
   AlertDialogTitle,
 } from "@/components/ui/alert-dialog";
 import { Skeleton } from "@/components/ui/skeleton";
-import { UserPlus, MessageSquare, Calendar, Trash2, Pause, Play, Info } from "lucide-react";
+import { UserPlus, MessageSquare, Calendar, Trash2, Pause, Play, Info, ChevronDown, ChevronRight } from "lucide-react";
 import { useToast } from "@/hooks/use-toast";
 import { apiRequest } from "@/lib/queryClient";
+
+const LEAD_STAGES = [
+  { id: "new_lead", label: "New Lead", color: "bg-orange-500", soft: "bg-orange-50 border-orange-200 dark:bg-orange-950/20 dark:border-orange-900/40" },
+  { id: "qualified", label: "Qualified", color: "bg-sky-500", soft: "bg-sky-50 border-sky-200 dark:bg-sky-950/20 dark:border-sky-900/40" },
+  { id: "enrolled", label: "Enrolled Students", color: "bg-indigo-500", soft: "bg-indigo-50 border-indigo-200 dark:bg-indigo-950/20 dark:border-indigo-900/40" },
+  { id: "no_response", label: "No Response", color: "bg-emerald-500", soft: "bg-emerald-50 border-emerald-200 dark:bg-emerald-950/20 dark:border-emerald-900/40" },
+  { id: "follow_up", label: "Follow Up", color: "bg-rose-500", soft: "bg-rose-50 border-rose-200 dark:bg-rose-950/20 dark:border-rose-900/40" },
+  { id: "lost", label: "Lost", color: "bg-violet-500", soft: "bg-violet-50 border-violet-200 dark:bg-violet-950/20 dark:border-violet-900/40" },
+] as const;
+
+type LeadStageId = typeof LEAD_STAGES[number]["id"];
 
 const flagLeadSchema = z.object({
   phoneNumber: z.string().min(10, "Phone number must be at least 10 digits"),
@@ -44,6 +55,14 @@ export function LeadsPanel() {
   const [isDialogOpen, setIsDialogOpen] = useState(false);
   const [deleteTarget, setDeleteTarget] = useState<string | null>(null);
   const [scheduleDemoTarget, setScheduleDemoTarget] = useState<{ phoneNumber: string; name: string } | null>(null);
+  const [expandedStages, setExpandedStages] = useState<Record<LeadStageId, boolean>>({
+    new_lead: true,
+    qualified: true,
+    enrolled: false,
+    no_response: false,
+    follow_up: false,
+    lost: false,
+  });
   const { toast } = useToast();
   const queryClient = useQueryClient();
 
@@ -66,12 +85,17 @@ export function LeadsPanel() {
   });
 
   // Query leads
-  const { data: leadsData, isLoading } = useQuery<{ leads: any[] }>({
+  const { data: leadsData, isLoading } = useQuery<{ leads: any[]; stageCounts?: Record<string, number> }>({
     queryKey: ["/api/leads"],
     refetchInterval: 30000,
   });
 
   const leads = leadsData?.leads || [];
+  const stageCounts = leadsData?.stageCounts || {};
+  const leadsByStage = LEAD_STAGES.reduce((acc, stage) => {
+    acc[stage.id] = leads.filter((lead: any) => (lead.leadStage || "new_lead") === stage.id);
+    return acc;
+  }, {} as Record<LeadStageId, any[]>);
 
   // Mutation to flag a lead
   const flagLeadMutation = useMutation({
@@ -134,6 +158,30 @@ export function LeadsPanel() {
       toast({
         title: "Success",
         description: variables.active ? "Chatbot enabled" : "Chatbot paused - you can chat manually",
+      });
+      queryClient.invalidateQueries({ queryKey: ["/api/leads"] });
+    },
+    onError: (error: Error) => {
+      toast({
+        title: "Error",
+        description: error.message,
+        variant: "destructive",
+      });
+    },
+  });
+
+  const updateLeadStageMutation = useMutation({
+    mutationFn: async ({ phoneNumber, stage }: { phoneNumber: string; stage: LeadStageId }) => {
+      const stageLabel = LEAD_STAGES.find((item) => item.id === stage)?.label || stage;
+      const response = await apiRequest("PATCH", `/api/leads/${encodeURIComponent(phoneNumber)}/stage`, {
+        stage,
+        reason: `Manually moved to ${stageLabel}`,
+      });
+      return response.json();
+    },
+    onSuccess: () => {
+      toast({
+        title: "Lead stage updated",
       });
       queryClient.invalidateQueries({ queryKey: ["/api/leads"] });
     },
@@ -262,28 +310,24 @@ export function LeadsPanel() {
         </Dialog>
       </div>
 
-      <Card className="border-none shadow-lg bg-white/50 dark:bg-zinc-900/50 backdrop-blur-sm">
-        <CardHeader>
-          <CardTitle className="text-lg font-semibold">Active Leads</CardTitle>
-          <CardDescription>
-            Contacts that have been flagged as leads and will receive chatbot auto-responses
-          </CardDescription>
-        </CardHeader>
-        <CardContent>
-          {isLoading ? (
-            <div className="space-y-4">
-              {[...Array(3)].map((_, i) => (
-                <div key={i} className="flex items-center space-x-4 p-4">
-                  <Skeleton className="h-5 w-32" />
-                  <Skeleton className="h-5 w-24" />
-                  <Skeleton className="h-5 w-20" />
-                  <Skeleton className="h-6 w-16 rounded-full" />
-                  <Skeleton className="h-5 w-28" />
-                  <Skeleton className="h-8 w-24" />
-                </div>
-              ))}
-            </div>
-          ) : leads.length === 0 ? (
+      {isLoading ? (
+        <Card className="border-none shadow-lg bg-white/50 dark:bg-zinc-900/50 backdrop-blur-sm">
+          <CardContent className="p-6 space-y-4">
+            {[...Array(3)].map((_, i) => (
+              <div key={i} className="flex items-center space-x-4 p-4">
+                <Skeleton className="h-5 w-32" />
+                <Skeleton className="h-5 w-24" />
+                <Skeleton className="h-5 w-20" />
+                <Skeleton className="h-6 w-16 rounded-full" />
+                <Skeleton className="h-5 w-28" />
+                <Skeleton className="h-8 w-24" />
+              </div>
+            ))}
+          </CardContent>
+        </Card>
+      ) : leads.length === 0 ? (
+        <Card className="border-none shadow-lg bg-white/50 dark:bg-zinc-900/50 backdrop-blur-sm">
+          <CardContent className="p-6">
             <div className="flex flex-col items-center justify-center py-12 text-center bg-accent/20 rounded-xl border border-dashed border-border">
               <UserPlus className="h-12 w-12 text-muted-foreground/50 mb-4" />
               <p className="text-lg font-medium">No leads yet</p>
@@ -291,118 +335,177 @@ export function LeadsPanel() {
                 Leads will appear here when contacts send trigger keywords or are manually added
               </p>
             </div>
-          ) : (
-            <div className="overflow-auto rounded-xl border border-gray-200 dark:border-zinc-800">
-              <Table>
-                <TableHeader>
-                  <TableRow className="bg-gray-50 dark:bg-zinc-900/50 hover:bg-gray-50 dark:hover:bg-zinc-900/50">
-                    <TableHead className="font-medium text-muted-foreground">Phone Number</TableHead>
-                    <TableHead className="font-medium text-muted-foreground">Name</TableHead>
-                    <TableHead className="font-medium text-muted-foreground">Trigger Keyword</TableHead>
-                    <TableHead className="font-medium text-muted-foreground">Status</TableHead>
-                    <TableHead className="font-medium text-muted-foreground">Last Message</TableHead>
-                    <TableHead className="font-medium text-muted-foreground">Actions</TableHead>
-                  </TableRow>
-                </TableHeader>
-                <TableBody>
-                  {leads.map((lead: any) => (
-                    <TableRow key={lead.id} className="hover:bg-gray-50 dark:hover:bg-zinc-900/50 transition-colors">
-                      <TableCell className="font-mono text-foreground">
-                        {lead.phoneNumber}
-                      </TableCell>
-                      <TableCell className="text-foreground">{lead.name || <span className="text-muted-foreground">--</span>}</TableCell>
-                      <TableCell>
-                        <Badge variant="secondary" className="font-normal bg-primary/10 text-primary hover:bg-primary/20">
-                          {lead.leadTriggerKeyword || "Unknown"}
-                        </Badge>
-                      </TableCell>
-                      <TableCell>
-                        {lead.chatbotActive === 'false' ? (
-                          <Badge variant="outline" className="border-yellow-500/50 text-yellow-600 dark:text-yellow-400 bg-yellow-50 dark:bg-yellow-900/20">
-                            Paused
-                          </Badge>
-                        ) : (
-                          <Badge className="bg-green-100 text-green-700 dark:bg-green-900/30 dark:text-green-400 hover:bg-green-200">
-                            Active
-                          </Badge>
-                        )}
-                      </TableCell>
-                      <TableCell className="text-sm text-muted-foreground">
-                        <div className="flex items-center gap-1">
-                          <Calendar className="h-3 w-3" />
-                          {formatTimestamp(lead.lastMessageAt)}
-                        </div>
-                      </TableCell>
-                      <TableCell>
-                        <div className="flex items-center gap-1">
-                          <Button
-                            variant="ghost"
-                            size="sm"
-                            onClick={() => {
-                              const isActive = lead.chatbotActive !== 'false';
-                              toggleChatbotMutation.mutate({
-                                phoneNumber: lead.phoneNumber,
-                                active: !isActive,
-                              });
-                            }}
-                            disabled={toggleChatbotMutation.isPending}
-                            title={lead.chatbotActive === 'false' ? 'Resume chatbot' : 'Pause chatbot for manual chat'}
-                            className="hover:bg-accent"
-                          >
-                            {lead.chatbotActive === 'false' ? (
-                              <Play className="h-4 w-4 text-green-600 dark:text-green-400" />
-                            ) : (
-                              <Pause className="h-4 w-4 text-yellow-600 dark:text-yellow-400" />
-                            )}
-                          </Button>
-                          <Button
-                            variant="ghost"
-                            size="sm"
-                            onClick={() => setScheduleDemoTarget({ phoneNumber: lead.phoneNumber, name: lead.name || "" })}
-                            title="Schedule a demo for this lead"
-                            className="text-purple-500 hover:text-purple-600 hover:bg-purple-50 dark:hover:bg-purple-900/20"
-                          >
-                            <Calendar className="h-4 w-4" />
-                          </Button>
-                          <Button
-                            variant="ghost"
-                            size="sm"
-                            onClick={() => {
-                              toast({
-                                title: "Coming soon",
-                                description: "Conversation view will be available soon",
-                              });
-                            }}
-                            className="text-blue-500 hover:text-blue-600 hover:bg-blue-50 dark:hover:bg-blue-900/20"
-                          >
-                            <MessageSquare className="h-4 w-4 mr-1" />
-                            View Chat
-                          </Button>
-                          <Button
-                            variant="ghost"
-                            size="sm"
-                            onClick={() => setDeleteTarget(lead.phoneNumber)}
-                            disabled={deleteLeadMutation.isPending}
-                            className="text-red-500 hover:text-red-600 hover:bg-red-50 dark:hover:bg-red-900/20"
-                          >
-                            <Trash2 className="h-4 w-4" />
-                          </Button>
-                        </div>
-                      </TableCell>
-                    </TableRow>
-                  ))}
-                </TableBody>
-              </Table>
-            </div>
-          )}
+          </CardContent>
+        </Card>
+      ) : (
+        <>
+          <div className="grid grid-cols-2 md:grid-cols-3 xl:grid-cols-6 gap-2">
+            {LEAD_STAGES.map((stage) => (
+              <button
+                key={stage.id}
+                type="button"
+                onClick={() => setExpandedStages((prev) => ({ ...prev, [stage.id]: !prev[stage.id] }))}
+                className={`${stage.color} text-white rounded-lg px-3 py-3 text-left shadow-sm transition-transform hover:-translate-y-0.5`}
+              >
+                <div className="text-2xl font-bold leading-none">{stageCounts[stage.id] || 0}</div>
+                <div className="text-xs mt-1 font-medium">{stage.label}</div>
+              </button>
+            ))}
+          </div>
 
-          {leads.length > 0 && (
-            <div className="mt-4 text-sm text-muted-foreground">
-              Total leads: {leads.length}
-            </div>
-          )}
-        </CardContent>
-      </Card>
+          <div className="space-y-3">
+            {LEAD_STAGES.map((stage) => {
+              const stageLeads = leadsByStage[stage.id] || [];
+              const isExpanded = expandedStages[stage.id];
+              return (
+                <Card key={stage.id} className={`border shadow-sm ${stage.soft}`}>
+                  <button
+                    type="button"
+                    onClick={() => setExpandedStages((prev) => ({ ...prev, [stage.id]: !prev[stage.id] }))}
+                    className="w-full flex items-center justify-between gap-3 px-4 py-3 text-left"
+                  >
+                    <div className="flex items-center gap-2 min-w-0">
+                      {isExpanded ? <ChevronDown className="h-4 w-4" /> : <ChevronRight className="h-4 w-4" />}
+                      <span className="font-semibold">{stage.label}</span>
+                      <Badge variant="secondary">{stageCounts[stage.id] || stageLeads.length}</Badge>
+                    </div>
+                    <span className="text-xs text-muted-foreground">Click to {isExpanded ? "collapse" : "expand"}</span>
+                  </button>
+
+                  {isExpanded && (
+                    <CardContent className="p-0 border-t bg-background/80">
+                      {stageLeads.length === 0 ? (
+                        <div className="px-4 py-6 text-sm text-muted-foreground">No leads in this stage.</div>
+                      ) : (
+                        <div className="overflow-auto">
+                          <Table>
+                            <TableHeader>
+                              <TableRow className="bg-gray-50 dark:bg-zinc-900/50 hover:bg-gray-50 dark:hover:bg-zinc-900/50">
+                                <TableHead className="font-medium text-muted-foreground">Phone Number</TableHead>
+                                <TableHead className="font-medium text-muted-foreground">Name</TableHead>
+                                <TableHead className="font-medium text-muted-foreground">Trigger</TableHead>
+                                <TableHead className="font-medium text-muted-foreground">Stage</TableHead>
+                                <TableHead className="font-medium text-muted-foreground">Bot</TableHead>
+                                <TableHead className="font-medium text-muted-foreground">Last Message</TableHead>
+                                <TableHead className="font-medium text-muted-foreground">Actions</TableHead>
+                              </TableRow>
+                            </TableHeader>
+                            <TableBody>
+                              {stageLeads.map((lead: any) => (
+                                <TableRow key={lead.id} className="hover:bg-gray-50 dark:hover:bg-zinc-900/50 transition-colors">
+                                  <TableCell className="font-mono text-foreground">{lead.phoneNumber}</TableCell>
+                                  <TableCell className="text-foreground">{lead.name || <span className="text-muted-foreground">--</span>}</TableCell>
+                                  <TableCell>
+                                    <Badge variant="secondary" className="font-normal bg-primary/10 text-primary hover:bg-primary/20">
+                                      {lead.leadTriggerKeyword || "Unknown"}
+                                    </Badge>
+                                  </TableCell>
+                                  <TableCell>
+                                    <select
+                                      value={lead.leadStage || "new_lead"}
+                                      onChange={(event) => updateLeadStageMutation.mutate({
+                                        phoneNumber: lead.phoneNumber,
+                                        stage: event.target.value as LeadStageId,
+                                      })}
+                                      disabled={updateLeadStageMutation.isPending}
+                                      className="h-8 rounded-md border bg-background px-2 text-xs"
+                                    >
+                                      {LEAD_STAGES.map((item) => (
+                                        <option key={item.id} value={item.id}>{item.label}</option>
+                                      ))}
+                                    </select>
+                                  </TableCell>
+                                  <TableCell>
+                                    {lead.chatbotActive === 'false' ? (
+                                      <Badge variant="outline" className="border-yellow-500/50 text-yellow-600 dark:text-yellow-400 bg-yellow-50 dark:bg-yellow-900/20">
+                                        Paused
+                                      </Badge>
+                                    ) : (
+                                      <Badge className="bg-green-100 text-green-700 dark:bg-green-900/30 dark:text-green-400 hover:bg-green-200">
+                                        Active
+                                      </Badge>
+                                    )}
+                                  </TableCell>
+                                  <TableCell className="text-sm text-muted-foreground">
+                                    <div className="flex items-center gap-1">
+                                      <Calendar className="h-3 w-3" />
+                                      {formatTimestamp(lead.lastMessageAt)}
+                                    </div>
+                                  </TableCell>
+                                  <TableCell>
+                                    <div className="flex items-center gap-1">
+                                      <Button
+                                        variant="ghost"
+                                        size="sm"
+                                        onClick={() => {
+                                          const isActive = lead.chatbotActive !== 'false';
+                                          toggleChatbotMutation.mutate({
+                                            phoneNumber: lead.phoneNumber,
+                                            active: !isActive,
+                                          });
+                                        }}
+                                        disabled={toggleChatbotMutation.isPending}
+                                        title={lead.chatbotActive === 'false' ? 'Resume chatbot' : 'Pause chatbot for manual chat'}
+                                        className="hover:bg-accent"
+                                      >
+                                        {lead.chatbotActive === 'false' ? (
+                                          <Play className="h-4 w-4 text-green-600 dark:text-green-400" />
+                                        ) : (
+                                          <Pause className="h-4 w-4 text-yellow-600 dark:text-yellow-400" />
+                                        )}
+                                      </Button>
+                                      <Button
+                                        variant="ghost"
+                                        size="sm"
+                                        onClick={() => setScheduleDemoTarget({ phoneNumber: lead.phoneNumber, name: lead.name || "" })}
+                                        title="Schedule a demo for this lead"
+                                        className="text-purple-500 hover:text-purple-600 hover:bg-purple-50 dark:hover:bg-purple-900/20"
+                                      >
+                                        <Calendar className="h-4 w-4" />
+                                      </Button>
+                                      <Button
+                                        variant="ghost"
+                                        size="sm"
+                                        onClick={() => {
+                                          toast({
+                                            title: "Coming soon",
+                                            description: "Conversation view will be available soon",
+                                          });
+                                        }}
+                                        className="text-blue-500 hover:text-blue-600 hover:bg-blue-50 dark:hover:bg-blue-900/20"
+                                      >
+                                        <MessageSquare className="h-4 w-4 mr-1" />
+                                        View Chat
+                                      </Button>
+                                      <Button
+                                        variant="ghost"
+                                        size="sm"
+                                        onClick={() => setDeleteTarget(lead.phoneNumber)}
+                                        disabled={deleteLeadMutation.isPending}
+                                        className="text-red-500 hover:text-red-600 hover:bg-red-50 dark:hover:bg-red-900/20"
+                                      >
+                                        <Trash2 className="h-4 w-4" />
+                                      </Button>
+                                    </div>
+                                  </TableCell>
+                                </TableRow>
+                              ))}
+                            </TableBody>
+                          </Table>
+                        </div>
+                      )}
+                    </CardContent>
+                  )}
+                </Card>
+              );
+            })}
+          </div>
+
+          <div className="text-sm text-muted-foreground">
+            Total leads: {leads.length}
+          </div>
+        </>
+      )}
 
       {/* Info Card */}
       <Card className="border-none shadow-lg bg-white/50 dark:bg-zinc-900/50 backdrop-blur-sm">
