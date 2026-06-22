@@ -484,6 +484,8 @@ async function callVoiceRagAgent(params: {
       stream: params.stream || false,
       channel: "voice",
       system_prompt: effectiveSystemPrompt || undefined,
+      match_count: 3,
+      max_tokens: 220,
     }),
   });
 
@@ -557,6 +559,10 @@ function buildVoiceSystemPrompt(basePrompt?: string | null, languageMode?: strin
   const mode = languageMode?.trim() || "match_speaker";
   if (mode === "match_speaker") {
     parts.push(
+      "Voice mode: answer like a live phone conversation. Keep the response to 1-2 short spoken sentences. " +
+      "Do not use bullet points, numbered lists, long greetings, full clinic footers, or full address/phone details unless the user asks for them. " +
+      "If the user's question is broad, answer briefly and ask exactly one useful follow-up question. " +
+      "For urgent symptoms, give one short safety instruction. " +
       "Reply in the same language and script used in the user's latest message. " +
       "If the user mixes languages, follow their dominant language and natural speaking style. " +
       "Use one language consistently throughout the answer; do not switch sentence-by-sentence unless the user clearly did. " +
@@ -565,6 +571,10 @@ function buildVoiceSystemPrompt(basePrompt?: string | null, languageMode?: strin
   } else if (mode !== "auto") {
     const fixedLanguage = mode.replace(/^fixed:/i, "").trim();
     parts.push(
+      "Voice mode: answer like a live phone conversation. Keep the response to 1-2 short spoken sentences. " +
+      "Do not use bullet points, numbered lists, long greetings, full clinic footers, or full address/phone details unless the user asks for them. " +
+      "If the user's question is broad, answer briefly and ask exactly one useful follow-up question. " +
+      "For urgent symptoms, give one short safety instruction. " +
       `Reply only in ${fixedLanguage}. Do not switch to another language unless the user explicitly asks. ` +
       "Keep the answer suitable for being spoken aloud.",
     );

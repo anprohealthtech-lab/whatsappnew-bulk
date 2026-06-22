@@ -12,6 +12,11 @@ const GEMINI_EMBED_URL = `https://generativelanguage.googleapis.com/v1beta/model
 const ANTHROPIC_API_URL = "https://api.anthropic.com/v1/messages";
 const ANTHROPIC_MODEL = "claude-haiku-4-5-20251001";
 const MAX_CONTEXT_CHARS = 12_000;
+const VOICE_STYLE_PROMPT =
+  "Voice mode: answer like a live phone conversation. Keep the response to 1-2 short spoken sentences. " +
+  "Do not use bullet points, numbered lists, long greetings, full clinic footers, or full address/phone details unless the user asks for them. " +
+  "If the user's question is broad, answer briefly and ask exactly one useful follow-up question. " +
+  "For urgent symptoms, give one short safety instruction.";
 const STOP_WORDS = new Set([
   "a", "an", "and", "are", "as", "at", "be", "but", "by", "can", "do", "does",
   "for", "from", "how", "i", "if", "in", "is", "it", "me", "my", "of", "on",
@@ -261,7 +266,7 @@ serve(async (req: Request) => {
       message,
       conversation_history = [],
       system_prompt,
-      match_count = 5,
+      match_count,
       stream = false,
       max_tokens,
       temperature,
@@ -275,7 +280,7 @@ serve(async (req: Request) => {
     };
 
     const defaultMaxTokens: Record<string, number> = {
-      voice: 512,
+      voice: 220,
       whatsapp: 1024,
       web: 1024,
     };
@@ -286,7 +291,12 @@ serve(async (req: Request) => {
       web: 0.8,
     };
 
-    const effectiveSystemPrompt = system_prompt || defaultSystemPrompts[channel] || defaultSystemPrompts.web;
+    const baseSystemPrompt = system_prompt || defaultSystemPrompts[channel] || defaultSystemPrompts.web;
+    const effectiveSystemPrompt = [
+      baseSystemPrompt,
+      channel === "voice" ? VOICE_STYLE_PROMPT : "",
+    ].filter(Boolean).join("\n\n");
+    const effectiveMatchCount = match_count || (channel === "voice" ? 3 : 5);
     const effectiveMaxTokens = max_tokens || defaultMaxTokens[channel] || 1024;
     const effectiveTemperature = temperature ?? defaultTemperatures[channel] ?? 0.8;
 
@@ -320,7 +330,7 @@ serve(async (req: Request) => {
       log("Embedding query...");
       const queryEmbedding = await embedQuery(message, geminiKey);
 
-      const finalMatchCount = Math.max(1, match_count);
+      const finalMatchCount = Math.max(1, effectiveMatchCount);
       const retrievalCount = Math.max(finalMatchCount * 3, 15);
 
       log("Searching knowledge base...");
