@@ -7,8 +7,9 @@ const corsHeaders = {
   "Access-Control-Allow-Methods": "POST, OPTIONS",
 };
 
-// Gemini embedding model: text-embedding-004 → 768 dimensions
-const GEMINI_EMBED_URL = "https://generativelanguage.googleapis.com/v1beta/models/text-embedding-004:embedContent";
+// Keep this in sync with rag-chat. The pgvector table stores 768 dimensions.
+const GEMINI_EMBED_MODEL = "gemini-embedding-001";
+const GEMINI_EMBED_URL = `https://generativelanguage.googleapis.com/v1beta/models/${GEMINI_EMBED_MODEL}:embedContent`;
 const CHUNK_SIZE = 500; // ~500 tokens per chunk
 const CHUNK_OVERLAP = 50; // overlap between chunks
 
@@ -87,8 +88,9 @@ async function embedText(text: string, geminiKey: string): Promise<number[]> {
     method: "POST",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify({
-      model: "models/text-embedding-004",
+      model: `models/${GEMINI_EMBED_MODEL}`,
       content: { parts: [{ text }] },
+      outputDimensionality: 768,
     }),
   });
 

@@ -7,9 +7,17 @@ const corsHeaders = {
   "Access-Control-Allow-Methods": "POST, OPTIONS",
 };
 
-const GEMINI_EMBED_URL = "https://generativelanguage.googleapis.com/v1beta/models/gemini-embedding-001:embedContent";
+const GEMINI_EMBED_MODEL = "gemini-embedding-001";
+const GEMINI_EMBED_URL = `https://generativelanguage.googleapis.com/v1beta/models/${GEMINI_EMBED_MODEL}:embedContent`;
 const ANTHROPIC_API_URL = "https://api.anthropic.com/v1/messages";
 const ANTHROPIC_MODEL = "claude-haiku-4-5-20251001";
+const MAX_CONTEXT_CHARS = 12_000;
+const STOP_WORDS = new Set([
+  "a", "an", "and", "are", "as", "at", "be", "but", "by", "can", "do", "does",
+  "for", "from", "how", "i", "if", "in", "is", "it", "me", "my", "of", "on",
+  "or", "our", "please", "tell", "that", "the", "this", "to", "we", "what",
+  "when", "where", "which", "who", "why", "will", "with", "you", "your",
+]);
 
 interface RagChatRequest {
   organization_id: string;
@@ -24,12 +32,23 @@ interface RagChatRequest {
   channel?: "whatsapp" | "voice" | "web";
 }
 
+interface KnowledgeMatch {
+  id: string;
+  content: string;
+  file_id: string;
+  chunk_index: number;
+  similarity: number;
+  rerank_score?: number;
+}
+
 async function embedQuery(text: string, geminiKey: string): Promise<number[]> {
   const response = await fetch(`${GEMINI_EMBED_URL}?key=${geminiKey}`, {
     method: "POST",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify({
+      model: `models/${GEMINI_EMBED_MODEL}`,
       content: { parts: [{ text }] },
+      outputDimensionality: 768,
     }),
   });
 
@@ -40,6 +59,50 @@ async function embedQuery(text: string, geminiKey: string): Promise<number[]> {
 
   const data = await response.json();
   return data.embedding.values;
+}
+
+function tokenizeForRanking(text: string): string[] {
+  const tokens = text
+    .toLowerCase()
+    .replace(/[^\p{L}\p{N}\s]/gu, " ")
+    .split(/\s+/)
+    .map((token) => token.trim())
+    .filter((token) => token.length > 2 && !STOP_WORDS.has(token));
+
+  return [...new Set(tokens)];
+}
+
+function rankKnowledgeMatches(matches: KnowledgeMatch[], query: string, finalCount: number): KnowledgeMatch[] {
+  const queryTerms = tokenizeForRanking(query);
+  const ranked = matches.map((match) => {
+    const content = match.content.toLowerCase();
+    const keywordHits = queryTerms.reduce((count, term) => count + (content.includes(term) ? 1 : 0), 0);
+    const keywordScore = queryTerms.length ? keywordHits / queryTerms.length : 0;
+    const earlyChunkBoost = Math.max(0, 0.04 - Math.min(match.chunk_index || 0, 8) * 0.005);
+    return {
+      ...match,
+      rerank_score: (Number(match.similarity) || 0) * 0.78 + keywordScore * 0.18 + earlyChunkBoost,
+    };
+  });
+
+  return ranked
+    .sort((a, b) => (b.rerank_score || 0) - (a.rerank_score || 0))
+    .slice(0, finalCount);
+}
+
+function buildKnowledgeContext(matches: KnowledgeMatch[], maxChars = MAX_CONTEXT_CHARS): string {
+  const parts: string[] = [];
+  let usedChars = 0;
+
+  for (const match of matches) {
+    const label = `[${parts.length + 1}]`;
+    const content = `${label} ${match.content.trim()}`;
+    if (usedChars + content.length > maxChars) break;
+    parts.push(content);
+    usedChars += content.length;
+  }
+
+  return parts.join("\n\n");
 }
 
 async function generateResponseStreaming(
@@ -206,9 +269,9 @@ serve(async (req: Request) => {
     } = body;
 
     const defaultSystemPrompts: Record<string, string> = {
-      voice: "You are a helpful voice assistant. Keep responses concise and conversational - under 2-3 sentences when possible. Answer based on the knowledge base context if provided.",
-      whatsapp: "You are a helpful assistant. Answer questions based on the provided knowledge base context. If the context doesn't contain relevant information, say so honestly.",
-      web: "You are a helpful assistant. Answer questions based on the provided knowledge base context. If the context doesn't contain relevant information, say so honestly.",
+      voice: "You are a helpful voice assistant. Keep responses concise and conversational - under 2-3 sentences when possible. Answer based on the knowledge base context if provided. Reply in the user's latest language and keep one dominant language throughout the answer unless the user clearly mixes languages.",
+      whatsapp: "You are a helpful assistant. Answer questions based on the provided knowledge base context. If the context doesn't contain relevant information, say so honestly. Reply in the user's latest language and keep one dominant language throughout the answer unless the user clearly mixes languages.",
+      web: "You are a helpful assistant. Answer questions based on the provided knowledge base context. If the context doesn't contain relevant information, say so honestly. Reply in the user's latest language and keep one dominant language throughout the answer unless the user clearly mixes languages.",
     };
 
     const defaultMaxTokens: Record<string, number> = {
@@ -251,25 +314,33 @@ serve(async (req: Request) => {
     }
 
     let context = "";
+    let selectedMatches: KnowledgeMatch[] = [];
 
     if (files && files.length > 0) {
       log("Embedding query...");
       const queryEmbedding = await embedQuery(message, geminiKey);
+
+      const finalMatchCount = Math.max(1, match_count);
+      const retrievalCount = Math.max(finalMatchCount * 3, 15);
 
       log("Searching knowledge base...");
       const { data: matches, error: matchError } = await supabase.rpc("match_knowledge_chunks", {
         query_embedding: JSON.stringify(queryEmbedding),
         match_org_id: effectiveOrgId,
         match_user_id: user_id,
-        match_count: match_count,
+        match_count: retrievalCount,
         match_threshold: 0.3,
       });
 
       if (matchError) {
         log(`Vector search error: ${matchError.message}`);
       } else if (matches && matches.length > 0) {
-        log(`Found ${matches.length} relevant chunks`);
-        context = matches.map((m: any, i: number) => `[${i + 1}] ${m.content}`).join("\n\n");
+        selectedMatches = rankKnowledgeMatches(matches as KnowledgeMatch[], message, finalMatchCount);
+        log(
+          `Found ${matches.length} relevant chunks; selected ${selectedMatches.length} ` +
+          `(scores: ${selectedMatches.map((m) => (m.rerank_score || 0).toFixed(3)).join(", ")})`,
+        );
+        context = buildKnowledgeContext(selectedMatches);
       } else {
         log("No relevant chunks found above threshold");
       }
@@ -337,7 +408,7 @@ serve(async (req: Request) => {
         },
         finish_reason: "stop",
       }],
-      context_chunks: context ? context.split("\n\n").length : 0,
+      context_chunks: selectedMatches.length,
       has_knowledge_base: files && files.length > 0,
     };
 

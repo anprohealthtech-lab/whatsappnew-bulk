@@ -559,11 +559,15 @@ function buildVoiceSystemPrompt(basePrompt?: string | null, languageMode?: strin
     parts.push(
       "Reply in the same language and script used in the user's latest message. " +
       "If the user mixes languages, follow their dominant language and natural speaking style. " +
+      "Use one language consistently throughout the answer; do not switch sentence-by-sentence unless the user clearly did. " +
       "Keep the answer suitable for being spoken aloud.",
     );
   } else if (mode !== "auto") {
     const fixedLanguage = mode.replace(/^fixed:/i, "").trim();
-    parts.push(`Reply in ${fixedLanguage}. Keep the answer suitable for being spoken aloud.`);
+    parts.push(
+      `Reply only in ${fixedLanguage}. Do not switch to another language unless the user explicitly asks. ` +
+      "Keep the answer suitable for being spoken aloud.",
+    );
   }
   return parts.length ? parts.join("\n\n") : undefined;
 }

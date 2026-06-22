@@ -17,7 +17,7 @@ CREATE TABLE IF NOT EXISTS knowledge_files (
   updated_at TIMESTAMPTZ DEFAULT NOW()
 );
 
--- Knowledge chunks with vector embeddings (768 dimensions for Gemini text-embedding-004)
+-- Knowledge chunks with vector embeddings (768 dimensions for Gemini gemini-embedding-001)
 CREATE TABLE IF NOT EXISTS knowledge_chunks (
   id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
   file_id UUID NOT NULL REFERENCES knowledge_files(id) ON DELETE CASCADE,
