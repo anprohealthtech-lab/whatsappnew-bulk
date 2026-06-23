@@ -885,6 +885,7 @@ What can I help you with?`;
         name: 'Test Admin',
         organizationId: 'test-org',
         userId: 'test-user',
+        whatsappUserId: null,
         organizationName: 'Test Organization',
         chatbotActive: 'true',
         createdAt: new Date(),

@@ -4593,6 +4593,7 @@ export async function registerRoutes(app: Express): Promise<Server> {
         name,
         organizationId,
         userId,
+        whatsappUserId: req.auth!.userId,
         organizationName,
       }));
 
@@ -4879,6 +4880,46 @@ export async function registerRoutes(app: Express): Promise<Server> {
     return true;
   };
 
+  const normalizeNotificationPhone = (phoneNumber: string): string => {
+    if (phoneNumber.includes('@')) return phoneNumber;
+    let cleaned = phoneNumber.replace(/[^0-9]/g, '');
+    if (cleaned.length === 10 && !cleaned.startsWith('91')) {
+      cleaned = '91' + cleaned;
+    }
+    return cleaned;
+  };
+
+  const resolveNotificationSender = async (
+    organizationId: string,
+    preferredUserId?: string,
+  ): Promise<{ admin: any; session: WAServiceInstance }> => {
+    const orgAdmins = await storage.getHRAdminsByOrganization(organizationId);
+    if (!orgAdmins || orgAdmins.length === 0) {
+      const error = new Error('Organization not enabled for WhatsApp notifications. Register an HR admin first.');
+      (error as any).status = 403;
+      throw error;
+    }
+
+    const orderedAdmins = preferredUserId
+      ? [
+          ...orgAdmins.filter(admin => admin.userId === preferredUserId),
+          ...orgAdmins.filter(admin => admin.userId !== preferredUserId),
+        ]
+      : orgAdmins;
+
+    for (const admin of orderedAdmins) {
+      const senderUserId = admin.whatsappUserId || admin.userId;
+      const session = await sessionManager.getFirstConnectedSession(senderUserId);
+      if (session) {
+        return { admin, session };
+      }
+    }
+
+    const error = new Error(`No connected WhatsApp session found for organization ${organizationId}`);
+    (error as any).status = 503;
+    throw error;
+  };
+
   // Check if an organization is enabled for WhatsApp notifications
   app.get('/api/org-whatsapp-enabled/:organizationId', async (req, res) => {
     try {
@@ -5009,7 +5050,7 @@ export async function registerRoutes(app: Express): Promise<Server> {
       // Verify API key
       if (!verifyNotificationApiKey(req, res)) return;
 
-      const { phoneNumber, message, notificationId, title, type, organizationId } = req.body;
+      const { phoneNumber, message, notificationId, title, type, organizationId, userId } = req.body;
 
       if (!phoneNumber || !message) {
         return res.status(400).json({
@@ -5039,21 +5080,7 @@ export async function registerRoutes(app: Express): Promise<Server> {
 
       log(`✅ Org ${organizationId} verified - ${orgAdmins.length} HR admin(s) registered`);
 
-      // Smart phone number normalization - handles both regular and LID formats
-      // Let WhatsAppService.resolveOutgoingJid handle @lid vs @s.whatsapp.net resolution
-      let normalizedPhone = phoneNumber;
-
-      // Check if it's already a full JID (contains @)
-      if (phoneNumber.includes('@')) {
-        normalizedPhone = phoneNumber; // Already formatted
-      } else {
-        // Regular phone number - just normalize digits, let service resolve the JID
-        let cleaned = phoneNumber.replace(/[^0-9]/g, '');
-        if (cleaned.length === 10 && !cleaned.startsWith('91')) {
-          cleaned = '91' + cleaned;
-        }
-        normalizedPhone = cleaned;
-      }
+      const normalizedPhone = normalizeNotificationPhone(phoneNumber);
 
       log(`📤 Sending notification to ${normalizedPhone}: ${message.substring(0, 50)}...`);
 
@@ -5062,8 +5089,8 @@ export async function registerRoutes(app: Express): Promise<Server> {
         ? `*${title}*\n\n${message}`
         : message;
 
-      // Send via WhatsApp using user's connected session
-      const waSession = await getUserWASession(req);
+      // Send via the WhatsApp session linked to this Task Management organization.
+      const { admin, session: waSession } = await resolveNotificationSender(organizationId, userId);
       await waSession.sendTextMessage(normalizedPhone, formattedMessage);
 
       log(`✅ Notification sent successfully (id: ${notificationId || 'N/A'})`);
@@ -5072,6 +5099,9 @@ export async function registerRoutes(app: Express): Promise<Server> {
         success: true,
         message: 'Notification sent',
         notificationId,
+        taskUserId: admin.userId,
+        senderUserId: admin.whatsappUserId || admin.userId,
+        senderPhoneNumber: admin.phoneNumber,
       });
     } catch (error) {
       const errorMessage = error instanceof Error ? error.message : 'Unknown error';
@@ -5097,11 +5127,6 @@ export async function registerRoutes(app: Express): Promise<Server> {
 
       log(`📤 Processing batch of ${notifications.length} notifications`);
 
-      const connectedSession = sessionManager.getAnyConnectedSession();
-      if (!connectedSession) {
-        return res.status(503).json({ success: false, error: 'No connected WhatsApp session available' });
-      }
-
       const results = {
         sent: 0,
         failed: 0,
@@ -5110,7 +5135,7 @@ export async function registerRoutes(app: Express): Promise<Server> {
 
       for (const notification of notifications) {
         try {
-          const { phoneNumber, message, notificationId, title } = notification;
+          const { phoneNumber, message, notificationId, title, organizationId, userId } = notification;
 
           if (!phoneNumber || !message) {
             results.failed++;
@@ -5118,25 +5143,19 @@ export async function registerRoutes(app: Express): Promise<Server> {
             continue;
           }
 
-          // Smart phone number normalization - handles both regular and LID formats
-          // Let WhatsAppService.resolveOutgoingJid handle @lid vs @s.whatsapp.net resolution
-          let normalizedPhone = phoneNumber;
-          if (phoneNumber.includes('@')) {
-            normalizedPhone = phoneNumber; // Already formatted
-          } else {
-            // Regular phone number - just normalize digits, let service resolve the JID
-            let cleaned = phoneNumber.replace(/[^0-9]/g, '');
-            if (cleaned.length === 10 && !cleaned.startsWith('91')) {
-              cleaned = '91' + cleaned;
-            }
-            normalizedPhone = cleaned;
+          if (!organizationId) {
+            results.failed++;
+            results.errors.push({ notificationId, error: 'Missing organizationId' });
+            continue;
           }
 
+          const normalizedPhone = normalizeNotificationPhone(phoneNumber);
           const formattedMessage = title
             ? `*${title}*\n\n${message}`
             : message;
 
-          await connectedSession.service.sendTextMessage(normalizedPhone, formattedMessage);
+          const { session: waSession } = await resolveNotificationSender(organizationId, userId);
+          await waSession.sendTextMessage(normalizedPhone, formattedMessage);
           results.sent++;
 
           // Small delay between messages to avoid rate limiting

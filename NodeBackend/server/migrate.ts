@@ -203,6 +203,7 @@ export async function runMigrations(): Promise<void> {
         "name" text,
         "organization_id" text NOT NULL,
         "user_id" text NOT NULL,
+        "whatsapp_user_id" text,
         "organization_name" text,
         "chatbot_active" text DEFAULT 'true' NOT NULL,
         "created_at" timestamp DEFAULT now(),
@@ -456,6 +457,8 @@ export async function runMigrations(): Promise<void> {
         "created_at" timestamp DEFAULT now(),
         "updated_at" timestamp DEFAULT now()
       );
+
+      ALTER TABLE "hr_admins" ADD COLUMN IF NOT EXISTS "whatsapp_user_id" text;
 
       CREATE TABLE IF NOT EXISTS "data_documents" (
         "id" varchar PRIMARY KEY DEFAULT gen_random_uuid() NOT NULL,

@@ -69,7 +69,7 @@ export interface IStorage {
   getHRAdmins(filters?: { limit?: number; offset?: number }): Promise<HRAdmin[]>;
   getAllHRAdmins(): Promise<HRAdmin[]>;
   getHRAdminsByOrganization(organizationId: string): Promise<HRAdmin[]>;
-  createHRAdmin(data: { phoneNumber: string; name?: string; organizationId: string; userId: string; organizationName?: string }): Promise<HRAdmin>;
+  createHRAdmin(data: { phoneNumber: string; name?: string; organizationId: string; userId: string; whatsappUserId?: string; organizationName?: string }): Promise<HRAdmin>;
   updateHRAdmin(phoneNumber: string, updates: Partial<HRAdmin>): Promise<HRAdmin | undefined>;
   deleteHRAdmin(phoneNumber: string): Promise<void>;
   isHRAdmin(phoneNumber: string): Promise<boolean>;
@@ -493,7 +493,7 @@ export class MemStorage implements IStorage {
     return Array.from(this.hrAdmins.values()).filter(admin => admin.organizationId === organizationId);
   }
 
-  async createHRAdmin(data: { phoneNumber: string; name?: string; organizationId: string; userId: string; organizationName?: string }): Promise<HRAdmin> {
+  async createHRAdmin(data: { phoneNumber: string; name?: string; organizationId: string; userId: string; whatsappUserId?: string; organizationName?: string }): Promise<HRAdmin> {
     // Store phone preserving LID format
     let phoneToStore = data.phoneNumber.replace(/[\s\-\(\)]/g, '');
     if (!phoneToStore.includes('@')) {
@@ -508,6 +508,7 @@ export class MemStorage implements IStorage {
       name: data.name || null,
       organizationId: data.organizationId,
       userId: data.userId,
+      whatsappUserId: data.whatsappUserId || null,
       organizationName: data.organizationName || null,
       chatbotActive: 'true',
       createdAt: new Date(),

@@ -203,6 +203,7 @@ export const hrAdmins = pgTable("hr_admins", {
   // Task Management app integration
   organizationId: text("organization_id").notNull(), // Supabase organization ID
   userId: text("user_id").notNull(), // Supabase user ID  
+  whatsappUserId: text("whatsapp_user_id"), // WhatsApp backend user/session owner
   organizationName: text("organization_name"), // Cached org name
   // Chatbot settings
   chatbotActive: text("chatbot_active").default("true").notNull(), // "true" or "false"

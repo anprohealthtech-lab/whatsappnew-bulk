@@ -509,6 +509,7 @@ export class DatabaseStorage implements IStorage {
     name?: string; 
     organizationId: string; 
     userId: string; 
+    whatsappUserId?: string;
     organizationName?: string 
   }): Promise<HRAdmin> {
     // Store phone as-is to preserve LID format
@@ -538,6 +539,7 @@ export class DatabaseStorage implements IStorage {
           name: data.name || existing.name,
           organizationId: data.organizationId,
           userId: data.userId,
+          whatsappUserId: data.whatsappUserId || existing.whatsappUserId,
           organizationName: data.organizationName || existing.organizationName,
           chatbotActive: 'true',
           updatedAt: new Date(),
@@ -554,6 +556,7 @@ export class DatabaseStorage implements IStorage {
           name: data.name || null,
           organizationId: data.organizationId,
           userId: data.userId,
+          whatsappUserId: data.whatsappUserId || null,
           organizationName: data.organizationName || null,
           chatbotActive: 'true',
         })
