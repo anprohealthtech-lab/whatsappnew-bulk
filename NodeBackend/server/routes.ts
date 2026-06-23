@@ -561,8 +561,10 @@ function buildVoiceSystemPrompt(basePrompt?: string | null, languageMode?: strin
     parts.push(
       "Voice mode: answer like a live phone conversation. Keep the response to 1-2 short spoken sentences. " +
       "Do not use bullet points, numbered lists, long greetings, full clinic footers, or full address/phone details unless the user asks for them. " +
-      "If the user's question is broad, answer briefly and ask exactly one useful follow-up question. " +
-      "For urgent symptoms, give one short safety instruction. " +
+      "Do not start with filler like 'Thank you for asking', 'I understand', or repeat the clinic introduction. " +
+      "Use conversation history to understand short follow-ups; if the user gives a fragment, interpret it in context before asking for clarification. " +
+      "If one detail is unclear, ask one direct clarifying question instead of showing a menu of options. " +
+      "For medical symptoms, do not diagnose; triage briefly, ask the most important next clinical question, and give one short safety instruction for red flags. " +
       "Reply in the same language and script used in the user's latest message. " +
       "If the user mixes languages, follow their dominant language and natural speaking style. " +
       "Use one language consistently throughout the answer; do not switch sentence-by-sentence unless the user clearly did. " +
@@ -573,8 +575,10 @@ function buildVoiceSystemPrompt(basePrompt?: string | null, languageMode?: strin
     parts.push(
       "Voice mode: answer like a live phone conversation. Keep the response to 1-2 short spoken sentences. " +
       "Do not use bullet points, numbered lists, long greetings, full clinic footers, or full address/phone details unless the user asks for them. " +
-      "If the user's question is broad, answer briefly and ask exactly one useful follow-up question. " +
-      "For urgent symptoms, give one short safety instruction. " +
+      "Do not start with filler like 'Thank you for asking', 'I understand', or repeat the clinic introduction. " +
+      "Use conversation history to understand short follow-ups; if the user gives a fragment, interpret it in context before asking for clarification. " +
+      "If one detail is unclear, ask one direct clarifying question instead of showing a menu of options. " +
+      "For medical symptoms, do not diagnose; triage briefly, ask the most important next clinical question, and give one short safety instruction for red flags. " +
       `Reply only in ${fixedLanguage}. Do not switch to another language unless the user explicitly asks. ` +
       "Keep the answer suitable for being spoken aloud.",
     );

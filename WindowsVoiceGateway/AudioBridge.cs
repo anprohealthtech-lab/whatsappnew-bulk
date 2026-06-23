@@ -47,7 +47,7 @@ public sealed class AudioBridge(GatewayOptions options)
         {
             while (!cancellationToken.IsCancellationRequested && socket.State == WebSocketState.Open)
             {
-                await Task.Delay(TimeSpan.FromSeconds(4), cancellationToken);
+                await Task.Delay(TimeSpan.FromSeconds(options.UtteranceSeconds), cancellationToken);
                 byte[] raw;
                 lock (captureLock) { raw = captured.ToArray(); captured.Clear(); }
                 if (raw.Length < capture.WaveFormat.AverageBytesPerSecond / 2) continue;

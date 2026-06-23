@@ -15,8 +15,14 @@ const MAX_CONTEXT_CHARS = 12_000;
 const VOICE_STYLE_PROMPT =
   "Voice mode: answer like a live phone conversation. Keep the response to 1-2 short spoken sentences. " +
   "Do not use bullet points, numbered lists, long greetings, full clinic footers, or full address/phone details unless the user asks for them. " +
-  "If the user's question is broad, answer briefly and ask exactly one useful follow-up question. " +
-  "For urgent symptoms, give one short safety instruction.";
+  "Do not start with filler like 'Thank you for asking', 'I understand', or repeat the clinic introduction. " +
+  "Use the conversation history to understand short follow-ups; if the user gives a fragment, interpret it in context before asking for clarification. " +
+  "If one detail is unclear, ask one direct clarifying question instead of showing a menu of options. " +
+  "For medical symptoms, do not diagnose; triage briefly, ask the most important next clinical question, and give one short safety instruction for red flags.";
+const REPLY_QUALITY_PROMPT =
+  "Conversation quality rules: avoid repeating greetings, contact details, clinic address, or generic closing lines unless the user asks. " +
+  "When the user answers a previous question with a short phrase, connect it to the previous turn instead of saying you do not understand. " +
+  "Ask only one question at a time. Keep the reply focused on the user's latest need.";
 const STOP_WORDS = new Set([
   "a", "an", "and", "are", "as", "at", "be", "but", "by", "can", "do", "does",
   "for", "from", "how", "i", "if", "in", "is", "it", "me", "my", "of", "on",
@@ -294,6 +300,7 @@ serve(async (req: Request) => {
     const baseSystemPrompt = system_prompt || defaultSystemPrompts[channel] || defaultSystemPrompts.web;
     const effectiveSystemPrompt = [
       baseSystemPrompt,
+      REPLY_QUALITY_PROMPT,
       channel === "voice" ? VOICE_STYLE_PROMPT : "",
     ].filter(Boolean).join("\n\n");
     const effectiveMatchCount = match_count || (channel === "voice" ? 3 : 5);
