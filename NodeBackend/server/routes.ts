@@ -4553,6 +4553,63 @@ export async function registerRoutes(app: Express): Promise<Server> {
     }
   });
 
+  // List active Task Management users through the configured Supabase edge function.
+  // Keeps the Task Supabase service key on the backend while making HR admin linking easier.
+  app.get('/api/hr-chatbot/task-users', requireAuth, async (req, res) => {
+    try {
+      const organizationId = String(req.query.organizationId || '').trim();
+      const searchQuery = String(req.query.searchQuery || '').trim();
+      const department = String(req.query.department || '').trim();
+
+      if (!isUuid(organizationId)) {
+        return res.status(400).json({
+          success: false,
+          error: 'Valid organizationId is required',
+        });
+      }
+
+      const config = await withRetry(() => storage.getHRChatbotConfig());
+      if (!config?.supabaseUrl || !config?.supabaseServiceKey) {
+        return res.status(400).json({
+          success: false,
+          error: 'HR Chatbot Supabase config is missing. Save the Task Management Supabase URL and service key first.',
+        });
+      }
+
+      const response = await fetch(`${config.supabaseUrl}/functions/v1/whatsapp-get-users`, {
+        method: 'POST',
+        headers: {
+          Authorization: `Bearer ${config.supabaseServiceKey}`,
+          'Content-Type': 'application/json',
+        },
+        body: JSON.stringify({
+          organizationId,
+          ...(searchQuery && { searchQuery }),
+          ...(department && { department }),
+        }),
+      });
+
+      const payload = await response.json().catch(() => ({}));
+      if (!response.ok || payload?.success === false) {
+        return res.status(response.status || 502).json({
+          success: false,
+          error: payload?.error || 'Failed to fetch Task Management users',
+        });
+      }
+
+      res.json({
+        success: true,
+        organization: payload.data?.organization,
+        users: payload.data?.users || [],
+        count: payload.data?.count || 0,
+      });
+    } catch (error) {
+      const errorMessage = error instanceof Error ? error.message : 'Unknown error';
+      log(`Get HR task users error: ${errorMessage}`);
+      res.status(500).json({ success: false, error: errorMessage });
+    }
+  });
+
   // Get all HR admins
   app.get('/api/hr-admins', requireAuth, async (req, res) => {
     try {

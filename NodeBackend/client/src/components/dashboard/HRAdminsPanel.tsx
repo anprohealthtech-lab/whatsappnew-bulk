@@ -22,7 +22,7 @@ import {
 } from "@/components/ui/alert-dialog";
 import { Skeleton } from "@/components/ui/skeleton";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
-import { UserPlus, Settings, Building2, User, Pause, Play, Trash2, Pencil } from "lucide-react";
+import { UserPlus, Settings, Building2, User, Pause, Play, Trash2, Pencil, Users } from "lucide-react";
 import { useToast } from "@/hooks/use-toast";
 import { apiRequest } from "@/lib/queryClient";
 
@@ -48,12 +48,22 @@ const hrChatbotConfigSchema = z.object({
 
 type RegisterHRAdminFormData = z.infer<typeof registerHRAdminSchema>;
 type HRChatbotConfigFormData = z.infer<typeof hrChatbotConfigSchema>;
+type TaskUser = {
+  id: string;
+  name: string;
+  email?: string;
+  whatsapp_number?: string;
+  role?: string;
+  department?: string;
+};
 
 export function HRAdminsPanel() {
   const [isDialogOpen, setIsDialogOpen] = useState(false);
   const [activeTab, setActiveTab] = useState("admins");
   const [deleteTarget, setDeleteTarget] = useState<string | null>(null);
   const [editingAdminPhone, setEditingAdminPhone] = useState<string | null>(null);
+  const [selectedOrganizationId, setSelectedOrganizationId] = useState("");
+  const [userSearch, setUserSearch] = useState("");
   const { toast } = useToast();
   const queryClient = useQueryClient();
 
@@ -90,6 +100,28 @@ export function HRAdminsPanel() {
   });
 
   const hrAdmins = hrAdminsData?.hrAdmins || [];
+  const watchedOrganizationId = adminForm.watch("organizationId");
+
+  const activeOrganizationId =
+    (isDialogOpen ? watchedOrganizationId : selectedOrganizationId).trim();
+
+  const { data: taskUsersData, isLoading: isLoadingTaskUsers, error: taskUsersError } = useQuery<{ users: TaskUser[]; count: number; organization?: any }>({
+    queryKey: ["/api/hr-chatbot/task-users", activeOrganizationId, userSearch],
+    queryFn: async () => {
+      const params = new URLSearchParams({ organizationId: activeOrganizationId });
+      if (userSearch.trim()) params.set("searchQuery", userSearch.trim());
+      const response = await apiRequest("GET", `/api/hr-chatbot/task-users?${params.toString()}`);
+      const data = await response.json();
+      if (!response.ok || data.success === false) {
+        throw new Error(data.error || "Failed to load Task Management users");
+      }
+      return data;
+    },
+    enabled: z.string().uuid().safeParse(activeOrganizationId).success,
+    refetchInterval: 30000,
+  });
+
+  const taskUsers = taskUsersData?.users || [];
 
   // Query HR chatbot config
   const { data: configData, isLoading: isLoadingConfig } = useQuery<{ config: any }>({
@@ -110,6 +142,12 @@ export function HRAdminsPanel() {
       });
     }
   }, [configData, configForm]);
+
+  useEffect(() => {
+    if (!selectedOrganizationId && hrAdmins[0]?.organizationId) {
+      setSelectedOrganizationId(hrAdmins[0].organizationId);
+    }
+  }, [hrAdmins, selectedOrganizationId]);
 
   // Mutation to register HR admin
   const registerAdminMutation = useMutation({
@@ -229,7 +267,7 @@ export function HRAdminsPanel() {
     adminForm.reset({
       phoneNumber: "",
       name: "",
-      organizationId: "",
+      organizationId: selectedOrganizationId || "",
       userId: "",
       organizationName: "",
     });
@@ -261,6 +299,16 @@ export function HRAdminsPanel() {
 
   const onSubmitConfig = (data: HRChatbotConfigFormData) => {
     updateConfigMutation.mutate(data);
+  };
+
+  const selectTaskUserForForm = (user: TaskUser) => {
+    adminForm.setValue("userId", user.id, { shouldValidate: true, shouldDirty: true });
+    if (!adminForm.getValues("name")) {
+      adminForm.setValue("name", user.name || "", { shouldDirty: true });
+    }
+    if (!adminForm.getValues("phoneNumber") && user.whatsapp_number) {
+      adminForm.setValue("phoneNumber", user.whatsapp_number, { shouldValidate: true, shouldDirty: true });
+    }
   };
 
   const formatTimestamp = (timestamp: string | null) => {
@@ -377,6 +425,46 @@ export function HRAdminsPanel() {
                     </p>
                   </div>
 
+                  {z.string().uuid().safeParse(watchedOrganizationId?.trim()).success && (
+                    <div className="space-y-2 rounded-lg border border-border bg-muted/30 p-3">
+                      <div className="flex items-center justify-between gap-2">
+                        <Label>Active Task Users</Label>
+                        <Input
+                          placeholder="Search user"
+                          value={userSearch}
+                          onChange={(event) => setUserSearch(event.target.value)}
+                          className="h-8 max-w-44 bg-white dark:bg-zinc-950"
+                        />
+                      </div>
+                      {isLoadingTaskUsers ? (
+                        <p className="text-xs text-muted-foreground">Loading active users...</p>
+                      ) : taskUsers.length === 0 ? (
+                        <p className="text-xs text-muted-foreground">
+                          {taskUsersError instanceof Error ? taskUsersError.message : "No active users found for this organization."}
+                        </p>
+                      ) : (
+                        <div className="max-h-40 overflow-auto rounded-md border border-border bg-background">
+                          {taskUsers.map((user) => (
+                            <button
+                              key={user.id}
+                              type="button"
+                              onClick={() => selectTaskUserForForm(user)}
+                              className="flex w-full items-center justify-between gap-3 border-b border-border px-3 py-2 text-left text-sm last:border-b-0 hover:bg-accent"
+                            >
+                              <span className="min-w-0">
+                                <span className="block truncate font-medium">{user.name}</span>
+                                <span className="block truncate text-xs text-muted-foreground">
+                                  {user.department || "No department"} • {user.role || "user"}
+                                </span>
+                              </span>
+                              <span className="shrink-0 text-xs text-muted-foreground">Select</span>
+                            </button>
+                          ))}
+                        </div>
+                      )}
+                    </div>
+                  )}
+
                   <div className="space-y-2">
                     <Label htmlFor="organizationName">Organization Name (Optional)</Label>
                     <Input
@@ -412,6 +500,83 @@ export function HRAdminsPanel() {
               </DialogContent>
             </Dialog>
           </div>
+
+          <Card className="border-none shadow-lg bg-white/50 dark:bg-zinc-900/50 backdrop-blur-sm">
+            <CardHeader>
+              <CardTitle className="text-lg font-semibold flex items-center gap-2">
+                <Users className="h-5 w-5" />
+                Active Task Management Users
+              </CardTitle>
+              <CardDescription>
+                Pulled from the configured Task Management Supabase. Only active users are shown.
+              </CardDescription>
+            </CardHeader>
+            <CardContent className="space-y-4">
+              <div className="grid gap-3 md:grid-cols-[1fr_240px]">
+                <div className="space-y-2">
+                  <Label htmlFor="activeOrgId">Organization ID</Label>
+                  <Input
+                    id="activeOrgId"
+                    placeholder="Task Management organization UUID"
+                    value={selectedOrganizationId}
+                    onChange={(event) => setSelectedOrganizationId(event.target.value)}
+                    className="bg-white dark:bg-zinc-950 border-gray-200 dark:border-zinc-800"
+                  />
+                </div>
+                <div className="space-y-2">
+                  <Label htmlFor="taskUserSearch">Search</Label>
+                  <Input
+                    id="taskUserSearch"
+                    placeholder="Name, email, department"
+                    value={userSearch}
+                    onChange={(event) => setUserSearch(event.target.value)}
+                    className="bg-white dark:bg-zinc-950 border-gray-200 dark:border-zinc-800"
+                  />
+                </div>
+              </div>
+
+              {!z.string().uuid().safeParse(activeOrganizationId).success ? (
+                <p className="text-sm text-muted-foreground">Enter or select a valid Task Management organization ID.</p>
+              ) : isLoadingTaskUsers ? (
+                <div className="space-y-2">
+                  <Skeleton className="h-10 w-full" />
+                  <Skeleton className="h-10 w-full" />
+                </div>
+              ) : taskUsersError instanceof Error ? (
+                <p className="text-sm text-destructive">{taskUsersError.message}</p>
+              ) : taskUsers.length === 0 ? (
+                <p className="text-sm text-muted-foreground">No active users found.</p>
+              ) : (
+                <div className="overflow-auto rounded-xl border border-gray-200 dark:border-zinc-800">
+                  <Table>
+                    <TableHeader>
+                      <TableRow className="bg-gray-50 dark:bg-zinc-900/50">
+                        <TableHead>Name</TableHead>
+                        <TableHead>Department</TableHead>
+                        <TableHead>Role</TableHead>
+                        <TableHead>WhatsApp</TableHead>
+                        <TableHead className="font-mono text-xs">User ID</TableHead>
+                      </TableRow>
+                    </TableHeader>
+                    <TableBody>
+                      {taskUsers.map((user) => (
+                        <TableRow key={user.id}>
+                          <TableCell>
+                            <div className="font-medium">{user.name}</div>
+                            <div className="text-xs text-muted-foreground">{user.email || "--"}</div>
+                          </TableCell>
+                          <TableCell>{user.department || "--"}</TableCell>
+                          <TableCell>{user.role || "--"}</TableCell>
+                          <TableCell className="font-mono text-xs">{user.whatsapp_number || "--"}</TableCell>
+                          <TableCell className="font-mono text-xs break-all">{user.id}</TableCell>
+                        </TableRow>
+                      ))}
+                    </TableBody>
+                  </Table>
+                </div>
+              )}
+            </CardContent>
+          </Card>
 
           <Card className="border-none shadow-lg bg-white/50 dark:bg-zinc-900/50 backdrop-blur-sm">
             <CardHeader>
