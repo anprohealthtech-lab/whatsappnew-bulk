@@ -143,6 +143,29 @@ function isUuid(value: unknown): value is string {
     /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i.test(value);
 }
 
+const HIMS_LANGUAGE_OPTIONS = new Set([
+  "English",
+  "Hindi",
+  "Gujarati",
+  "Marathi",
+  "Bengali",
+  "Tamil",
+  "Telugu",
+  "Kannada",
+  "Malayalam",
+  "Punjabi",
+]);
+const DEFAULT_HIMS_ALLOWED_LANGUAGES = ["English", "Hindi", "Gujarati"];
+
+function normalizeHimsAllowedLanguages(value: unknown): string[] {
+  const input = Array.isArray(value) ? value : [];
+  const cleaned = input
+    .map((item) => String(item || "").trim())
+    .filter((item) => HIMS_LANGUAGE_OPTIONS.has(item))
+    .slice(0, 3);
+  return cleaned.length > 0 ? cleaned : DEFAULT_HIMS_ALLOWED_LANGUAGES;
+}
+
 const LEAD_STAGES = ["new_lead", "qualified", "enrolled", "no_response", "follow_up", "lost"] as const;
 type LeadStage = typeof LEAD_STAGES[number];
 
@@ -554,10 +577,41 @@ async function callVoiceRagAgent(params: {
   return content.trim();
 }
 
+const DEFAULT_VOICE_ALLOWED_LANGUAGES = ["English", "Hindi", "Gujarati"];
+
+function normalizeVoiceAllowedLanguages(value: unknown): string[] {
+  const input = Array.isArray(value) ? value : [];
+  const cleaned = input
+    .map((item) => String(item || "").trim())
+    .filter((item) => HIMS_LANGUAGE_OPTIONS.has(item))
+    .slice(0, 3);
+  return cleaned.length > 0 ? cleaned : DEFAULT_VOICE_ALLOWED_LANGUAGES;
+}
+
+function parseVoiceAllowedLanguageMode(mode: string): string[] {
+  if (!mode.toLowerCase().startsWith("allowed:")) return DEFAULT_VOICE_ALLOWED_LANGUAGES;
+  return normalizeVoiceAllowedLanguages(mode.slice("allowed:".length).split(","));
+}
+
+function buildVoiceLanguagePolicy(allowedLanguages: string[]): string {
+  const languages = normalizeVoiceAllowedLanguages(allowedLanguages);
+  const languageList = languages.join(", ");
+  const fallbackLanguage = languages[0];
+  return (
+    `Supported clinic languages: ${languageList}. ` +
+    "Reply only in one of these supported languages. " +
+    "If the user's latest message is in a supported language, reply in that same language. " +
+    `If the user's latest message is not in a supported language, reply in ${fallbackLanguage} and ask them to speak in ${languageList}. ` +
+    "Do not reply in unsupported languages. Keep one language throughout the answer. " +
+    "Always speak phone numbers, dates, times, IDs, medicine names, and digits using English/Latin characters."
+  );
+}
+
 function buildVoiceSystemPrompt(basePrompt?: string | null, languageMode?: string | null): string | undefined {
   const parts = [basePrompt?.trim()].filter(Boolean) as string[];
   const mode = languageMode?.trim() || "match_speaker";
-  if (mode === "match_speaker") {
+  if (mode === "match_speaker" || mode.toLowerCase().startsWith("allowed:")) {
+    const allowedLanguages = parseVoiceAllowedLanguageMode(mode);
     parts.push(
       "Voice mode: answer like a live phone conversation. Keep the response to 1-2 short spoken sentences. " +
       "Do not use bullet points, numbered lists, long greetings, full clinic footers, or full address/phone details unless the user asks for them. " +
@@ -565,9 +619,7 @@ function buildVoiceSystemPrompt(basePrompt?: string | null, languageMode?: strin
       "Use conversation history to understand short follow-ups; if the user gives a fragment, interpret it in context before asking for clarification. " +
       "If one detail is unclear, ask one direct clarifying question instead of showing a menu of options. " +
       "For medical symptoms, do not diagnose; triage briefly, ask the most important next clinical question, and give one short safety instruction for red flags. " +
-      "Reply in the same language and script used in the user's latest message. " +
-      "If the user mixes languages, follow their dominant language and natural speaking style. " +
-      "Use one language consistently throughout the answer; do not switch sentence-by-sentence unless the user clearly did. " +
+      buildVoiceLanguagePolicy(allowedLanguages) + " " +
       "Keep the answer suitable for being spoken aloud.",
     );
   } else if (mode !== "auto") {
@@ -579,7 +631,8 @@ function buildVoiceSystemPrompt(basePrompt?: string | null, languageMode?: strin
       "Use conversation history to understand short follow-ups; if the user gives a fragment, interpret it in context before asking for clarification. " +
       "If one detail is unclear, ask one direct clarifying question instead of showing a menu of options. " +
       "For medical symptoms, do not diagnose; triage briefly, ask the most important next clinical question, and give one short safety instruction for red flags. " +
-      `Reply only in ${fixedLanguage}. Do not switch to another language unless the user explicitly asks. ` +
+      `Reply only in ${fixedLanguage}. Do not switch to another language. ` +
+      "Always speak phone numbers, dates, times, IDs, medicine names, and digits using English/Latin characters. " +
       "Keep the answer suitable for being spoken aloud.",
     );
   }
@@ -4759,6 +4812,7 @@ export async function registerRoutes(app: Express): Promise<Server> {
         himsTriggerKeywords: features.himsTriggerKeywords || ['appointment', 'book', 'doctor', 'slot', 'opd'],
         himsGreetingMessage: features.himsGreetingMessage || '',
         himsSystemPrompt: features.himsSystemPrompt || '',
+        himsAllowedLanguages: normalizeHimsAllowedLanguages(features.himsAllowedLanguages),
       });
     } catch (error: any) {
       res.status(500).json({ message: error.message });
@@ -4771,13 +4825,23 @@ export async function registerRoutes(app: Express): Promise<Server> {
       const user = await authService.getUser(req.auth!.userId);
       if (!user) return res.status(404).json({ message: 'User not found' });
 
-      const { himsTriggerKeywords, himsGreetingMessage, himsSystemPrompt } = req.body;
+      const { himsTriggerKeywords, himsGreetingMessage, himsSystemPrompt, himsAllowedLanguages } = req.body;
       const current = (user.enabledFeatures as any) || {};
       const updated = { ...current };
 
       if (himsTriggerKeywords !== undefined) updated.himsTriggerKeywords = himsTriggerKeywords;
       if (himsGreetingMessage !== undefined) updated.himsGreetingMessage = himsGreetingMessage;
       if (himsSystemPrompt !== undefined) updated.himsSystemPrompt = himsSystemPrompt;
+      if (himsAllowedLanguages !== undefined) {
+        if (!Array.isArray(himsAllowedLanguages) || himsAllowedLanguages.length < 1 || himsAllowedLanguages.length > 3) {
+          return res.status(400).json({ message: 'Choose 1 to 3 supported OPD bot languages' });
+        }
+        const normalizedLanguages = normalizeHimsAllowedLanguages(himsAllowedLanguages);
+        if (normalizedLanguages.length !== himsAllowedLanguages.length) {
+          return res.status(400).json({ message: 'One or more OPD bot languages are not supported' });
+        }
+        updated.himsAllowedLanguages = normalizedLanguages;
+      }
 
       await db.update(users).set({ enabledFeatures: updated }).where(eq(users.id, req.auth!.userId));
 

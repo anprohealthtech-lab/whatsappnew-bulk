@@ -29,12 +29,41 @@ const defaultFlow = JSON.stringify({
   }
 }, null, 2);
 
+const VOICE_LANGUAGE_OPTIONS = [
+  "English",
+  "Hindi",
+  "Gujarati",
+  "Marathi",
+  "Bengali",
+  "Tamil",
+  "Telugu",
+  "Kannada",
+  "Malayalam",
+  "Punjabi",
+];
+const DEFAULT_VOICE_LANGUAGES = ["English", "Hindi", "Gujarati"];
+
+function buildAllowedLanguageMode(languages: string[]) {
+  return `allowed:${languages.slice(0, 3).join(",")}`;
+}
+
+function parseAllowedLanguageMode(languageMode: string) {
+  if (!languageMode.toLowerCase().startsWith("allowed:")) return DEFAULT_VOICE_LANGUAGES;
+  const languages = languageMode
+    .slice("allowed:".length)
+    .split(",")
+    .map((item) => item.trim())
+    .filter(Boolean)
+    .slice(0, 3);
+  return languages.length > 0 ? languages : DEFAULT_VOICE_LANGUAGES;
+}
+
 export function VoiceAgentPanel() {
   const queryClient = useQueryClient();
   const { toast } = useToast();
   const [credential, setCredential] = useState({ provider: "fish", credentialType: "tts", name: "Fish Audio", secret: "", language: "auto" });
   const [profile, setProfile] = useState({ credentialId: "", name: "Default Voice", referenceId: "", model: "s2-pro" });
-  const [agent, setAgent] = useState({ name: "Voice Agent", ragAgentId: "", sttCredentialId: "", voiceProfileId: "", defaultFlowKey: "welcome_flow", languageMode: "match_speaker" });
+  const [agent, setAgent] = useState({ name: "Voice Agent", ragAgentId: "", sttCredentialId: "", voiceProfileId: "", defaultFlowKey: "welcome_flow", languageMode: buildAllowedLanguageMode(DEFAULT_VOICE_LANGUAGES) });
   const [flow, setFlow] = useState({ flowKey: "welcome_flow", name: "Welcome Flow", voiceAgentId: "", voiceProfileId: "", definition: defaultFlow });
   const [gatewayName, setGatewayName] = useState("Windows Gateway");
   const [campaign, setCampaign] = useState({ name: "Voice Campaign", voiceAgentId: "", flowId: "", gatewayDeviceId: "" });
@@ -255,7 +284,7 @@ export function VoiceAgentPanel() {
             <Field label="Voice profile"><Select optional value={agent.voiceProfileId} onChange={(value) => setAgent({ ...agent, voiceProfileId: value })} items={profiles} /></Field>
             <Field label="Response language">
               <select className="w-full border rounded-md p-2 bg-background" value={agent.languageMode} onChange={(e) => setAgent({ ...agent, languageMode: e.target.value })}>
-                <option value="match_speaker">Match the speaker automatically</option>
+                <option value={agent.languageMode.toLowerCase().startsWith("allowed:") ? agent.languageMode : buildAllowedLanguageMode(DEFAULT_VOICE_LANGUAGES)}>Supported clinic languages</option>
                 <option value="fixed:English">Always English</option>
                 <option value="fixed:Hindi">Always Hindi</option>
                 <option value="fixed:Bengali">Always Bengali</option>
@@ -271,6 +300,36 @@ export function VoiceAgentPanel() {
                 <option value="fixed:Arabic">Always Arabic</option>
               </select>
             </Field>
+            {agent.languageMode.toLowerCase().startsWith("allowed:") && (
+              <Field label="Clinic languages">
+                <div className="grid grid-cols-2 gap-2">
+                  {VOICE_LANGUAGE_OPTIONS.map((language) => {
+                    const selectedLanguages = parseAllowedLanguageMode(agent.languageMode);
+                    const selected = selectedLanguages.includes(language);
+                    const disabled = !selected && selectedLanguages.length >= 3;
+                    return (
+                      <label key={language} className="flex items-center gap-2 text-xs px-2 py-1.5 border rounded">
+                        <input
+                          type="checkbox"
+                          checked={selected}
+                          disabled={disabled}
+                          onChange={(e) => {
+                            const next = e.target.checked
+                              ? [...selectedLanguages, language].slice(0, 3)
+                              : selectedLanguages.filter((item) => item !== language);
+                            setAgent({
+                              ...agent,
+                              languageMode: buildAllowedLanguageMode(next.length > 0 ? next : selectedLanguages),
+                            });
+                          }}
+                        />
+                        {language}
+                      </label>
+                    );
+                  })}
+                </div>
+              </Field>
+            )}
             <Field label="Default flow key"><Input value={agent.defaultFlowKey} onChange={(e) => setAgent({ ...agent, defaultFlowKey: e.target.value })} /></Field>
             <Button onClick={() => createAgent.mutate()} disabled={!agent.name || createAgent.isPending}><Plus className="w-4 h-4 mr-2" />Create agent</Button>
           </CardContent>

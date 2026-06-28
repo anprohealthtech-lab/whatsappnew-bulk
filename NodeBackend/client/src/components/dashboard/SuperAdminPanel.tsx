@@ -30,6 +30,7 @@ interface EnabledFeatures {
   himsClinicId?: string;
   himsTriggerKeywords?: string[];
   himsGreetingMessage?: string;
+  himsAllowedLanguages?: string[];
 }
 
 const TAB_OPTIONS = [

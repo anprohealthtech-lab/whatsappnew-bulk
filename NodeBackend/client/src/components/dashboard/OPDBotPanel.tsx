@@ -35,6 +35,20 @@ const registerPatientSchema = z.object({
 
 type RegisterPatientFormData = z.infer<typeof registerPatientSchema>;
 
+const OPD_LANGUAGE_OPTIONS = [
+  "English",
+  "Hindi",
+  "Gujarati",
+  "Marathi",
+  "Bengali",
+  "Tamil",
+  "Telugu",
+  "Kannada",
+  "Malayalam",
+  "Punjabi",
+];
+const DEFAULT_OPD_LANGUAGES = ["English", "Hindi", "Gujarati"];
+
 export function OPDBotPanel() {
   const [isDialogOpen, setIsDialogOpen] = useState(false);
   const [deleteTarget, setDeleteTarget] = useState<string | null>(null);
@@ -44,6 +58,7 @@ export function OPDBotPanel() {
     himsTriggerKeywords: "",
     himsGreetingMessage: "",
     himsSystemPrompt: "",
+    himsAllowedLanguages: DEFAULT_OPD_LANGUAGES,
   });
   const { toast } = useToast();
   const { user } = useAuth();
@@ -175,6 +190,7 @@ export function OPDBotPanel() {
     himsTriggerKeywords: string[];
     himsGreetingMessage: string;
     himsSystemPrompt: string;
+    himsAllowedLanguages: string[];
   }>({
     queryKey: ["/api/opd-settings"],
     queryFn: async () => {
@@ -187,7 +203,7 @@ export function OPDBotPanel() {
   });
 
   const saveSettingsMutation = useMutation({
-    mutationFn: async (data: { himsTriggerKeywords?: string[]; himsGreetingMessage?: string; himsSystemPrompt?: string }) => {
+    mutationFn: async (data: { himsTriggerKeywords?: string[]; himsGreetingMessage?: string; himsSystemPrompt?: string; himsAllowedLanguages?: string[] }) => {
       const res = await fetch("/api/opd-settings", {
         method: "PATCH",
         headers: {
@@ -229,6 +245,7 @@ export function OPDBotPanel() {
                 himsTriggerKeywords: (opdSettings.himsTriggerKeywords || []).join(", "),
                 himsGreetingMessage: opdSettings.himsGreetingMessage || "",
                 himsSystemPrompt: opdSettings.himsSystemPrompt || "",
+                himsAllowedLanguages: opdSettings.himsAllowedLanguages || DEFAULT_OPD_LANGUAGES,
               });
             }
           }}>
@@ -288,6 +305,37 @@ export function OPDBotPanel() {
           </CardHeader>
           <CardContent className="space-y-4">
             <div>
+              <Label>Supported Languages</Label>
+              <div className="grid grid-cols-2 md:grid-cols-5 gap-2 mt-2">
+                {OPD_LANGUAGE_OPTIONS.map((language) => {
+                  const selected = settingsForm.himsAllowedLanguages.includes(language);
+                  const disabled = !selected && settingsForm.himsAllowedLanguages.length >= 3;
+                  return (
+                    <label key={language} className="flex items-center gap-2 text-xs px-2 py-1.5 border rounded">
+                      <input
+                        type="checkbox"
+                        checked={selected}
+                        disabled={disabled}
+                        onChange={(e) => {
+                          const next = e.target.checked
+                            ? [...settingsForm.himsAllowedLanguages, language].slice(0, 3)
+                            : settingsForm.himsAllowedLanguages.filter((item) => item !== language);
+                          setSettingsForm({
+                            ...settingsForm,
+                            himsAllowedLanguages: next.length > 0 ? next : settingsForm.himsAllowedLanguages,
+                          });
+                        }}
+                      />
+                      {language}
+                    </label>
+                  );
+                })}
+              </div>
+              <p className="text-xs text-muted-foreground mt-1">
+                Choose 1 to 3. The bot will refuse other languages and keep phone numbers in English digits.
+              </p>
+            </div>
+            <div>
               <Label>Trigger Keywords</Label>
               <Input
                 value={settingsForm.himsTriggerKeywords}
@@ -332,6 +380,7 @@ export function OPDBotPanel() {
                   himsTriggerKeywords: keywords.length > 0 ? keywords : undefined,
                   himsGreetingMessage: settingsForm.himsGreetingMessage || undefined,
                   himsSystemPrompt: settingsForm.himsSystemPrompt || undefined,
+                  himsAllowedLanguages: settingsForm.himsAllowedLanguages,
                 });
               }}
               disabled={saveSettingsMutation.isPending}

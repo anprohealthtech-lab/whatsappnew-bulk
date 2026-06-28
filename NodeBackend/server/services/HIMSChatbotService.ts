@@ -136,6 +136,32 @@ const MONTH_LOOKUP: Record<string, number> = {
   december: 11,
 };
 
+const DEFAULT_ALLOWED_LANGUAGES = ["English", "Hindi", "Gujarati"];
+
+function normalizeAllowedLanguages(value: unknown): string[] {
+  const input = Array.isArray(value) ? value : [];
+  const cleaned = input
+    .map((item) => String(item || "").trim())
+    .filter(Boolean)
+    .slice(0, 3);
+  return cleaned.length > 0 ? cleaned : DEFAULT_ALLOWED_LANGUAGES;
+}
+
+function buildLanguagePolicyPrompt(allowedLanguages: string[]): string {
+  const languages = normalizeAllowedLanguages(allowedLanguages);
+  const languageList = languages.join(", ");
+  const fallbackLanguage = languages[0];
+  return [
+    "## LANGUAGE POLICY (STRICT)",
+    `- The clinic supports only these languages: ${languageList}.`,
+    "- Reply only in one of the supported languages. Do not reply in any other language, even if the patient writes in another language.",
+    "- If the patient's latest message is in a supported language, reply in that same supported language.",
+    `- If the patient's latest message is not in a supported language, reply in ${fallbackLanguage} and ask them to use one of the supported languages: ${languageList}.`,
+    "- Keep one language per answer unless the patient clearly mixes supported languages.",
+    "- Phone numbers, dates, appointment IDs, times, medicine names, URLs, and all digits must use English/Latin characters only.",
+  ].join("\n");
+}
+
 function getOrdinalSuffix(day: number): string {
   if (day >= 11 && day <= 13) return "th";
   switch (day % 10) {
@@ -638,6 +664,7 @@ export class HIMSChatbotService {
     organizationId: string,
     appUserId?: string,
     conversationHistory: ConversationMessage[] = [],
+    allowedLanguages: string[] = DEFAULT_ALLOWED_LANGUAGES,
   ): Promise<string> {
     const tag = "[HIMSChatbotService]";
     const supabaseUrl = process.env.VITE_SUPABASE_URL;
@@ -691,7 +718,8 @@ export class HIMSChatbotService {
             content: msg.content,
           })),
           system_prompt:
-            "You are a helpful hospital information assistant. Answer the question using only the provided context. Be concise.",
+            "You are a helpful hospital information assistant. Answer the question using only the provided context. Be concise.\n\n" +
+            buildLanguagePolicyPrompt(allowedLanguages),
           match_count: 5,
           channel: "whatsapp",
         }),
@@ -729,6 +757,7 @@ export class HIMSChatbotService {
     patient: HIMSPatient,
     appUserId?: string,
     conversationHistory: ConversationMessage[] = [],
+    allowedLanguages: string[] = DEFAULT_ALLOWED_LANGUAGES,
   ): Promise<string> {
     const tag = "[HIMSChatbotService]";
     console.log(`${tag} 🔧 Tool: ${toolName}`);
@@ -875,6 +904,7 @@ export class HIMSChatbotService {
             organizationId,
             appUserId,
             conversationHistory,
+            allowedLanguages,
           );
         }
 
@@ -899,6 +929,7 @@ export class HIMSChatbotService {
     audioData?: { base64: string; mimetype: string },
     ownerSystemPrompt?: string,
     appUserId?: string,
+    allowedLanguages: string[] = DEFAULT_ALLOWED_LANGUAGES,
   ): Promise<string> {
     const tag = "[HIMSChatbotService]";
 
@@ -922,7 +953,11 @@ export class HIMSChatbotService {
 
 IMPORTANT: Always use organizationId="${patient.organizationId}" and patientPhone="${patient.phoneNumber}" in ALL function calls.`;
 
-    const fullSystemPrompt = basePrompt + contextInfo;
+    const fullSystemPrompt = [
+      basePrompt,
+      buildLanguagePolicyPrompt(allowedLanguages),
+      contextInfo,
+    ].join("\n\n");
 
     // Build messages array
     const historyMessages: Anthropic.MessageParam[] =
@@ -1051,6 +1086,7 @@ IMPORTANT: Always use organizationId="${patient.organizationId}" and patientPhon
             patient,
             appUserId,
             conversationHistory,
+            allowedLanguages,
           );
           toolResults.push({
             type: "tool_result",
@@ -1131,6 +1167,7 @@ IMPORTANT: Always use organizationId="${patient.organizationId}" and patientPhon
 
       // Look up owner's custom system prompt from enabledFeatures
       let ownerSystemPrompt: string | undefined;
+      let ownerAllowedLanguages = DEFAULT_ALLOWED_LANGUAGES;
       try {
         const ownerRows = await db.select({ enabledFeatures: users.enabledFeatures })
           .from(users)
@@ -1139,6 +1176,7 @@ IMPORTANT: Always use organizationId="${patient.organizationId}" and patientPhon
         if (ownerRows.length > 0) {
           const features = ownerRows[0].enabledFeatures as any;
           ownerSystemPrompt = features?.himsSystemPrompt;
+          ownerAllowedLanguages = normalizeAllowedLanguages(features?.himsAllowedLanguages);
         }
       } catch (e) {
         console.log(`${tag} ⚠️ Could not look up owner prompt: ${(e as Error).message}`);
@@ -1156,6 +1194,7 @@ IMPORTANT: Always use organizationId="${patient.organizationId}" and patientPhon
         audioData,
         ownerSystemPrompt,
         appUserId,
+        ownerAllowedLanguages,
       );
 
       if (audioData) {
