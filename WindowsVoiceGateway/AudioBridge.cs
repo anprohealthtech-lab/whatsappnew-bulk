@@ -3,6 +3,7 @@ using NAudio.Wave;
 using System.Net.WebSockets;
 using System.Text;
 using System.Text.Json;
+using System.Threading.Channels;
 
 namespace WindowsVoiceGateway;
 
@@ -29,6 +30,7 @@ public sealed class AudioBridge(GatewayOptions options)
         output.Init(playback);
         var captured = new List<byte>();
         var captureLock = new object();
+        var playbackQueue = Channel.CreateUnbounded<byte[]>(new UnboundedChannelOptions { SingleReader = true });
 
         using var socket = new ClientWebSocket();
         await socket.ConnectAsync(new Uri(options.VoiceServiceWebSocketUrl), cancellationToken);
@@ -41,7 +43,11 @@ public sealed class AudioBridge(GatewayOptions options)
 
         capture.StartRecording();
         output.Play();
-        await report("media_ready", new { type = "media_ready" });
+
+        var playbackPump = Task.Run(
+            () => PumpPlaybackAsync(playbackQueue.Reader, playback, cancellationToken),
+            cancellationToken
+        );
 
         var utterancePump = Task.Run(async () =>
         {
@@ -95,8 +101,8 @@ public sealed class AudioBridge(GatewayOptions options)
                 var mimeType = root.TryGetProperty("mimeType", out var mime) ? mime.GetString() : "";
                 if (mimeType != "audio/L16") throw new InvalidOperationException("Windows prototype requires a Fish voice profile with audioFormat=pcm and 16 kHz output.");
                 var samples = Convert.FromBase64String(audio.GetString()!);
-                Console.WriteLine($"Playing voice audio: {samples.Length} bytes");
-                playback.AddSamples(samples, 0, samples.Length);
+                Console.WriteLine($"Queueing voice audio: {samples.Length} bytes");
+                await playbackQueue.Writer.WriteAsync(samples, cancellationToken);
             }
             if (type == "flow_transcript" && root.TryGetProperty("transcript", out var flowTranscript))
                 await report("transcript", new { type = "transcript", speaker = "caller", text = flowTranscript.GetString() });
@@ -108,7 +114,32 @@ public sealed class AudioBridge(GatewayOptions options)
                     await report("agent_text", new { type = "agent_text", speaker = "agent", text = agentText.GetString() });
             }
         }
+        playbackQueue.Writer.TryComplete();
         await utterancePump;
+        await playbackPump;
+    }
+
+    private static async Task PumpPlaybackAsync(
+        ChannelReader<byte[]> chunks,
+        BufferedWaveProvider playback,
+        CancellationToken cancellationToken
+    )
+    {
+        const int sampleRate = 16000;
+        const int bytesPerSample = 2;
+        const int frameMs = 20;
+        const int frameBytes = sampleRate * bytesPerSample * frameMs / 1000;
+
+        await foreach (var samples in chunks.ReadAllAsync(cancellationToken))
+        {
+            Console.WriteLine($"Playing voice audio: {samples.Length} bytes");
+            for (var offset = 0; offset < samples.Length; offset += frameBytes)
+            {
+                var count = Math.Min(frameBytes, samples.Length - offset);
+                playback.AddSamples(samples, offset, count);
+                await Task.Delay(frameMs, cancellationToken);
+            }
+        }
     }
 
     private static Task SendJson(ClientWebSocket socket, object value, CancellationToken cancellationToken)
