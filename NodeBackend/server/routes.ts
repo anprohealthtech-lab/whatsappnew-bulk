@@ -1873,20 +1873,43 @@ export async function registerRoutes(app: Express): Promise<Server> {
         return;
       }
 
+      // Load the session owner's account once. Every service below must be
+      // enabled for THIS account, and the sender's record must be linked to
+      // it, before a phone-number match counts. Records registered under a
+      // different account must never trigger bots on this session.
+      let ownerFeatures: any = {};
+      let ownerRole: string | undefined;
+      let ownerOrganizationId: string | undefined;
+      try {
+        const ownerRow = await db.select().from(users).where(eq(users.id, ownerUserId)).limit(1);
+        ownerFeatures = (ownerRow[0]?.enabledFeatures as any) || {};
+        ownerRole = ownerRow[0]?.role;
+        ownerOrganizationId = ownerRow[0]?.organizationId;
+      } catch (e) {
+        console.error('⚠️ Failed to load session owner account for incoming message:', e);
+      }
+
       // ========================================
       // PRIORITY 1: Check if HR Admin
+      // Requires task management enabled for the session owner AND the HR
+      // admin record linked (whatsappUserId) to the receiving account.
       // ========================================
       const hrChatbotService = new HRChatbotService(storage, waSession);
-      const isHRAdmin = await withRetry(() => hrChatbotService.isHRAdmin(data.phoneNumber));
+      const hrEnabledForOwner = ownerRole === 'super_admin' || ownerFeatures.taskManagement === true;
+      let hrAdmin = hrEnabledForOwner
+        ? await withRetry(() => storage.getHRAdmin(data.phoneNumber))
+        : undefined;
 
-      if (isHRAdmin) {
+      if (hrAdmin && hrAdmin.whatsappUserId !== ownerUserId) {
+        console.log(`👔 Skipping HR admin record for ${data.phoneNumber}: linked to WhatsApp account ${hrAdmin.whatsappUserId || 'none'}, but message arrived on account ${ownerUserId}`);
+        hrAdmin = undefined;
+      }
+
+      if (hrAdmin) {
         console.log(`👔 HR Admin detected: ${data.phoneNumber} (messageType: ${data.messageType || 'text'})`);
+        console.log(`🔍 HR Chatbot status for ${data.phoneNumber}: ${hrAdmin.chatbotActive === 'false' ? 'PAUSED ⏸️' : 'ACTIVE ✅'}`);
 
-        // Check if HR chatbot is active for this admin
-        const hrAdmin = await withRetry(() => storage.getHRAdmin(data.phoneNumber));
-        console.log(`🔍 HR Chatbot status for ${data.phoneNumber}: ${hrAdmin?.chatbotActive === 'false' ? 'PAUSED ⏸️' : 'ACTIVE ✅'}`);
-
-        if (hrAdmin?.chatbotActive === 'false') {
+        if (hrAdmin.chatbotActive === 'false') {
           console.log(`⏸️ HR Chatbot paused for ${data.phoneNumber} - skipping`);
           broadcast('incoming-message', data);
           return;
@@ -1944,19 +1967,24 @@ export async function registerRoutes(app: Express): Promise<Server> {
 
       // ========================================
       // PRIORITY 1.5: Check if HIMS Patient
+      // Requires the OPD bot enabled for the session owner AND the patient's
+      // clinic to match the owner's configured clinic.
       // ========================================
       const himsChatbotService = new HIMSChatbotService(storage, waSession);
-      const isHIMSPatient = await withRetry(() => himsChatbotService.isHIMSPatient(data.phoneNumber));
+      let himsPatient = ownerFeatures.himsChatbot === true
+        ? await withRetry(() => storage.getHIMSPatient(data.phoneNumber))
+        : undefined;
 
-      if (isHIMSPatient) {
+      if (himsPatient && isUuid(himsPatient.organizationId) && himsPatient.organizationId !== ownerFeatures.himsClinicId) {
+        console.log(`🏥 Skipping HIMS patient record for ${data.phoneNumber}: clinic ${himsPatient.organizationId} does not match session owner's clinic ${ownerFeatures.himsClinicId || 'none'}`);
+        himsPatient = undefined;
+      }
+
+      if (himsPatient) {
         console.log(`🏥 HIMS Patient detected: ${data.phoneNumber} (messageType: ${data.messageType || 'text'})`);
+        console.log(`🔍 HIMS Chatbot status for ${data.phoneNumber}: ${himsPatient.chatbotActive === 'false' ? 'PAUSED ⏸️' : 'ACTIVE ✅'}`);
 
-        let himsPatient = await withRetry(() => storage.getHIMSPatient(data.phoneNumber));
-        console.log(`🔍 HIMS Chatbot status for ${data.phoneNumber}: ${himsPatient?.chatbotActive === 'false' ? 'PAUSED ⏸️' : 'ACTIVE ✅'}`);
-
-        if (himsPatient && !isUuid(himsPatient.organizationId)) {
-          const ownerRow = await db.select().from(users).where(eq(users.id, ownerUserId)).limit(1);
-          const ownerFeatures = (ownerRow[0]?.enabledFeatures as any) || {};
+        if (!isUuid(himsPatient.organizationId)) {
           const clinicId = ownerFeatures.himsClinicId;
           if (isUuid(clinicId)) {
             console.log(`Updating HIMS patient ${data.phoneNumber} clinic from invalid value "${himsPatient.organizationId}" to ${clinicId}`);
@@ -2028,12 +2056,9 @@ export async function registerRoutes(app: Express): Promise<Server> {
       // If the session owner has HIMS enabled and message matches HIMS keywords,
       // auto-register the sender as a HIMS patient and route to HIMS bot.
       // ========================================
-      if (!isHIMSPatient) {
+      if (!himsPatient) {
         try {
-          const ownerRow = await db.select().from(users).where(eq(users.id, ownerUserId)).limit(1);
-          const ownerFeatures = (ownerRow[0]?.enabledFeatures as any) || {};
-
-          if (ownerFeatures.himsChatbot) {
+          if (ownerFeatures.himsChatbot === true) {
             const himsKeywords = Array.isArray(ownerFeatures.himsTriggerKeywords) && ownerFeatures.himsTriggerKeywords.length > 0
               ? ownerFeatures.himsTriggerKeywords
               : ['appointment', 'book', 'doctor', 'slot', 'opd', 'schedule', 'cancel appointment'];
@@ -2094,13 +2119,8 @@ export async function registerRoutes(app: Express): Promise<Server> {
 
       // Resolve the session owner's tenant context for per-user config
       let tenantContext: TenantContext | undefined;
-      try {
-        const ownerUser = await db.select().from(users).where(eq(users.id, ownerUserId)).limit(1);
-        if (ownerUser[0]) {
-          tenantContext = { organizationId: ownerUser[0].organizationId, userId: ownerUser[0].id };
-        }
-      } catch (e) {
-        console.error('⚠️ Failed to resolve tenant context for incoming message:', e);
+      if (ownerOrganizationId) {
+        tenantContext = { organizationId: ownerOrganizationId, userId: ownerUserId };
       }
       tenantContext = tenantContext || scopedTenant;
 
