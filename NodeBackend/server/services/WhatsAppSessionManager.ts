@@ -1102,14 +1102,14 @@ class ManagedBaileysSession extends EventEmitter implements WAServiceInstance {
     const fromValue = from || '';
     const senderDigits = (senderPn || '').replace(/\D/g, '');
 
-    if (senderDigits.length >= 10) {
-      if (fromValue.endsWith('@lid')) {
-        return `${this.formatPhoneNumber(senderDigits)}@s.whatsapp.net`;
-      }
+    // LID-migrated contacts silently drop messages sent to their phone-number
+    // JID, so replies must go back to the same @lid identity they arrived from.
+    if (fromValue.endsWith('@lid')) {
+      return fromValue;
+    }
 
-      if (!fromValue || !fromValue.includes('@')) {
-        return `${this.formatPhoneNumber(senderDigits)}@s.whatsapp.net`;
-      }
+    if (senderDigits.length >= 10 && (!fromValue || !fromValue.includes('@'))) {
+      return `${this.formatPhoneNumber(senderDigits)}@s.whatsapp.net`;
     }
 
     return fromValue || null;
