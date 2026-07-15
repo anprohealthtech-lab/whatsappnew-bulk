@@ -25,7 +25,6 @@ class VariationService {
   private supabaseUrl: string;
   private supabaseAnonKey: string;
   private edgeFunctionUrl: string;
-  private generationQueue: Map<string, Promise<VariationResponse>> = new Map();
 
   constructor() {
     this.supabaseUrl = process.env.VITE_SUPABASE_URL || "";
@@ -101,64 +100,55 @@ class VariationService {
   }
 
   /**
-   * Generate variations in parallel for multiple contacts
-   * Useful for batch processing with rate limiting
+   * Generate a pool of variations in a single edge-function call
+   * (one Gemini request produces all of them).
+   * Returns an empty array on failure so callers can fall back to the original message.
    */
-  async generateBatch(
-    requests: VariationRequest[],
-    delayMs: number = 1000
-  ): Promise<VariationResponse[]> {
-    const results: VariationResponse[] = [];
-
-    log(`📦 Generating ${requests.length} variations with ${delayMs}ms delay between each...`);
-
-    for (let i = 0; i < requests.length; i++) {
-      const request = requests[i];
-      
-      // Generate variation
-      const result = await this.generateVariation(request);
-      results.push(result);
-
-      // Add delay between requests (except for last one)
-      if (i < requests.length - 1 && delayMs > 0) {
-        await this.delay(delayMs);
-      }
-    }
-
-    const successCount = results.filter(r => r.success).length;
-    log(`✅ Batch complete: ${successCount}/${requests.length} successful`);
-
-    return results;
-  }
-
-  /**
-   * Pre-warm: Generate a few variations in advance
-   * Useful to have some variations ready before starting bulk send
-   */
-  async prewarmVariations(
+  async generateVariationPool(
     campaignId: string,
     message: string,
     fixedParams: Record<string, any>,
-    count: number = 3
-  ): Promise<number> {
-    log(`🔥 Pre-warming ${count} variations for campaign ${campaignId}...`);
+    count: number
+  ): Promise<string[]> {
+    log(`📦 Generating pool of ${count} variations for campaign ${campaignId}...`);
 
-    const requests: VariationRequest[] = Array.from({ length: count }, (_, i) => ({
-      campaignId,
-      message,
-      fixedParams,
-      contactPhone: `prewarm-${i + 1}`
-    }));
+    try {
+      const response = await fetch(this.edgeFunctionUrl, {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+          "Authorization": `Bearer ${this.supabaseAnonKey}`,
+          "apikey": this.supabaseAnonKey
+        },
+        body: JSON.stringify({
+          campaign_id: campaignId,
+          message: message,
+          fixed_params: fixedParams || {},
+          count: count
+        })
+      });
 
-    const results = await this.generateBatch(requests, 500);
-    const successCount = results.filter(r => r.success).length;
+      if (!response.ok) {
+        const errorText = await response.text();
+        throw new Error(`Edge function failed: ${response.status} - ${errorText}`);
+      }
 
-    log(`✅ Pre-warm complete: ${successCount}/${count} variations ready`);
-    return successCount;
-  }
+      const data = await response.json();
 
-  private delay(ms: number): Promise<void> {
-    return new Promise(resolve => setTimeout(resolve, ms));
+      if (!data.success || !Array.isArray(data.variations)) {
+        throw new Error(data.error || "Edge function did not return variations");
+      }
+
+      const variations = data.variations
+        .filter((v: unknown) => typeof v === "string" && v.trim() !== "");
+
+      log(`✅ Pool ready: ${variations.length}/${count} variations`);
+      return variations;
+
+    } catch (error: any) {
+      log(`❌ Error generating variation pool: ${error.message}`);
+      return [];
+    }
   }
 }
 

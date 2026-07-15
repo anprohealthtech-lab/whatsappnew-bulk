@@ -917,14 +917,20 @@ export class CampaignService {
     log(`📎 Attachment path: ${campaign.attachmentPath || 'None'}`);
     log(`🔧 Fixed params: ${JSON.stringify(campaign.fixedParams)}`);
 
-    // Pre-warm 3 variations to have ready immediately
-    log(`🔥 Pre-warming first 3 variations...`);
-    await variationService.prewarmVariations(
+    // Generate a pool of variations up-front (single AI call) and rotate through it,
+    // instead of one AI call per contact
+    const poolSize = Math.min(10, contacts.length);
+    log(`🔥 Generating variation pool of ${poolSize}...`);
+    let variationPool = await variationService.generateVariationPool(
       campaignId,
       baseMessage,
       campaign.fixedParams || {},
-      3
+      poolSize
     );
+    if (variationPool.length === 0) {
+      log(`⚠️ Variation pool generation failed - sending with original message`);
+      variationPool = [baseMessage];
+    }
 
     let sent = 0;
     let failed = 0;
@@ -991,23 +997,27 @@ export class CampaignService {
 
         log(`\n[${contactNum}/${contacts.length}] Processing: ${contact.name} (${contact.phone})`);
 
-        // Generate unique variation for this contact
-        log(`  ↪ Generating unique variation #${contactNum}...`);
-        const variationResult = await variationService.generateVariation({
-          campaignId,
-          message: baseMessage,
-          fixedParams: campaign.fixedParams || {},
-          contactPhone: contact.phone
-        });
-
-        if (!variationResult.success || !variationResult.tweakedMessage) {
-          throw new Error(`Variation generation failed: ${variationResult.error || 'Empty message'}`);
+        // Refresh the pool periodically on large lists for extra diversity
+        if (i > 0 && i % 100 === 0) {
+          log(`  ↪ Refreshing variation pool at contact #${contactNum}...`);
+          const refreshedPool = await variationService.generateVariationPool(
+            campaignId,
+            baseMessage,
+            campaign.fixedParams || {},
+            poolSize
+          );
+          if (refreshedPool.length > 0) {
+            variationPool = refreshedPool;
+          }
         }
 
-        log(`  ✓ Variation #${variationResult.variationNumber} generated (${variationResult.tweakedMessage.length} chars)`);
+        // Rotate through the pre-generated pool
+        const poolIndex = i % variationPool.length;
+        const pooledMessage = variationPool[poolIndex];
+        log(`  ✓ Using variation ${poolIndex + 1}/${variationPool.length} (${pooledMessage.length} chars)`);
 
         // Personalize message by replacing placeholders
-        let personalizedMessage = variationResult.tweakedMessage
+        let personalizedMessage = pooledMessage
           .replace(/\{\{name\}\}/g, contact.name)
           .replace(/\{\{phone\}\}/g, contact.phone);
 

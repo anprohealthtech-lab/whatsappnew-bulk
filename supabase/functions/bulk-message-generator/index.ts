@@ -1,5 +1,6 @@
 // supabase/functions/bulk-message-generator/index.ts
-// Updated with comprehensive logging and on-demand variation generation
+// Generates message variations in batch: one Gemini call produces `count` variations.
+// Backward compatible: single-variation callers get `tweaked_message` as before.
 
 import { serve } from "https://deno.land/std@0.224.0/http/server.ts";
 import { createClient } from "https://esm.sh/@supabase/supabase-js@2";
@@ -11,6 +12,7 @@ const CORS_HEADERS = {
 };
 
 const MAX_VARIATIONS_FOR_PROMPT = 20;
+const MAX_BATCH_COUNT = 20;
 
 serve(async (req) => {
   // Handle CORS preflight
@@ -34,12 +36,12 @@ serve(async (req) => {
   try {
     // 1) Parse input
     const body = await req.json().catch(() => ({}));
-    console.log(`[${requestId}] Request body:`, JSON.stringify(body, null, 2));
 
     const originalMessage = body.message ?? "";
     const campaignId = body.campaign_id ?? "";
     const fixedParamsRaw = body.fixed_params ?? null;
     const contactPhone = body.contact_phone ?? ""; // Optional: for tracking which contact
+    const count = Math.min(Math.max(Number(body.count) || 1, 1), MAX_BATCH_COUNT);
 
     if (!originalMessage || !campaignId) {
       console.error(`[${requestId}] Missing required fields - message: ${!!originalMessage}, campaign_id: ${!!campaignId}`);
@@ -54,7 +56,7 @@ serve(async (req) => {
 
     console.log(`[${requestId}] Campaign ID: ${campaignId}`);
     console.log(`[${requestId}] Original message length: ${originalMessage.length} chars`);
-    console.log(`[${requestId}] Contact phone: ${contactPhone || 'not provided'}`);
+    console.log(`[${requestId}] Requested count: ${count}`);
 
     // Parse fixed_params
     let fixedParams = {};
@@ -62,14 +64,12 @@ serve(async (req) => {
       if (typeof fixedParamsRaw === "string") {
         try {
           fixedParams = JSON.parse(fixedParamsRaw);
-          console.log(`[${requestId}] Parsed fixed_params from string:`, fixedParams);
         } catch (e) {
-          console.warn(`[${requestId}] Failed to parse fixed_params string:`, e.message);
+          console.warn(`[${requestId}] Failed to parse fixed_params string:`, e instanceof Error ? e.message : String(e));
           fixedParams = {};
         }
       } else if (typeof fixedParamsRaw === "object") {
         fixedParams = fixedParamsRaw;
-        console.log(`[${requestId}] Fixed params from object:`, fixedParams);
       }
     }
 
@@ -88,11 +88,9 @@ serve(async (req) => {
       });
     }
 
-    console.log(`[${requestId}] Supabase URL: ${supabaseUrl}`);
     const supabase = createClient(supabaseUrl, supabaseServiceRoleKey);
 
     // 3) Fetch previous variations
-    console.log(`[${requestId}] Fetching previous variations for campaign...`);
     const { data: rows, error: fetchError } = await supabase
       .from("message_variations")
       .select("message, created_at, variation_number")
@@ -101,36 +99,32 @@ serve(async (req) => {
 
     if (fetchError) {
       console.error(`[${requestId}] Error fetching variations:`, fetchError);
-    } else {
-      console.log(`[${requestId}] Found ${rows?.length || 0} previous variations`);
     }
 
-    let previousVariations = [];
+    let previousVariations: string[] = [];
     if (Array.isArray(rows)) {
       previousVariations = rows
         .map((r) => r.message || "")
         .filter((m) => m && m.trim() !== "");
-      console.log(`[${requestId}] Valid variations: ${previousVariations.length}`);
     }
 
     const totalVariations = previousVariations.length;
-    const variationCount = totalVariations + 1;
+    const firstVariationNumber = totalVariations + 1;
+    console.log(`[${requestId}] Found ${totalVariations} previous variations`);
 
     if (previousVariations.length > MAX_VARIATIONS_FOR_PROMPT) {
       previousVariations = previousVariations.slice(-MAX_VARIATIONS_FOR_PROMPT);
-      console.log(`[${requestId}] Truncated to last ${MAX_VARIATIONS_FOR_PROMPT} variations for prompt`);
     }
 
     const variationsText = previousVariations.length
       ? previousVariations.map((v, idx) => `VARIATION ${idx + 1}: ${v}`).join("\n\n")
-      : "(None - this is the very first variation for this campaign)";
+      : "(None - these are the very first variations for this campaign)";
 
     let fixedParamsText = "";
     if (fixedParams && Object.keys(fixedParams).length > 0) {
       fixedParamsText = Object.entries(fixedParams)
         .map(([key, value]) => `  • ${key}: ${String(value)}`)
         .join("\n");
-      console.log(`[${requestId}] Fixed params formatted for prompt`);
     }
 
     // 4) Build the prompt
@@ -139,29 +133,30 @@ serve(async (req) => {
 ORIGINAL MESSAGE:
 "${originalMessage}"
 
-${fixedParamsText ? `MANDATORY FIXED DETAILS (MUST appear EXACTLY as shown):
+${fixedParamsText ? `MANDATORY FIXED DETAILS (MUST appear EXACTLY as shown in every variation):
 ${fixedParamsText}
 
-` : ""}PREVIOUSLY GENERATED VARIATIONS (You MUST create something COMPLETELY DIFFERENT):
+` : ""}PREVIOUSLY GENERATED VARIATIONS (Every new variation MUST be COMPLETELY DIFFERENT from these):
 ${variationsText}
 
 YOUR TASK:
-Generate a BRAND NEW variation #${variationCount} that:
+Generate ${count} BRAND NEW variation${count > 1 ? "s" : ""} where each one:
 
-1. ✅ MUST be COMPLETELY DIFFERENT from the original and ALL ${previousVariations.length} previous variations above
-2. ✅ Use DIFFERENT sentence structures, word choices, and phrasing
-3. ✅ Start with a DIFFERENT opening line
-4. ✅ Rearrange the order of information
-5. ✅ ${fixedParamsText ? "Keep the fixed details (date, time, link, numbers) EXACTLY as provided" : "Maintain all key information"}
-6. ✅ Sound natural and conversational
-7. ✅ Same approximate length as original
+1. ✅ MUST be COMPLETELY DIFFERENT from the original, from ALL ${previousVariations.length} previous variations above${count > 1 ? ", AND from every other variation you generate now" : ""}
+2. ✅ Uses DIFFERENT sentence structures, word choices, and phrasing
+3. ✅ Starts with a DIFFERENT opening line
+4. ✅ Rearranges the order of information
+5. ✅ ${fixedParamsText ? "Keeps the fixed details (date, time, link, numbers) EXACTLY as provided" : "Maintains all key information"}
+6. ✅ Keeps any {{placeholder}} tokens (like {{name}}) EXACTLY as written
+7. ✅ Sounds natural and conversational
+8. ✅ Has approximately the same length as the original
 
-CRITICAL: If you generate anything similar to the previous variations, you have FAILED. Be creative and unique!
+CRITICAL: If any two messages read similar, you have FAILED. Be creative and unique!
 
-Generate ONLY the message text. No explanations, no quotes, no preamble - just the message itself.`;
+Return ONLY a JSON array of ${count} strings - each string is one complete message variation. No explanations, no preamble.`;
 
     console.log(`[${requestId}] Prompt built - length: ${prompt.length} chars`);
-    console.log(`[${requestId}] Generating variation #${variationCount}...`);
+    console.log(`[${requestId}] Generating ${count} variation(s) starting at #${firstVariationNumber}...`);
 
     // 5) Call Gemini 2.5 Flash
     const googleKey = Deno.env.get("ALLGOOGLE_KEY");
@@ -177,7 +172,6 @@ Generate ONLY the message text. No explanations, no quotes, no preamble - just t
     }
 
     const geminiUrl = `https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash:generateContent?key=${googleKey}`;
-    console.log(`[${requestId}] Calling Gemini API...`);
 
     const geminiRes = await fetch(geminiUrl, {
       method: "POST",
@@ -191,9 +185,17 @@ Generate ONLY the message text. No explanations, no quotes, no preamble - just t
         ],
         generationConfig: {
           temperature: 0.9, // Higher temperature for more variation
-          maxOutputTokens: 1024,
+          maxOutputTokens: 8192,
           topP: 0.95,
-          topK: 40
+          topK: 40,
+          // Gemini 2.5 Flash thinks by default and thinking tokens count
+          // against maxOutputTokens - disable so output is never starved
+          thinkingConfig: { thinkingBudget: 0 },
+          responseMimeType: "application/json",
+          responseSchema: {
+            type: "ARRAY",
+            items: { type: "STRING" }
+          }
         }
       })
     });
@@ -214,76 +216,54 @@ Generate ONLY the message text. No explanations, no quotes, no preamble - just t
     }
 
     const geminiJson = await geminiRes.json();
-    console.log(`[${requestId}] Gemini full response:`, JSON.stringify(geminiJson, null, 2));
+    const finishReason = geminiJson.candidates?.[0]?.finishReason;
+    console.log(`[${requestId}] Gemini finishReason: ${finishReason}`);
 
-    // Extract text from Gemini response
-    let tweakedMessage = "";
+    // Extract the JSON array of variations from the response
+    let variations: string[] = [];
     try {
-      const candidate = geminiJson.candidates?.[0];
-      console.log(`[${requestId}] Candidate object:`, JSON.stringify(candidate, null, 2));
+      const parts = geminiJson.candidates?.[0]?.content?.parts ?? [];
+      const rawText = parts
+        .map((p: any) => p.text)
+        .filter((t: any) => typeof t === "string" && t.trim() !== "")
+        .join("")
+        .trim();
 
-      if (!candidate) {
-        console.error(`[${requestId}] No candidates in Gemini response`);
-        throw new Error("No candidates in response");
+      console.log(`[${requestId}] Raw response length: ${rawText.length} chars`);
+
+      const parsed = JSON.parse(rawText);
+      if (Array.isArray(parsed)) {
+        variations = parsed
+          .filter((v: any) => typeof v === "string" && v.trim() !== "")
+          .map((v: string) => v.trim());
       }
-
-      const content = candidate.content;
-      console.log(`[${requestId}] Content object:`, JSON.stringify(content, null, 2));
-
-      const parts = content?.parts ?? [];
-      console.log(`[${requestId}] Parts array length: ${parts.length}`);
-
-      if (parts.length === 0) {
-        console.error(`[${requestId}] No parts in content`);
-        throw new Error("No parts in content");
-      }
-
-      // Extract text from all parts
-      const textParts = parts
-        .map((p, idx) => {
-          console.log(`[${requestId}] Part ${idx}:`, JSON.stringify(p, null, 2));
-          return p.text;
-        })
-        .filter((t) => {
-          const isValid = typeof t === "string" && t.trim() !== "";
-          console.log(`[${requestId}] Text part valid: ${isValid}, length: ${t?.length || 0}`);
-          return isValid;
-        });
-
-      console.log(`[${requestId}] Valid text parts: ${textParts.length}`);
-      tweakedMessage = textParts.join(" ").trim();
-      console.log(`[${requestId}] Final tweaked message length: ${tweakedMessage.length} chars`);
-      console.log(`[${requestId}] First 100 chars: ${tweakedMessage.substring(0, 100)}...`);
-
     } catch (e) {
-      console.error(`[${requestId}] Error parsing Gemini response:`, e.message);
-      console.error(`[${requestId}] Stack:`, e.stack);
-      tweakedMessage = "";
+      console.error(`[${requestId}] Error parsing Gemini response:`, e instanceof Error ? e.message : String(e));
+      variations = [];
     }
 
-    if (!tweakedMessage || tweakedMessage.length === 0) {
-      console.error(`[${requestId}] WARNING: Empty tweaked message after parsing!`);
+    console.log(`[${requestId}] Parsed ${variations.length}/${count} variations`);
+
+    if (variations.length === 0) {
+      console.error(`[${requestId}] WARNING: No variations after parsing! finishReason: ${finishReason}`);
       return new Response(JSON.stringify({
         success: false,
         error: "Generated message is empty",
-        variation_number: variationCount,
-        gemini_response: geminiJson
+        finish_reason: finishReason ?? null
       }), {
         status: 500,
         headers: { ...CORS_HEADERS, "Content-Type": "application/json" }
       });
     }
 
-    // 6) Save new variation into DB
-    const insertPayload = {
+    // 6) Save new variations into DB
+    const insertPayload = variations.map((message, idx) => ({
       campaign_id: campaignId,
-      message: tweakedMessage,
+      message,
       original_message: originalMessage,
-      variation_number: variationCount,
+      variation_number: firstVariationNumber + idx,
       fixed_params: Object.keys(fixedParams).length ? fixedParams : null
-    };
-
-    console.log(`[${requestId}] Inserting variation into DB:`, insertPayload);
+    }));
 
     const { error: insertError } = await supabase
       .from("message_variations")
@@ -293,8 +273,9 @@ Generate ONLY the message text. No explanations, no quotes, no preamble - just t
       console.error(`[${requestId}] DB insert error:`, insertError);
       return new Response(JSON.stringify({
         success: false,
-        tweaked_message: tweakedMessage,
-        variation_number: variationCount,
+        tweaked_message: variations[0],
+        variations,
+        variation_number: firstVariationNumber,
         campaign_id: campaignId,
         original_message: originalMessage,
         db_error: insertError.message
@@ -304,13 +285,14 @@ Generate ONLY the message text. No explanations, no quotes, no preamble - just t
       });
     }
 
-    console.log(`[${requestId}] ✅ SUCCESS - Variation #${variationCount} created and saved`);
+    console.log(`[${requestId}] ✅ SUCCESS - ${variations.length} variation(s) created starting at #${firstVariationNumber}`);
 
-    // 7) Return success
+    // 7) Return success (tweaked_message kept for single-variation callers)
     return new Response(JSON.stringify({
       success: true,
-      tweaked_message: tweakedMessage,
-      variation_number: variationCount,
+      tweaked_message: variations[0],
+      variations,
+      variation_number: firstVariationNumber,
       campaign_id: campaignId,
       original_message: originalMessage,
       contact_phone: contactPhone
@@ -320,12 +302,15 @@ Generate ONLY the message text. No explanations, no quotes, no preamble - just t
     });
 
   } catch (err) {
-    console.error(`[${requestId}] ❌ UNHANDLED ERROR:`, err.message);
-    console.error(`[${requestId}] Stack:`, err.stack);
+    const message = err instanceof Error ? err.message : String(err);
+    console.error(`[${requestId}] ❌ UNHANDLED ERROR:`, message);
+    if (err instanceof Error) {
+      console.error(`[${requestId}] Stack:`, err.stack);
+    }
     return new Response(JSON.stringify({
       success: false,
       error: "Internal server error",
-      details: err.message
+      details: message
     }), {
       status: 500,
       headers: { ...CORS_HEADERS, "Content-Type": "application/json" }
