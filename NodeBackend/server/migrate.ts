@@ -251,6 +251,15 @@ export async function runMigrations(): Promise<void> {
         "updated_at" timestamp DEFAULT now()
       );
 
+      -- Existing databases may have pre-tenant tables. Add these before any
+      -- tenant indexes are created so the whole migration batch can continue.
+      ALTER TABLE "campaigns" ADD COLUMN IF NOT EXISTS "organization_id" text DEFAULT 'default_org' NOT NULL;
+      ALTER TABLE "campaigns" ADD COLUMN IF NOT EXISTS "user_id" text DEFAULT 'default_user' NOT NULL;
+      ALTER TABLE "campaign_schedules" ADD COLUMN IF NOT EXISTS "organization_id" text DEFAULT 'default_org' NOT NULL;
+      ALTER TABLE "campaign_schedules" ADD COLUMN IF NOT EXISTS "user_id" text DEFAULT 'default_user' NOT NULL;
+      ALTER TABLE "user_rag_agents" ADD COLUMN IF NOT EXISTS "organization_id" text NOT NULL DEFAULT 'default_org';
+      ALTER TABLE "user_rag_agents" ADD COLUMN IF NOT EXISTS "user_id" text NOT NULL DEFAULT 'default_user';
+
       CREATE INDEX IF NOT EXISTS idx_demo_schedules_demo_at
         ON demo_schedules(demo_at)
         WHERE remind_5_sent_at IS NULL;

@@ -29,6 +29,7 @@ import { requireAuth, optionalAuth, getTenant, requireSuperAdmin } from "./authM
 import { sessionManager } from "./services/WhatsAppSessionManager";
 import { users, messages as messagesTable, chatbotConfigs, contacts as contactsTable, campaigns as campaignsTable, dataPatients, dataCaseBatches, dataDocuments, dataGeneralRecords, dataPatientEvents, voiceAgents } from "@shared/schema";
 import { sendNotificationForEvent } from "./services/UserNotificationService";
+import { registerExternalApiRoutes } from "./externalApiRoutes";
 
 // Configure CORS
 const corsOptions = {
@@ -642,6 +643,9 @@ function buildVoiceSystemPrompt(basePrompt?: string | null, languageMode?: strin
 export async function registerRoutes(app: Express): Promise<Server> {
   // Apply CORS middleware
   app.use(cors(corsOptions));
+
+  // External machine-to-machine API (x-api-key, acts on behalf of registered users)
+  registerExternalApiRoutes(app);
 
   // ============================================================
   // AUTH ROUTES (public — no middleware)
