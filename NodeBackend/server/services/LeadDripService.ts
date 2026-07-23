@@ -52,12 +52,15 @@ export class LeadDripService {
         "output ONLY a JSON array (no prose, no markdown fences). Each item is " +
         `{"delay":"<duration>","message":"<text>"}. delay uses compact units m/h/d/w ` +
         `(e.g. "5m","3h","1d") measured from when the lead is received. Use the placeholder ` +
-        `{{name}} where the lead's name should appear. Keep messages short and WhatsApp-appropriate. ` +
+        `{{name}} where the lead's name should appear. ` +
+        `Write natural, engaging WhatsApp messages and FOLLOW THE USER'S INSTRUCTIONS for tone, ` +
+        `length and detail — if they ask for detailed or longer messages, write full multi-line ` +
+        `messages; only keep them short if the instructions imply that. Do not artificially shorten. ` +
         `Return at most ${MAX_MESSAGES} messages, ordered earliest first.`;
 
       const resp = await anthropic.messages.create({
         model: MODEL,
-        max_tokens: 2048,
+        max_tokens: 4096,
         system,
         messages: [{ role: "user", content: dripPrompt }],
       });
