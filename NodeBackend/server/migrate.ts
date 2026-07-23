@@ -853,6 +853,56 @@ export async function runMigrations(): Promise<void> {
       ALTER TABLE "contacts" ADD COLUMN IF NOT EXISTS "lead_score" integer DEFAULT 0;
       CREATE INDEX IF NOT EXISTS "idx_contacts_lead_stage"
         ON "contacts" ("organization_id", "user_id", "lead_stage");
+
+      -- 0014: Intake mode + bot-scheduled follow-ups
+      ALTER TABLE "user_rag_agents" ADD COLUMN IF NOT EXISTS "intake_mode" text DEFAULT 'false' NOT NULL;
+      ALTER TABLE "user_rag_agents" ADD COLUMN IF NOT EXISTS "followups_enabled" text DEFAULT 'false' NOT NULL;
+
+      CREATE TABLE IF NOT EXISTS "lead_followups" (
+        "id" varchar PRIMARY KEY DEFAULT gen_random_uuid() NOT NULL,
+        "organization_id" text DEFAULT 'default_org' NOT NULL,
+        "user_id" text DEFAULT 'default_user' NOT NULL,
+        "phone_number" text NOT NULL,
+        "message" text NOT NULL,
+        "status" text DEFAULT 'scheduled' NOT NULL,
+        "scheduled_at" timestamp NOT NULL,
+        "sent_at" timestamp,
+        "error_reason" text,
+        "created_at" timestamp DEFAULT now(),
+        "updated_at" timestamp DEFAULT now()
+      );
+      CREATE INDEX IF NOT EXISTS "idx_lead_followups_due"
+        ON "lead_followups" ("status", "scheduled_at");
+      CREATE INDEX IF NOT EXISTS "idx_lead_followups_tenant"
+        ON "lead_followups" ("organization_id", "user_id", "phone_number");
+
+      -- 0015: Named lead pipelines (Google Sheet -> Apps Script webhook ingest)
+      CREATE TABLE IF NOT EXISTS "lead_pipelines" (
+        "id" varchar PRIMARY KEY DEFAULT gen_random_uuid() NOT NULL,
+        "organization_id" text DEFAULT 'default_org' NOT NULL,
+        "user_id" text DEFAULT 'default_user' NOT NULL,
+        "name" text NOT NULL,
+        "rag_agent_id" varchar,
+        "ingest_token" text NOT NULL,
+        "is_active" text DEFAULT 'true' NOT NULL,
+        "created_at" timestamp DEFAULT now(),
+        "updated_at" timestamp DEFAULT now()
+      );
+      CREATE UNIQUE INDEX IF NOT EXISTS "idx_lead_pipelines_token"
+        ON "lead_pipelines" ("ingest_token");
+      CREATE INDEX IF NOT EXISTS "idx_lead_pipelines_tenant"
+        ON "lead_pipelines" ("organization_id", "user_id");
+
+      ALTER TABLE "contacts" ADD COLUMN IF NOT EXISTS "pipeline_id" varchar;
+
+      -- 0016: Per-pipeline drip sequence (LLM-generated, scheduled on new lead)
+      ALTER TABLE "lead_pipelines" ADD COLUMN IF NOT EXISTS "drip_enabled" text DEFAULT 'false' NOT NULL;
+      ALTER TABLE "lead_pipelines" ADD COLUMN IF NOT EXISTS "drip_prompt" text;
+      ALTER TABLE "lead_pipelines" ADD COLUMN IF NOT EXISTS "drip_template" jsonb;
+
+      -- 0017: Lead bot generates its own sequence from its system prompt
+      ALTER TABLE "user_rag_agents" ADD COLUMN IF NOT EXISTS "auto_sequence_enabled" text DEFAULT 'false' NOT NULL;
+      ALTER TABLE "user_rag_agents" ADD COLUMN IF NOT EXISTS "sequence_template" jsonb;
     `);
 
     log('✅ Database migrations completed — all tables ready');

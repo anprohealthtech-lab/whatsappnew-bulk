@@ -17,7 +17,7 @@ import { HRChatbotService } from "./services/HRChatbotService";
 import { HIMSChatbotService } from "./services/HIMSChatbotService";
 import { DataManagementAgentService } from "./services/DataManagementAgentService";
 import { voiceTenantService } from "./services/VoiceTenantService";
-import { sendMessageSchema, sendReportSchema, createCampaignSchema, bulkSendSchema, chatbotConfigSchema, flagLeadSchema, registerHRAdminSchema, hrChatbotConfigSchema, demoSchedules, scheduleCampaignSchema, userRagAgentSchema, userRagAgents, userNotificationRecipientSchema, userNotificationRecipients, registerSchema, loginSchema, registerHIMSPatientSchema } from "@shared/schema";
+import { sendMessageSchema, sendReportSchema, createCampaignSchema, bulkSendSchema, chatbotConfigSchema, flagLeadSchema, registerHRAdminSchema, hrChatbotConfigSchema, demoSchedules, scheduleCampaignSchema, userRagAgentSchema, userRagAgents, userNotificationRecipientSchema, userNotificationRecipients, registerSchema, loginSchema, registerHIMSPatientSchema, leadPipelineSchema, leadPipelines } from "@shared/schema";
 import { log } from "./utils";
 import { getDbHealth, db } from "./db";
 import { sql as drizzleSql, eq, and, desc } from "drizzle-orm";
@@ -27,7 +27,10 @@ import * as XLSX from 'xlsx';
 import { authService } from "./services/AuthService";
 import { requireAuth, optionalAuth, getTenant, requireSuperAdmin } from "./authMiddleware";
 import { sessionManager } from "./services/WhatsAppSessionManager";
-import { users, messages as messagesTable, chatbotConfigs, contacts as contactsTable, campaigns as campaignsTable, dataPatients, dataCaseBatches, dataDocuments, dataGeneralRecords, dataPatientEvents, voiceAgents } from "@shared/schema";
+import { normalizeExternalPhone } from "./services/ExternalBulkSendService";
+import { leadDripService } from "./services/LeadDripService";
+import { randomUUID } from "crypto";
+import { users, messages as messagesTable, chatbotConfigs, contacts as contactsTable, campaigns as campaignsTable, dataPatients, dataCaseBatches, dataDocuments, dataGeneralRecords, dataPatientEvents, voiceAgents, leadFollowups } from "@shared/schema";
 import { sendNotificationForEvent } from "./services/UserNotificationService";
 import { registerExternalApiRoutes } from "./externalApiRoutes";
 
@@ -2150,6 +2153,24 @@ export async function registerRoutes(app: Express): Promise<Server> {
           broadcast('incoming-message', data);
           return;
         }
+
+        // Intake mode: no keyword matched, but this bot flow engages ANY inbound
+        // message. Flag the sender as a lead WITHOUT the canned greeting, then let
+        // the isLead block below answer their actual first message through RAG.
+        const messageType = data.messageType || 'text';
+        const hasEngageableContent = (data.content && data.content.trim().length > 0)
+          || messageType === 'voice_note' || messageType === 'audio';
+        if (hasEngageableContent && await chatbotService.isIntakeEnabled()) {
+          console.log(`🟢 Intake mode: engaging non-lead ${data.phoneNumber} via RAG`);
+          await withRetry(() => chatbotService.flagAsLead(
+            data.phoneNumber,
+            'intake',
+            undefined,
+            data.replyTo || data.from,
+            { skipGreeting: true }
+          ));
+          // fall through — the isLead check below now reads true and RAG-answers
+        }
       }
 
       // Check if this phone number is a lead
@@ -3227,10 +3248,27 @@ export async function registerRoutes(app: Express): Promise<Server> {
       const validated = userRagAgentSchema.parse(req.body);
       const tenant = getTenantFromRequest(req);
 
+      // Lead automation (intake mode + bot follow-ups) is a super-admin-gated
+      // capability. A user may only enable it if their account has it granted.
+      const owner = await authService.getUser(req.auth!.userId);
+      const leadAutomationAllowed = owner?.role === 'super_admin'
+        || (owner?.enabledFeatures as any)?.leadAutomation === true;
+      const intakeMode = leadAutomationAllowed && validated.intakeMode === true ? 'true' : 'false';
+      const followupsEnabled = leadAutomationAllowed && validated.followupsEnabled === true ? 'true' : 'false';
+
       const existing = await db.select().from(userRagAgents).where(and(
         eq(userRagAgents.organizationId, tenant.organizationId),
         eq(userRagAgents.userId, tenant.userId)
       )).orderBy(desc(userRagAgents.updatedAt)).limit(1);
+
+      // Auto-sequence: the bot turns its own system prompt into a timed sequence.
+      // Generate (once) whenever it's enabled and we have a prompt to work from.
+      const autoSequenceEnabled = leadAutomationAllowed && validated.autoSequenceEnabled === true ? 'true' : 'false';
+      const effectiveSystemPrompt = validated.systemPrompt ?? existing[0]?.systemPrompt ?? null;
+      let sequenceTemplate: any = existing[0]?.sequenceTemplate ?? null;
+      if (autoSequenceEnabled === 'true' && effectiveSystemPrompt) {
+        sequenceTemplate = await leadDripService.generateTemplate(effectiveSystemPrompt);
+      }
 
       let data;
       if (existing[0]) {
@@ -3244,6 +3282,10 @@ export async function registerRoutes(app: Express): Promise<Server> {
           contextMessageCount: validated.contextMessageCount ?? null,
           replyCooldownSeconds: validated.replyCooldownSeconds ?? null,
           typingDelayMs: validated.typingDelayMs ?? null,
+          intakeMode,
+          followupsEnabled,
+          autoSequenceEnabled,
+          sequenceTemplate,
           isActive: validated.isActive === false ? 'false' : 'true',
           updatedAt: new Date(),
         }).where(eq(userRagAgents.id, existing[0].id)).returning();
@@ -3261,6 +3303,10 @@ export async function registerRoutes(app: Express): Promise<Server> {
           contextMessageCount: validated.contextMessageCount ?? null,
           replyCooldownSeconds: validated.replyCooldownSeconds ?? null,
           typingDelayMs: validated.typingDelayMs ?? null,
+          intakeMode,
+          followupsEnabled,
+          autoSequenceEnabled,
+          sequenceTemplate,
           isActive: validated.isActive === false ? 'false' : 'true',
         }).returning();
         data = created;
@@ -3324,6 +3370,303 @@ export async function registerRoutes(app: Express): Promise<Server> {
     } catch (error) {
       const errorMessage = error instanceof Error ? error.message : 'Unknown error';
       res.status(500).json({ success: false, error: errorMessage });
+    }
+  });
+
+  // List bot-scheduled follow-ups for the current tenant (newest first).
+  app.get('/api/lead-followups', requireAuth, async (req, res) => {
+    try {
+      const tenant = getTenantFromRequest(req);
+      const rows = await db.select().from(leadFollowups).where(and(
+        eq(leadFollowups.organizationId, tenant.organizationId),
+        eq(leadFollowups.userId, tenant.userId)
+      )).orderBy(desc(leadFollowups.scheduledAt)).limit(50);
+      res.json({ success: true, data: rows });
+    } catch (error) {
+      const errorMessage = error instanceof Error ? error.message : 'Unknown error';
+      res.status(500).json({ success: false, error: errorMessage });
+    }
+  });
+
+  // Cancel a pending (still-scheduled) follow-up.
+  app.post('/api/lead-followups/:id/cancel', requireAuth, async (req, res) => {
+    try {
+      const tenant = getTenantFromRequest(req);
+      const [updated] = await db.update(leadFollowups)
+        .set({ status: 'cancelled', updatedAt: new Date() })
+        .where(and(
+          eq(leadFollowups.id, req.params.id),
+          eq(leadFollowups.organizationId, tenant.organizationId),
+          eq(leadFollowups.userId, tenant.userId),
+          eq(leadFollowups.status, 'scheduled')
+        ))
+        .returning();
+      if (!updated) {
+        return res.status(404).json({ success: false, error: 'Follow-up not found or no longer pending' });
+      }
+      res.json({ success: true, data: updated });
+    } catch (error) {
+      const errorMessage = error instanceof Error ? error.message : 'Unknown error';
+      res.status(400).json({ success: false, error: errorMessage });
+    }
+  });
+
+  // ==================== LEAD PIPELINES (Google Sheet → Apps Script webhook) ====================
+
+  // Whether the requesting user may manage lead automation / pipelines.
+  const userMayUseLeadAutomation = async (req: Request): Promise<boolean> => {
+    const owner = await authService.getUser(req.auth!.userId);
+    return owner?.role === 'super_admin' || (owner?.enabledFeatures as any)?.leadAutomation === true;
+  };
+  const forbidLeadAutomation = (res: Response) =>
+    res.status(403).json({ success: false, error: 'Lead automation is not enabled for your account' });
+  const newIngestToken = () => (randomUUID() + randomUUID()).replace(/-/g, '');
+
+  // List pipelines for the current tenant
+  app.get('/api/lead-pipelines', requireAuth, async (req, res) => {
+    try {
+      if (!(await userMayUseLeadAutomation(req))) return forbidLeadAutomation(res);
+      const tenant = getTenantFromRequest(req);
+      const rows = await db.select().from(leadPipelines).where(and(
+        eq(leadPipelines.organizationId, tenant.organizationId),
+        eq(leadPipelines.userId, tenant.userId)
+      )).orderBy(desc(leadPipelines.createdAt));
+      res.json({ success: true, data: rows });
+    } catch (error) {
+      res.status(500).json({ success: false, error: error instanceof Error ? error.message : 'Unknown error' });
+    }
+  });
+
+  // Create a pipeline (auto-generates a secret ingest token)
+  app.post('/api/lead-pipelines', requireAuth, async (req, res) => {
+    try {
+      if (!(await userMayUseLeadAutomation(req))) return forbidLeadAutomation(res);
+      const validated = leadPipelineSchema.parse(req.body);
+      const tenant = getTenantFromRequest(req);
+      const dripEnabled = validated.dripEnabled === true ? 'true' : 'false';
+      const dripPrompt = validated.dripPrompt?.trim() || null;
+      const dripTemplate = (dripEnabled === 'true' && dripPrompt)
+        ? await leadDripService.generateTemplate(dripPrompt)
+        : null;
+      const [created] = await db.insert(leadPipelines).values({
+        organizationId: tenant.organizationId,
+        userId: tenant.userId,
+        name: validated.name,
+        ragAgentId: validated.ragAgentId || null,
+        ingestToken: newIngestToken(),
+        dripEnabled,
+        dripPrompt,
+        dripTemplate,
+        isActive: validated.isActive === false ? 'false' : 'true',
+      }).returning();
+      res.json({ success: true, data: created });
+    } catch (error) {
+      res.status(400).json({ success: false, error: error instanceof Error ? error.message : 'Unknown error' });
+    }
+  });
+
+  // Update a pipeline (name / linked bot flow / active)
+  app.patch('/api/lead-pipelines/:id', requireAuth, async (req, res) => {
+    try {
+      if (!(await userMayUseLeadAutomation(req))) return forbidLeadAutomation(res);
+      const validated = leadPipelineSchema.partial().parse(req.body);
+      const tenant = getTenantFromRequest(req);
+      const set: any = { updatedAt: new Date() };
+      if (validated.name !== undefined) set.name = validated.name;
+      if (validated.ragAgentId !== undefined) set.ragAgentId = validated.ragAgentId || null;
+      if (validated.isActive !== undefined) set.isActive = validated.isActive ? 'true' : 'false';
+      if (validated.dripEnabled !== undefined) set.dripEnabled = validated.dripEnabled ? 'true' : 'false';
+      if (validated.dripPrompt !== undefined) {
+        const prompt = validated.dripPrompt?.trim() || null;
+        set.dripPrompt = prompt;
+        // Regenerate the reusable sequence template whenever the prompt changes.
+        set.dripTemplate = prompt ? await leadDripService.generateTemplate(prompt) : null;
+      }
+      const [updated] = await db.update(leadPipelines).set(set).where(and(
+        eq(leadPipelines.id, req.params.id),
+        eq(leadPipelines.organizationId, tenant.organizationId),
+        eq(leadPipelines.userId, tenant.userId)
+      )).returning();
+      if (!updated) return res.status(404).json({ success: false, error: 'Pipeline not found' });
+      res.json({ success: true, data: updated });
+    } catch (error) {
+      res.status(400).json({ success: false, error: error instanceof Error ? error.message : 'Unknown error' });
+    }
+  });
+
+  // Rotate a pipeline's ingest token (invalidates the old webhook secret)
+  app.post('/api/lead-pipelines/:id/rotate-token', requireAuth, async (req, res) => {
+    try {
+      if (!(await userMayUseLeadAutomation(req))) return forbidLeadAutomation(res);
+      const tenant = getTenantFromRequest(req);
+      const [updated] = await db.update(leadPipelines)
+        .set({ ingestToken: newIngestToken(), updatedAt: new Date() })
+        .where(and(
+          eq(leadPipelines.id, req.params.id),
+          eq(leadPipelines.organizationId, tenant.organizationId),
+          eq(leadPipelines.userId, tenant.userId)
+        )).returning();
+      if (!updated) return res.status(404).json({ success: false, error: 'Pipeline not found' });
+      res.json({ success: true, data: updated });
+    } catch (error) {
+      res.status(400).json({ success: false, error: error instanceof Error ? error.message : 'Unknown error' });
+    }
+  });
+
+  // Re-generate the drip sequence template from the pipeline's current prompt
+  app.post('/api/lead-pipelines/:id/regenerate-drip', requireAuth, async (req, res) => {
+    try {
+      if (!(await userMayUseLeadAutomation(req))) return forbidLeadAutomation(res);
+      const tenant = getTenantFromRequest(req);
+      const [pipeline] = await db.select().from(leadPipelines).where(and(
+        eq(leadPipelines.id, req.params.id),
+        eq(leadPipelines.organizationId, tenant.organizationId),
+        eq(leadPipelines.userId, tenant.userId)
+      )).limit(1);
+      if (!pipeline) return res.status(404).json({ success: false, error: 'Pipeline not found' });
+      if (!pipeline.dripPrompt) return res.status(400).json({ success: false, error: 'Set a drip prompt first' });
+
+      const dripTemplate = await leadDripService.generateTemplate(pipeline.dripPrompt);
+      const [updated] = await db.update(leadPipelines)
+        .set({ dripTemplate, updatedAt: new Date() })
+        .where(eq(leadPipelines.id, pipeline.id))
+        .returning();
+      res.json({ success: true, data: updated });
+    } catch (error) {
+      res.status(400).json({ success: false, error: error instanceof Error ? error.message : 'Unknown error' });
+    }
+  });
+
+  // Delete a pipeline
+  app.delete('/api/lead-pipelines/:id', requireAuth, async (req, res) => {
+    try {
+      if (!(await userMayUseLeadAutomation(req))) return forbidLeadAutomation(res);
+      const tenant = getTenantFromRequest(req);
+      const [deleted] = await db.delete(leadPipelines).where(and(
+        eq(leadPipelines.id, req.params.id),
+        eq(leadPipelines.organizationId, tenant.organizationId),
+        eq(leadPipelines.userId, tenant.userId)
+      )).returning();
+      if (!deleted) return res.status(404).json({ success: false, error: 'Pipeline not found' });
+      res.json({ success: true, data: deleted });
+    } catch (error) {
+      res.status(400).json({ success: false, error: error instanceof Error ? error.message : 'Unknown error' });
+    }
+  });
+
+  // ---- Public webhook: a Google Apps Script pushes sheet rows here. ----
+  // Auth is the per-pipeline secret via `x-ingest-token` header (or body.token).
+  // No user JWT — the token alone identifies the pipeline and its tenant.
+  app.post('/api/ingest/lead', async (req, res) => {
+    try {
+      const token = (req.headers['x-ingest-token'] as string) || req.body?.token;
+      if (!token) {
+        return res.status(401).json({ success: false, error: 'Missing ingest token' });
+      }
+      const [pipeline] = await db.select().from(leadPipelines).where(and(
+        eq(leadPipelines.ingestToken, String(token)),
+        eq(leadPipelines.isActive, 'true')
+      )).limit(1);
+      if (!pipeline) {
+        return res.status(401).json({ success: false, error: 'Invalid or inactive ingest token' });
+      }
+
+      // Accept a single lead, or an array under `leads`.
+      const rawLeads = Array.isArray(req.body?.leads)
+        ? req.body.leads
+        : (req.body && (req.body.phone || req.body.phoneNumber || req.body.mobile) ? [req.body] : []);
+      if (rawLeads.length === 0) {
+        return res.status(400).json({ success: false, error: 'No leads in payload' });
+      }
+
+      // Decide the drip source once for this batch:
+      //  1. the pipeline's own drip template (separate drip prompt), else
+      //  2. the linked/default lead bot's auto-generated sequence.
+      const pipelineHasDrip = pipeline.dripEnabled === 'true'
+        && Array.isArray(pipeline.dripTemplate) && (pipeline.dripTemplate as any).length > 0;
+      let botSequenceTemplate: any[] | null = null;
+      if (!pipelineHasDrip) {
+        let flow: any;
+        if (pipeline.ragAgentId) {
+          [flow] = await db.select().from(userRagAgents).where(and(
+            eq(userRagAgents.id, pipeline.ragAgentId),
+            eq(userRagAgents.organizationId, pipeline.organizationId),
+            eq(userRagAgents.userId, pipeline.userId),
+            eq(userRagAgents.isActive, 'true')
+          )).limit(1);
+        }
+        if (!flow) {
+          [flow] = await db.select().from(userRagAgents).where(and(
+            eq(userRagAgents.organizationId, pipeline.organizationId),
+            eq(userRagAgents.userId, pipeline.userId),
+            eq(userRagAgents.isActive, 'true')
+          )).orderBy(desc(userRagAgents.updatedAt)).limit(1);
+        }
+        if (flow && flow.autoSequenceEnabled === 'true'
+          && Array.isArray(flow.sequenceTemplate) && flow.sequenceTemplate.length) {
+          botSequenceTemplate = flow.sequenceTemplate;
+        }
+      }
+
+      let processed = 0;
+      const errors: Array<{ phone: string; error: string }> = [];
+      for (const lead of rawLeads) {
+        const rawPhone = lead?.phone ?? lead?.phoneNumber ?? lead?.mobile;
+        try {
+          const phone = normalizeExternalPhone(String(rawPhone || ''));
+          const name = (lead?.name ?? lead?.Name ?? '').toString().trim() || null;
+          // Preserve any extra sheet columns for context.
+          const { phone: _p, phoneNumber: _pn, mobile: _m, name: _n, Name: _N, token: _t, ...extra } = lead || {};
+
+          // Only brand-new contacts should trigger the drip sequence.
+          const [existing] = await db.select({ id: contactsTable.id }).from(contactsTable).where(and(
+            eq(contactsTable.organizationId, pipeline.organizationId),
+            eq(contactsTable.userId, pipeline.userId),
+            eq(contactsTable.phoneNumber, phone)
+          )).limit(1);
+          const isNewContact = !existing;
+
+          await db.insert(contactsTable).values({
+            organizationId: pipeline.organizationId,
+            userId: pipeline.userId,
+            phoneNumber: phone,
+            name: name || undefined,
+            isLead: 'true',
+            leadTriggerKeyword: `pipeline:${pipeline.name}`,
+            pipelineId: pipeline.id,
+            conversationState: Object.keys(extra).length ? { pipelineData: extra } : undefined,
+          }).onConflictDoUpdate({
+            target: [contactsTable.organizationId, contactsTable.userId, contactsTable.phoneNumber],
+            set: {
+              pipelineId: pipeline.id,
+              isLead: 'true',
+              ...(name ? { name } : {}),
+              updatedAt: new Date(),
+            },
+          });
+
+          // New lead → schedule the pre-generated sequence (no LLM call here):
+          // pipeline's own drip if set, otherwise the lead bot's own sequence.
+          if (isNewContact) {
+            const template = pipelineHasDrip ? (pipeline.dripTemplate as any) : botSequenceTemplate;
+            if (template && template.length) {
+              await leadDripService.scheduleForLead(
+                { organizationId: pipeline.organizationId, userId: pipeline.userId },
+                phone,
+                template,
+                name
+              );
+            }
+          }
+          processed++;
+        } catch (e) {
+          errors.push({ phone: String(rawPhone || 'unknown'), error: e instanceof Error ? e.message : 'Unknown error' });
+        }
+      }
+
+      res.json({ success: true, pipeline: pipeline.name, processed, failed: errors.length, errors });
+    } catch (error) {
+      res.status(500).json({ success: false, error: error instanceof Error ? error.message : 'Unknown error' });
     }
   });
 

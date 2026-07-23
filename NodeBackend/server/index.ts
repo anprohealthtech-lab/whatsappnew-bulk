@@ -6,6 +6,7 @@ import { registerRoutes } from "./routes";
 import { serveStatic, log } from "./utils";
 import { runMigrations } from "./migrate";
 import { campaignService } from "./services/CampaignService";
+import { leadFollowupService } from "./services/LeadFollowupService";
 import { sessionManager } from "./services/WhatsAppSessionManager";
 import { seedSuperAdmin } from "./seedSuperAdmin";
 import { persistentFileService } from "./services/PersistentFileService";
@@ -59,6 +60,7 @@ app.use((req, res, next) => {
     await seedSuperAdmin();
 
     campaignService.startScheduler();
+    leadFollowupService.startScheduler();
 
     // Restore any previously connected WhatsApp sessions
     await sessionManager.restoreConnectedSessions();
@@ -118,6 +120,7 @@ app.use((req, res, next) => {
     const shutdown = async () => {
       log('🛑 Graceful shutdown initiated...');
       campaignService.stopScheduler();
+      leadFollowupService.stopScheduler();
       await sessionManager.shutdownAll();
       server.close(() => process.exit(0));
       setTimeout(() => process.exit(1), 10000); // Force exit after 10s

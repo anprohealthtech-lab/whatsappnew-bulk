@@ -114,7 +114,58 @@ export const userRagAgents = pgTable("user_rag_agents", {
   contextMessageCount: integer("context_message_count"),
   replyCooldownSeconds: integer("reply_cooldown_seconds"),
   typingDelayMs: integer("typing_delay_ms"),
+  // Intake mode: when "true", the bot engages ANY inbound message from a
+  // non-lead (asks what they want and answers via RAG) instead of only
+  // responding when a trigger keyword matches.
+  intakeMode: text("intake_mode").default("false").notNull(),
+  // Follow-up scheduling: when "true", the bot may emit a follow-up directive
+  // (<<FOLLOWUP:2d:message>>) that gets queued in lead_followups and sent later.
+  followupsEnabled: text("followups_enabled").default("false").notNull(),
+  // Auto-sequence: when "true", the bot turns its OWN system prompt (which the
+  // user writes as a plain-language workflow, e.g. "day 1 send X, day 2 send Y")
+  // into a timed message sequence and schedules it on every new lead. The
+  // generated sequence is cached in sequenceTemplate so it is produced once, not
+  // per lead. Reuses the same lead_followups scheduling as the pipeline drip.
+  autoSequenceEnabled: text("auto_sequence_enabled").default("false").notNull(),
+  sequenceTemplate: jsonb("sequence_template"), // [{ delay: "1d", message: "..." }]
   isActive: text("is_active").default("true").notNull(),
+  createdAt: timestamp("created_at").defaultNow(),
+  updatedAt: timestamp("updated_at").defaultNow(),
+});
+
+// A named lead pipeline: ties an external data source (Google Sheet via Apps
+// Script webhook) to an optional bot flow (ragAgentId). Leads ingested through
+// the pipeline's token are tagged with its id on the contact.
+export const leadPipelines = pgTable("lead_pipelines", {
+  id: varchar("id").primaryKey().default(sql`gen_random_uuid()`),
+  organizationId: text("organization_id").default("default_org").notNull(),
+  userId: text("user_id").default("default_user").notNull(),
+  name: text("name").notNull(),
+  ragAgentId: varchar("rag_agent_id"), // optional link to a user_rag_agents flow
+  ingestToken: text("ingest_token").notNull().unique(), // secret for the webhook
+  // Drip sequence: when enabled, a new lead in this pipeline is auto-scheduled a
+  // sequence of messages. dripPrompt is the natural-language instruction; the LLM
+  // turns it into dripTemplate (array of {delay, message}) once, reused per lead.
+  dripEnabled: text("drip_enabled").default("false").notNull(),
+  dripPrompt: text("drip_prompt"),
+  dripTemplate: jsonb("drip_template"), // [{ delay: "4h", message: "..." }]
+  isActive: text("is_active").default("true").notNull(),
+  createdAt: timestamp("created_at").defaultNow(),
+  updatedAt: timestamp("updated_at").defaultNow(),
+});
+
+// Bot-scheduled follow-up messages to a lead. Written by ChatbotService when the
+// bot emits a <<FOLLOWUP:...>> directive; drained by LeadFollowupService's tick.
+export const leadFollowups = pgTable("lead_followups", {
+  id: varchar("id").primaryKey().default(sql`gen_random_uuid()`),
+  organizationId: text("organization_id").default("default_org").notNull(),
+  userId: text("user_id").default("default_user").notNull(),
+  phoneNumber: text("phone_number").notNull(),
+  message: text("message").notNull(),
+  status: text("status").default("scheduled").notNull(), // scheduled | sent | cancelled | failed
+  scheduledAt: timestamp("scheduled_at").notNull(),
+  sentAt: timestamp("sent_at"),
+  errorReason: text("error_reason"),
   createdAt: timestamp("created_at").defaultNow(),
   updatedAt: timestamp("updated_at").defaultNow(),
 });
@@ -184,6 +235,7 @@ export const contacts = pgTable("contacts", {
   isLead: text("is_lead").default("false").notNull(), // "true" or "false"
   leadTriggerKeyword: text("lead_trigger_keyword"),
   leadStage: text("lead_stage").default("new_lead").notNull(), // new_lead | qualified | enrolled | no_response | follow_up | lost
+  pipelineId: varchar("pipeline_id"), // which lead pipeline this contact belongs to (if ingested via one)
   leadStageReason: text("lead_stage_reason"),
   leadStageUpdatedAt: timestamp("lead_stage_updated_at").defaultNow(),
   leadScore: integer("lead_score").default(0),
@@ -600,6 +652,8 @@ export type HRAdmin = typeof hrAdmins.$inferSelect;
 export type HRChatbotConfig = typeof hrChatbotConfigs.$inferSelect;
 export type DemoSchedule = typeof demoSchedules.$inferSelect;
 export type UserRagAgent = typeof userRagAgents.$inferSelect;
+export type LeadPipeline = typeof leadPipelines.$inferSelect;
+export type LeadFollowup = typeof leadFollowups.$inferSelect;
 export type UserNotificationRecipient = typeof userNotificationRecipients.$inferSelect;
 export type WhatsAppSession = typeof whatsappSessions.$inferSelect;
 export type SessionConnectionHistory = typeof sessionConnectionHistory.$inferSelect;
@@ -668,7 +722,18 @@ export const userRagAgentSchema = z.object({
   contextMessageCount: z.number().int().min(1).max(20).optional(),
   replyCooldownSeconds: z.number().int().min(0).max(60).optional(),
   typingDelayMs: z.number().int().min(0).max(10000).optional(),
+  intakeMode: z.boolean().optional(),
+  followupsEnabled: z.boolean().optional(),
+  autoSequenceEnabled: z.boolean().optional(),
   isActive: z.boolean().optional(),
+});
+
+export const leadPipelineSchema = z.object({
+  name: z.string().min(1, "Pipeline name is required"),
+  ragAgentId: z.string().optional(),
+  isActive: z.boolean().optional(),
+  dripEnabled: z.boolean().optional(),
+  dripPrompt: z.string().optional(),
 });
 
 export const userNotificationRecipientSchema = z.object({

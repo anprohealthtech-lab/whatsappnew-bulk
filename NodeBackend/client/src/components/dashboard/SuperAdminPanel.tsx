@@ -19,6 +19,7 @@ import {
   FolderKanban,
   Eye,
   Mic,
+  Zap,
 } from "lucide-react";
 
 interface EnabledFeatures {
@@ -26,6 +27,7 @@ interface EnabledFeatures {
   himsChatbot?: boolean;
   dataManagement?: boolean;
   voiceAgent?: boolean;
+  leadAutomation?: boolean;
   visibleTabs?: string[];
   himsClinicId?: string;
   himsTriggerKeywords?: string[];
@@ -391,6 +393,17 @@ export function SuperAdminPanel() {
                   />
                   <Mic className="w-4 h-4" /> Voice Agent
                 </label>
+                <label className="flex items-center gap-2 px-3 py-2 border rounded-lg text-sm">
+                  <input
+                    type="checkbox"
+                    checked={!!createForm.enabledFeatures.leadAutomation}
+                    onChange={(e) => setCreateForm({
+                      ...createForm,
+                      enabledFeatures: { ...createForm.enabledFeatures, leadAutomation: e.target.checked },
+                    })}
+                  />
+                  <Zap className="w-4 h-4" /> Lead Automation
+                </label>
               </div>
             </div>
             <div>
@@ -528,6 +541,24 @@ export function SuperAdminPanel() {
                         >
                           <Mic className="w-3 h-3" />
                           Voice
+                        </button>
+                        <button
+                          onClick={() => {
+                            const current = u.enabledFeatures || {};
+                            toggleFeatureMutation.mutate({
+                              userId: u.id,
+                              features: { ...current, leadAutomation: !current.leadAutomation },
+                            });
+                          }}
+                          className={`flex items-center gap-1 px-2 py-1 rounded text-xs font-medium transition-colors ${
+                            u.enabledFeatures?.leadAutomation
+                              ? "bg-amber-100 text-amber-700 dark:bg-amber-900/30 dark:text-amber-400"
+                              : "bg-gray-100 text-gray-400 dark:bg-gray-800 dark:text-gray-500"
+                          }`}
+                          title={u.enabledFeatures?.leadAutomation ? "Disable Lead Automation" : "Enable Lead Automation"}
+                        >
+                          <Zap className="w-3 h-3" />
+                          Leads
                         </button>
                         <button
                           type="button"

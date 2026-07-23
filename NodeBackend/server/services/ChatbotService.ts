@@ -15,10 +15,11 @@
 
 import type { IStorage } from "../storage";
 import type { ChatbotConfig, Contact, Message, UserRagAgent } from "@shared/schema";
-import { userRagAgents } from "@shared/schema";
+import { userRagAgents, leadFollowups, users, leadPipelines } from "@shared/schema";
 import { db } from "../db";
 import { eq, and, desc } from "drizzle-orm";
 import { sendNotificationForEvent } from "./UserNotificationService";
+import { leadDripService } from "./LeadDripService";
 import Anthropic from "@anthropic-ai/sdk";
 import * as fs from 'fs';
 import * as path from 'path';
@@ -165,6 +166,20 @@ WHATSAPP STYLE:
 - Keep the tone warm, practical, and easy to scan.
 - End with one simple helpful next step or question when appropriate.`;
 
+// Appended to the system prompt only when the bot flow has follow-ups enabled.
+// Lets the model schedule ONE future nudge by emitting a machine directive that
+// ChatbotService strips out before the reply is sent to the user.
+const FOLLOWUP_INSTRUCTION = `
+
+FOLLOW-UP SCHEDULING (optional):
+- If (and only if) it makes sense to gently check back with this person later — e.g. they said "let me think", "call me next week", or showed interest but didn't commit — you MAY schedule ONE follow-up message.
+- To do so, add a directive on its very last line, in this EXACT format:
+  <<FOLLOWUP:DELAY:the message to send later>>
+  where DELAY is a duration like 30m, 4h, 2d, or 1w (m=minutes, h=hours, d=days, w=weeks).
+- Example: <<FOLLOWUP:2d:Hi! Just checking in — did you get a chance to think it over?>>
+- The user NEVER sees this directive; it is removed automatically. Write your normal reply first, then the directive on the last line.
+- Schedule at most ONE follow-up per reply. Do NOT schedule a follow-up if the user asked you to stop or said they are not interested.`;
+
 const lastReplyTimestamps = new Map<string, number>();
 
 // Pending greetings that failed due to WhatsApp being disconnected
@@ -191,9 +206,23 @@ export class ChatbotService {
    * Get user-scoped RAG agent config if available.
    * Returns null if no tenant context or no user RAG config found.
    */
-  async getUserRagConfig(): Promise<UserRagAgent | null> {
+  async getUserRagConfig(agentId?: string): Promise<UserRagAgent | null> {
     if (!this.tenantContext) return null;
     try {
+      // If a specific agent (bot flow) is requested — e.g. the one a lead's
+      // pipeline is linked to — load that one. Fall back to the newest active
+      // config if the linked agent is missing or inactive.
+      if (agentId) {
+        const [byId] = await db.select().from(userRagAgents).where(
+          and(
+            eq(userRagAgents.id, agentId),
+            eq(userRagAgents.organizationId, this.tenantContext.organizationId),
+            eq(userRagAgents.userId, this.tenantContext.userId),
+            eq(userRagAgents.isActive, 'true')
+          )
+        ).limit(1);
+        if (byId) return byId;
+      }
       const result = await db.select().from(userRagAgents).where(
         and(
           eq(userRagAgents.organizationId, this.tenantContext.organizationId),
@@ -202,6 +231,30 @@ export class ChatbotService {
         )
       ).orderBy(desc(userRagAgents.updatedAt)).limit(1);
       return result[0] || null;
+    } catch {
+      return null;
+    }
+  }
+
+  /**
+   * If a contact was ingested through a lead pipeline, resolve the bot flow
+   * (user_rag_agents id) that pipeline is linked to. Returns null when there is
+   * no pipeline, the pipeline is inactive, or it has no linked flow.
+   */
+  private async resolvePipelineAgentId(phoneNumber: string): Promise<string | null> {
+    if (!this.tenantContext) return null;
+    try {
+      const contact = await this.storage.getContactByTenant(this.tenantContext, phoneNumber);
+      if (!contact?.pipelineId) return null;
+      const [pipeline] = await db.select().from(leadPipelines).where(
+        and(
+          eq(leadPipelines.id, contact.pipelineId),
+          eq(leadPipelines.organizationId, this.tenantContext.organizationId),
+          eq(leadPipelines.userId, this.tenantContext.userId),
+          eq(leadPipelines.isActive, 'true')
+        )
+      ).limit(1);
+      return pipeline?.ragAgentId || null;
     } catch {
       return null;
     }
@@ -244,8 +297,8 @@ export class ChatbotService {
     }
   }
 
-  private async getEffectiveChatbotConfig(): Promise<ChatbotConfig | null> {
-    const userRagConfig = await this.getUserRagConfig();
+  private async getEffectiveChatbotConfig(agentId?: string): Promise<ChatbotConfig | null> {
+    const userRagConfig = await this.getUserRagConfig(agentId);
     if (!userRagConfig || userRagConfig.isActive !== 'true') {
       return null;
     }
@@ -265,6 +318,61 @@ export class ChatbotService {
       createdAt: userRagConfig.createdAt,
       updatedAt: userRagConfig.updatedAt,
     };
+  }
+
+  /**
+   * Whether the session owner is permitted to use lead automation (intake mode
+   * + bot follow-ups). Super-admin-gated via users.enabledFeatures.leadAutomation
+   * so revoking the feature disables the behavior even if the flow flag is still set.
+   */
+  private async ownerHasLeadAutomation(): Promise<boolean> {
+    if (!this.tenantContext) return false;
+    try {
+      const [owner] = await db
+        .select({ role: users.role, enabledFeatures: users.enabledFeatures })
+        .from(users)
+        .where(eq(users.id, this.tenantContext.userId))
+        .limit(1);
+      if (!owner) return false;
+      return owner.role === 'super_admin' || (owner.enabledFeatures as any)?.leadAutomation === true;
+    } catch {
+      return false;
+    }
+  }
+
+  /**
+   * Intake mode: bot engages ANY inbound message from a non-lead (asks what they
+   * want, answers via RAG) instead of only firing on trigger keywords.
+   */
+  async isIntakeEnabled(): Promise<boolean> {
+    const cfg = await this.getUserRagConfig();
+    if (cfg?.isActive !== 'true' || (cfg as any).intakeMode !== 'true') return false;
+    return this.ownerHasLeadAutomation();
+  }
+
+  private async isFollowupsEnabled(agentId?: string): Promise<boolean> {
+    const cfg = await this.getUserRagConfig(agentId);
+    if (cfg?.isActive !== 'true' || (cfg as any).followupsEnabled !== 'true') return false;
+    return this.ownerHasLeadAutomation();
+  }
+
+  /**
+   * On a brand-new lead, schedule the bot's own auto-generated message sequence
+   * (built from its system prompt, cached in sequenceTemplate). Reuses the drip
+   * scheduling — the lead's first reply cancels the rest (see cancelPendingFollowups).
+   */
+  async scheduleSequenceForNewLead(phoneNumber: string, name?: string, agentId?: string): Promise<void> {
+    if (!this.tenantContext) return;
+    try {
+      if (!(await this.ownerHasLeadAutomation())) return;
+      const cfg = await this.getUserRagConfig(agentId);
+      if (!cfg || cfg.isActive !== 'true' || (cfg as any).autoSequenceEnabled !== 'true') return;
+      const template = (cfg as any).sequenceTemplate;
+      if (!Array.isArray(template) || template.length === 0) return;
+      await leadDripService.scheduleForLead(this.tenantContext, phoneNumber, template, name);
+    } catch {
+      // best-effort; never block lead creation
+    }
   }
 
   /**
@@ -382,7 +490,7 @@ export class ChatbotService {
   /**
    * Flag a phone number as a lead and send initial greeting
    */
-  async flagAsLead(phoneNumber: string, keyword: string, name?: string, replyToJid?: string): Promise<Contact> {
+  async flagAsLead(phoneNumber: string, keyword: string, name?: string, replyToJid?: string, options?: { skipGreeting?: boolean }): Promise<Contact> {
     const log = (msg: string) => console.log(`[ChatbotService] ${msg}`);
     const tenant = this.requireTenantContext();
 
@@ -396,6 +504,25 @@ export class ChatbotService {
     });
 
     log(`✅ ${phoneNumber} flagged as lead`);
+
+    // New lead → let the bot schedule its own message sequence (if enabled).
+    await this.scheduleSequenceForNewLead(phoneNumber, name);
+
+    // Intake mode flags the lead but skips the canned greeting so the caller can
+    // answer the sender's actual first message through RAG instead.
+    if (options?.skipGreeting) {
+      log(`⏭️ Skipping greeting for ${phoneNumber} (intake mode)`);
+      await this.notifyEvent("lead_created", {
+        title: "🔔 New Lead Captured",
+        lines: [
+          name ? `👤 Name: ${name}` : "",
+          `📱 Phone: ${phoneNumber}`,
+          `🏷️ Trigger: ${keyword}`,
+          `🕒 Time: ${new Date().toLocaleString("en-IN", { timeZone: "Asia/Kolkata" })}`,
+        ],
+      });
+      return contact;
+    }
 
     // Send initial greeting message(s)
     // Supports multiple messages separated by ===NEXT_MESSAGE===
@@ -572,9 +699,11 @@ export class ChatbotService {
       requestedInLatestMessage: boolean;
       alreadySentEarlier: boolean;
       configuredInGreeting: boolean;
-    }
+    },
+    options?: { followupsEnabled?: boolean }
   ): string {
     const basePrompt = (config as any).systemPrompt || DEFAULT_SYSTEM_PROMPT;
+    const followupBlock = options?.followupsEnabled ? FOLLOWUP_INSTRUCTION : '';
 
     // Append conversation state context so the AI knows where the conversation stands
     const stateContext = [
@@ -592,7 +721,7 @@ export class ChatbotService {
         : '',
     ].filter(Boolean).join('\n');
 
-    return basePrompt + WHATSAPP_FORMATTING_GUIDE + stateContext;
+    return basePrompt + WHATSAPP_FORMATTING_GUIDE + followupBlock + stateContext;
   }
 
   /**
@@ -783,15 +912,27 @@ export class ChatbotService {
     try {
       log(`Processing lead message from ${phoneNumber}`);
 
+      // The lead just engaged — stop any pending automated drip/follow-up so we
+      // don't blast pre-scheduled messages on top of a live conversation. If a
+      // fresh nudge is warranted, the bot can schedule a new one in this reply.
+      await this.cancelPendingFollowups(phoneNumber, 'lead replied');
+
+      // If this lead came in through a pipeline, use that pipeline's linked bot
+      // flow; otherwise fall back to the tenant's default flow.
+      const pipelineAgentId = await this.resolvePipelineAgentId(phoneNumber);
+      if (pipelineAgentId) {
+        log(`🔀 Routing ${phoneNumber} to pipeline-linked bot flow ${pipelineAgentId}`);
+      }
+
       // Get chatbot config
-      const config = await this.getEffectiveChatbotConfig();
+      const config = await this.getEffectiveChatbotConfig(pipelineAgentId || undefined);
 
       if (!config || config.isActive !== "true") {
         log(`⚠️ Chatbot not configured or inactive`);
         return;
       }
 
-      const userRagConfig = await this.getUserRagConfig();
+      const userRagConfig = await this.getUserRagConfig(pipelineAgentId || undefined);
       const cooldownSeconds = (config as any).replyCooldownSeconds ?? 8;
       const typingDelayMs = (config as any).typingDelayMs ?? 2000;
 
@@ -877,12 +1018,13 @@ export class ChatbotService {
       const ragMessages = this.formatConversationForRAG(fullConversation);
 
       // Build system prompt with state context
+      const followupsEnabled = await this.isFollowupsEnabled(pipelineAgentId || undefined);
       const updatedState = await this.getConversationState(phoneNumber);
       const systemPrompt = this.buildSystemPrompt(config, updatedState, {
         requestedInLatestMessage: voiceNoteRequested,
         alreadySentEarlier: voiceNoteAlreadySent,
         configuredInGreeting: hasConfiguredVoiceGreeting,
-      });
+      }, { followupsEnabled });
 
       // Check for user-scoped RAG config override (userRagConfig already loaded above)
       let effectiveConfig = config;
@@ -906,7 +1048,10 @@ export class ChatbotService {
         }
       }
 
-      const effectiveSystemPrompt = (config as any).systemPrompt || systemPrompt;
+      // The configured system prompt is used verbatim when present; ensure the
+      // follow-up capability instruction is appended in that case too.
+      const effectiveSystemPrompt = ((config as any).systemPrompt || systemPrompt)
+        + (followupsEnabled ? FOLLOWUP_INSTRUCTION : '');
 
       let botResponse: string;
 
@@ -929,8 +1074,12 @@ export class ChatbotService {
         await this.updateConversationState(phoneNumber, responseStateUpdates);
       }
 
-      // Extract image URL if present
-      const { textMessage, imageUrl } = this.extractImageUrl(botResponse);
+      // Strip the follow-up directive (if the flow allows it) before anything
+      // else, so it never leaks to the user, then extract any image URL.
+      const { cleanedText, followup } = followupsEnabled
+        ? this.extractFollowup(botResponse)
+        : { cleanedText: botResponse, followup: null };
+      const { textMessage, imageUrl } = this.extractImageUrl(cleanedText);
 
       // Apply typing delay to simulate natural conversation
       if (typingDelayMs > 0) {
@@ -966,6 +1115,11 @@ export class ChatbotService {
         },
       });
 
+      // If the bot requested a follow-up, queue it for the scheduler to send later.
+      if (followup) {
+        await this.scheduleFollowup(phoneNumber, followup.message, followup.delayMs);
+      }
+
       // If image URL found, download and send it
       if (imageUrl) {
         log(`📷 Image URL detected: ${imageUrl}`);
@@ -996,6 +1150,94 @@ export class ChatbotService {
           stack: error.stack,
         },
       });
+    }
+  }
+
+  /**
+   * Extract a follow-up directive from the bot response.
+   * Format: <<FOLLOWUP:DELAY:message>>  (e.g. <<FOLLOWUP:2d:Just checking in!>>)
+   * Returns the response with the directive removed and the parsed follow-up.
+   */
+  private extractFollowup(response: string): { cleanedText: string; followup: { delayMs: number; message: string } | null } {
+    const pattern = /<<\s*FOLLOWUP\s*:\s*([^:>]+?)\s*:\s*([\s\S]+?)>>/i;
+    const match = response.match(pattern);
+    if (!match) {
+      return { cleanedText: response, followup: null };
+    }
+
+    const delayMs = this.parseDuration(match[1].trim());
+    const message = match[2].trim();
+    const cleanedText = response.replace(pattern, '').trim();
+
+    if (!delayMs || !message) {
+      // Malformed directive — strip it but don't schedule anything.
+      return { cleanedText, followup: null };
+    }
+
+    return { cleanedText, followup: { delayMs, message } };
+  }
+
+  /**
+   * Parse a compact duration string (e.g. "30m", "4h", "2d", "1w") into milliseconds.
+   * Clamped to [5 minutes, 30 days]. Returns 0 for unparseable input.
+   */
+  private parseDuration(input: string): number {
+    const match = input.match(/^(\d+(?:\.\d+)?)\s*(m|h|d|w)$/i);
+    if (!match) return 0;
+    const value = parseFloat(match[1]);
+    const unit = match[2].toLowerCase();
+    const unitMs: Record<string, number> = {
+      m: 60 * 1000,
+      h: 60 * 60 * 1000,
+      d: 24 * 60 * 60 * 1000,
+      w: 7 * 24 * 60 * 60 * 1000,
+    };
+    const ms = value * (unitMs[unit] || 0);
+    if (ms <= 0) return 0;
+    const MIN = 5 * 60 * 1000;
+    const MAX = 30 * 24 * 60 * 60 * 1000;
+    return Math.min(Math.max(ms, MIN), MAX);
+  }
+
+  /**
+   * Cancel any still-scheduled follow-ups / drip messages for a lead. Called when
+   * the lead replies, so an engaged conversation stops the automated sequence.
+   */
+  private async cancelPendingFollowups(phoneNumber: string, reason: string): Promise<void> {
+    if (!this.tenantContext) return;
+    try {
+      await db.update(leadFollowups)
+        .set({ status: 'cancelled', errorReason: reason, updatedAt: new Date() })
+        .where(and(
+          eq(leadFollowups.organizationId, this.tenantContext.organizationId),
+          eq(leadFollowups.userId, this.tenantContext.userId),
+          eq(leadFollowups.phoneNumber, phoneNumber),
+          eq(leadFollowups.status, 'scheduled')
+        ));
+    } catch {
+      // best-effort; don't block the reply
+    }
+  }
+
+  /**
+   * Queue a bot-scheduled follow-up message. Drained by LeadFollowupService's tick.
+   */
+  private async scheduleFollowup(phoneNumber: string, message: string, delayMs: number): Promise<void> {
+    const log = (msg: string) => console.log(`[ChatbotService] ${msg}`);
+    if (!this.tenantContext) return;
+    try {
+      const scheduledAt = new Date(Date.now() + delayMs);
+      await db.insert(leadFollowups).values({
+        organizationId: this.tenantContext.organizationId,
+        userId: this.tenantContext.userId,
+        phoneNumber,
+        message,
+        scheduledAt,
+        status: 'scheduled',
+      });
+      log(`📅 Scheduled follow-up to ${phoneNumber} at ${scheduledAt.toISOString()}`);
+    } catch (error: any) {
+      log(`⚠️ Failed to schedule follow-up for ${phoneNumber}: ${this.errorMessage(error)}`);
     }
   }
 
