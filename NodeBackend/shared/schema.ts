@@ -734,6 +734,8 @@ export const leadPipelineSchema = z.object({
   isActive: z.boolean().optional(),
   dripEnabled: z.boolean().optional(),
   dripPrompt: z.string().optional(),
+  // Directly-edited sequence (delay + message per step) — saved as-is, no LLM call.
+  dripTemplate: z.array(z.object({ delay: z.string(), message: z.string() })).optional(),
 });
 
 export const userNotificationRecipientSchema = z.object({

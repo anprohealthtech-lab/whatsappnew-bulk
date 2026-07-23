@@ -3482,6 +3482,13 @@ export async function registerRoutes(app: Express): Promise<Server> {
         // Regenerate the reusable sequence template whenever the prompt changes.
         set.dripTemplate = prompt ? await leadDripService.generateTemplate(prompt) : null;
       }
+      // A directly-edited template overrides any regeneration (saved verbatim).
+      if (validated.dripTemplate !== undefined) {
+        set.dripTemplate = (validated.dripTemplate || [])
+          .map((s) => ({ delay: String(s.delay || '').trim(), message: String(s.message || '').trim() }))
+          .filter((s) => s.message)
+          .slice(0, 12);
+      }
       const [updated] = await db.update(leadPipelines).set(set).where(and(
         eq(leadPipelines.id, req.params.id),
         eq(leadPipelines.organizationId, tenant.organizationId),

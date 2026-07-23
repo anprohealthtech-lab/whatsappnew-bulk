@@ -157,6 +157,18 @@ export function UserRagSettingsPanel() {
     onError: (err: any) => toast({ title: "Error", description: err.message, variant: "destructive" }),
   });
 
+  const saveTemplateMutation = useMutation({
+    mutationFn: async ({ id, dripTemplate }: { id: string; dripTemplate: Array<{ delay: string; message: string }> }) => {
+      const res = await apiRequest("PATCH", `/api/lead-pipelines/${id}`, { dripTemplate });
+      return res.json();
+    },
+    onSuccess: () => {
+      toast({ title: "Messages saved" });
+      queryClient.invalidateQueries({ queryKey: ["/api/lead-pipelines"] });
+    },
+    onError: (err: any) => toast({ title: "Error", description: err.message, variant: "destructive" }),
+  });
+
   const webhookUrl = `${window.location.origin}/api/ingest/lead`;
 
   const copyToClipboard = (text: string, label: string) => {
@@ -655,7 +667,9 @@ export function UserRagSettingsPanel() {
                     onDelete={() => deletePipelineMutation.mutate(p.id)}
                     onRotate={() => rotateTokenMutation.mutate(p.id)}
                     onSaveDrip={(dripEnabled, dripPrompt) => saveDripMutation.mutate({ id: p.id, dripEnabled, dripPrompt })}
+                    onSaveTemplate={(dripTemplate) => saveTemplateMutation.mutate({ id: p.id, dripTemplate })}
                     savingDrip={saveDripMutation.isPending}
+                    savingTemplate={saveTemplateMutation.isPending}
                     busy={deletePipelineMutation.isPending || rotateTokenMutation.isPending}
                   />
                 ))}
@@ -676,7 +690,9 @@ function PipelineRow({
   onDelete,
   onRotate,
   onSaveDrip,
+  onSaveTemplate,
   savingDrip,
+  savingTemplate,
   busy,
 }: {
   pipeline: any;
@@ -686,13 +702,25 @@ function PipelineRow({
   onDelete: () => void;
   onRotate: () => void;
   onSaveDrip: (dripEnabled: boolean, dripPrompt: string) => void;
+  onSaveTemplate: (dripTemplate: Array<{ delay: string; message: string }>) => void;
   savingDrip: boolean;
+  savingTemplate: boolean;
   busy: boolean;
 }) {
   const [reveal, setReveal] = useState(false);
   const [dripEnabled, setDripEnabled] = useState(pipeline.dripEnabled === "true");
   const [dripPrompt, setDripPrompt] = useState(pipeline.dripPrompt || "");
-  const template = Array.isArray(pipeline.dripTemplate) ? pipeline.dripTemplate : [];
+  const [steps, setSteps] = useState<Array<{ delay: string; message: string }>>(
+    Array.isArray(pipeline.dripTemplate) ? pipeline.dripTemplate.map((m: any) => ({ delay: m.delay, message: m.message })) : []
+  );
+  // Re-sync the editable steps whenever the pipeline is saved/regenerated server-side.
+  useEffect(() => {
+    setSteps(Array.isArray(pipeline.dripTemplate) ? pipeline.dripTemplate.map((m: any) => ({ delay: m.delay, message: m.message })) : []);
+  }, [pipeline.updatedAt]);
+  const updateStep = (i: number, field: "delay" | "message", value: string) =>
+    setSteps((prev) => prev.map((s, idx) => (idx === i ? { ...s, [field]: value } : s)));
+  const removeStep = (i: number) => setSteps((prev) => prev.filter((_, idx) => idx !== i));
+  const addStep = () => setSteps((prev) => [...prev, { delay: "1d", message: "" }]);
   const maskedToken = `${String(pipeline.ingestToken).slice(0, 6)}${"•".repeat(12)}`;
 
   return (
@@ -751,8 +779,8 @@ function PipelineRow({
         <div className="flex items-center justify-between">
           <Label className="cursor-pointer flex items-center gap-1.5 text-sm">
             <CalendarClock className="w-3.5 h-3.5 text-amber-500" /> Auto-drip on new lead
-            {dripEnabled && template.length > 0 && (
-              <span className="text-xs font-normal text-muted-foreground">({template.length} msg)</span>
+            {dripEnabled && steps.length > 0 && (
+              <span className="text-xs font-normal text-muted-foreground">({steps.length} msg)</span>
             )}
           </Label>
           <Switch
@@ -769,33 +797,76 @@ function PipelineRow({
               placeholder='e.g. "Send 4 messages on day 1: a warm welcome, a key benefit, a short success story, and a soft CTA to book a call. Space them a few hours apart. Address the lead as {{name}}."'
               value={dripPrompt}
               onChange={(e) => setDripPrompt(e.target.value)}
-              rows={4}
+              rows={3}
               className="text-sm"
             />
             <Button
+              variant="outline"
               size="sm"
               onClick={() => onSaveDrip(dripEnabled, dripPrompt)}
               disabled={savingDrip || !dripPrompt.trim()}
             >
-              {savingDrip ? <Loader2 className="w-3.5 h-3.5 animate-spin mr-1.5" /> : <Save className="w-3.5 h-3.5 mr-1.5" />}
-              Generate &amp; Save Sequence
+              {savingDrip ? <Loader2 className="w-3.5 h-3.5 animate-spin mr-1.5" /> : <RefreshCw className="w-3.5 h-3.5 mr-1.5" />}
+              Generate from prompt
             </Button>
-            {template.length > 0 && (
-              <div className="space-y-1 pt-1">
-                {template.map((m: any, i: number) => (
-                  <div key={i} className="text-xs flex gap-2">
-                    <span className="text-amber-600 dark:text-amber-400 font-mono shrink-0">+{m.delay}</span>
-                    <span className="text-muted-foreground line-clamp-2">{m.message}</span>
+
+            {steps.length > 0 && (
+              <div className="space-y-2 pt-2">
+                <p className="text-xs font-medium text-muted-foreground">Messages — edit the time &amp; text, then save</p>
+                {steps.map((s, i) => (
+                  <div key={i} className="border rounded-lg p-2.5 space-y-2 bg-background">
+                    <div className="flex items-center gap-2">
+                      <span className="text-xs text-muted-foreground shrink-0">Send after</span>
+                      <Input
+                        value={s.delay}
+                        onChange={(e) => updateStep(i, "delay", e.target.value)}
+                        placeholder="2h"
+                        className="h-7 w-20 text-xs font-mono"
+                      />
+                      <span className="text-xs text-muted-foreground shrink-0">m / h / d / w</span>
+                      <Button
+                        variant="ghost"
+                        size="sm"
+                        className="ml-auto h-7 text-destructive hover:text-destructive"
+                        onClick={() => removeStep(i)}
+                        title="Remove message"
+                      >
+                        <Trash2 className="w-3.5 h-3.5" />
+                      </Button>
+                    </div>
+                    <Textarea
+                      value={s.message}
+                      onChange={(e) => updateStep(i, "message", e.target.value)}
+                      rows={2}
+                      placeholder="Message text… use {{name}} for the lead's name"
+                      className="text-sm"
+                    />
                   </div>
                 ))}
               </div>
             )}
+
+            <div className="flex flex-wrap gap-2 pt-1">
+              <Button variant="outline" size="sm" onClick={addStep}>
+                <Plus className="w-3.5 h-3.5 mr-1.5" /> Add message
+              </Button>
+              <Button
+                size="sm"
+                onClick={() => onSaveTemplate(steps.filter((s) => s.message.trim()))}
+                disabled={savingTemplate || steps.length === 0}
+              >
+                {savingTemplate ? <Loader2 className="w-3.5 h-3.5 animate-spin mr-1.5" /> : <Save className="w-3.5 h-3.5 mr-1.5" />}
+                Save messages
+              </Button>
+            </div>
+
+            {steps.length === 0 && (
+              <p className="text-xs text-muted-foreground">
+                Write a prompt and "Generate from prompt", or "Add message" to build the sequence by hand.
+                It is scheduled for every new lead; a reply stops the rest.
+              </p>
+            )}
           </>
-        )}
-        {dripEnabled && !dripPrompt.trim() && template.length === 0 && (
-          <p className="text-xs text-muted-foreground">
-            Describe the sequence and save — the AI generates the messages once and schedules them for every new lead.
-          </p>
         )}
       </div>
     </div>
