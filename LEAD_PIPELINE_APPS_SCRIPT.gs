@@ -33,9 +33,15 @@ const SYNCED_HEADER = 'Synced At';
 
 /** Push EVERY row (ignores the synced marker). Good for a first import. */
 function syncAllLeads() {
-  const { rows } = readSheet_();
+  const { sheet, rows, syncedCol } = readSheet_();
+  if (!rows.length) { Logger.log('No rows to sync.'); return; }
+
   const result = pushLeads_(rows.map(r => r.data));
-  Logger.log(result);
+  Logger.log(result.message);
+
+  // Stamp every pushed row so a later syncNewLeads trigger does not re-send them.
+  // Only stamp when the webhook actually accepted the batch.
+  if (result.ok) stampSynced_(sheet, rows, syncedCol);
 }
 
 /** Push only rows that have not been marked synced yet. Use this on a trigger. */
@@ -45,13 +51,17 @@ function syncNewLeads() {
   if (!pending.length) { Logger.log('Nothing new to sync.'); return; }
 
   const result = pushLeads_(pending.map(r => r.data));
-  Logger.log(result);
+  Logger.log(result.message);
 
-  // Mark the pushed rows so they are not sent again.
-  if (syncedCol > 0) {
-    const stamp = new Date();
-    pending.forEach(r => sheet.getRange(r.rowIndex, syncedCol).setValue(stamp));
-  }
+  // Mark the pushed rows so they are not sent again (only if the push succeeded).
+  if (result.ok) stampSynced_(sheet, pending, syncedCol);
+}
+
+/** Write the current time into the "Synced At" column for the given rows. */
+function stampSynced_(sheet, rows, syncedCol) {
+  if (syncedCol <= 0 || !rows.length) return;
+  const stamp = new Date();
+  rows.forEach(r => sheet.getRange(r.rowIndex, syncedCol).setValue(stamp));
 }
 
 /** Read the active sheet into structured rows keyed by header. */
@@ -83,10 +93,14 @@ function readSheet_() {
   return { sheet, rows, syncedCol };
 }
 
-/** POST an array of lead objects to the pipeline webhook. */
+/**
+ * POST an array of lead objects to the pipeline webhook.
+ * Returns { ok, message } — ok is true only on a 2xx response, so callers
+ * know whether it is safe to mark the rows as synced.
+ */
 function pushLeads_(leads) {
   const valid = leads.filter(l => l && (l.phone || l.mobile || l.phoneNumber));
-  if (!valid.length) return 'No rows with a phone/mobile column.';
+  if (!valid.length) return { ok: false, message: 'No rows with a phone/mobile column.' };
 
   const res = UrlFetchApp.fetch(WEBHOOK_URL, {
     method: 'post',
@@ -95,5 +109,6 @@ function pushLeads_(leads) {
     payload: JSON.stringify({ leads: valid }),
     muteHttpExceptions: true,
   });
-  return res.getResponseCode() + ': ' + res.getContentText();
+  const code = res.getResponseCode();
+  return { ok: code >= 200 && code < 300, message: code + ': ' + res.getContentText() };
 }
