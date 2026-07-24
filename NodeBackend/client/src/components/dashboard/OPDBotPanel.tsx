@@ -58,6 +58,7 @@ export function OPDBotPanel() {
     himsTriggerKeywords: "",
     himsGreetingMessage: "",
     himsSystemPrompt: "",
+    himsContactNumber: "",
     himsAllowedLanguages: DEFAULT_OPD_LANGUAGES,
   });
   const { toast } = useToast();
@@ -190,6 +191,7 @@ export function OPDBotPanel() {
     himsTriggerKeywords: string[];
     himsGreetingMessage: string;
     himsSystemPrompt: string;
+    himsContactNumber: string;
     himsAllowedLanguages: string[];
   }>({
     queryKey: ["/api/opd-settings"],
@@ -203,7 +205,7 @@ export function OPDBotPanel() {
   });
 
   const saveSettingsMutation = useMutation({
-    mutationFn: async (data: { himsTriggerKeywords?: string[]; himsGreetingMessage?: string; himsSystemPrompt?: string; himsAllowedLanguages?: string[] }) => {
+    mutationFn: async (data: { himsTriggerKeywords?: string[]; himsGreetingMessage?: string; himsSystemPrompt?: string; himsContactNumber?: string; himsAllowedLanguages?: string[] }) => {
       const res = await fetch("/api/opd-settings", {
         method: "PATCH",
         headers: {
@@ -245,6 +247,7 @@ export function OPDBotPanel() {
                 himsTriggerKeywords: (opdSettings.himsTriggerKeywords || []).join(", "),
                 himsGreetingMessage: opdSettings.himsGreetingMessage || "",
                 himsSystemPrompt: opdSettings.himsSystemPrompt || "",
+                himsContactNumber: opdSettings.himsContactNumber || "",
                 himsAllowedLanguages: opdSettings.himsAllowedLanguages || DEFAULT_OPD_LANGUAGES,
               });
             }
@@ -359,6 +362,17 @@ export function OPDBotPanel() {
               </p>
             </div>
             <div>
+              <Label>Clinic Contact Number</Label>
+              <Input
+                value={settingsForm.himsContactNumber}
+                onChange={(e) => setSettingsForm({ ...settingsForm, himsContactNumber: e.target.value })}
+                placeholder="+91 98765 43210"
+              />
+              <p className="text-xs text-muted-foreground mt-1">
+                Shown to patients when the bot can't answer or hits an error — instead of a generic "try again later", it asks them to contact this number. Leave empty to just say "contact the clinic directly".
+              </p>
+            </div>
+            <div>
               <Label>Custom System Prompt (Optional)</Label>
               <Textarea
                 value={settingsForm.himsSystemPrompt}
@@ -380,6 +394,7 @@ export function OPDBotPanel() {
                   himsTriggerKeywords: keywords.length > 0 ? keywords : undefined,
                   himsGreetingMessage: settingsForm.himsGreetingMessage || undefined,
                   himsSystemPrompt: settingsForm.himsSystemPrompt || undefined,
+                  himsContactNumber: settingsForm.himsContactNumber,
                   himsAllowedLanguages: settingsForm.himsAllowedLanguages,
                 });
               }}

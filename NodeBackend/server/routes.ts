@@ -5186,6 +5186,7 @@ export async function registerRoutes(app: Express): Promise<Server> {
         himsTriggerKeywords: features.himsTriggerKeywords || ['appointment', 'book', 'doctor', 'slot', 'opd'],
         himsGreetingMessage: features.himsGreetingMessage || '',
         himsSystemPrompt: features.himsSystemPrompt || '',
+        himsContactNumber: features.himsContactNumber || '',
         himsAllowedLanguages: normalizeHimsAllowedLanguages(features.himsAllowedLanguages),
       });
     } catch (error: any) {
@@ -5199,13 +5200,14 @@ export async function registerRoutes(app: Express): Promise<Server> {
       const user = await authService.getUser(req.auth!.userId);
       if (!user) return res.status(404).json({ message: 'User not found' });
 
-      const { himsTriggerKeywords, himsGreetingMessage, himsSystemPrompt, himsAllowedLanguages } = req.body;
+      const { himsTriggerKeywords, himsGreetingMessage, himsSystemPrompt, himsContactNumber, himsAllowedLanguages } = req.body;
       const current = (user.enabledFeatures as any) || {};
       const updated = { ...current };
 
       if (himsTriggerKeywords !== undefined) updated.himsTriggerKeywords = himsTriggerKeywords;
       if (himsGreetingMessage !== undefined) updated.himsGreetingMessage = himsGreetingMessage;
       if (himsSystemPrompt !== undefined) updated.himsSystemPrompt = himsSystemPrompt;
+      if (himsContactNumber !== undefined) updated.himsContactNumber = String(himsContactNumber || '').trim();
       if (himsAllowedLanguages !== undefined) {
         if (!Array.isArray(himsAllowedLanguages) || himsAllowedLanguages.length < 1 || himsAllowedLanguages.length > 3) {
           return res.status(400).json({ message: 'Choose 1 to 3 supported OPD bot languages' });

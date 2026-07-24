@@ -81,7 +81,8 @@ Convert natural language dates to YYYY-MM-DD:
 4. Use formatting — *bold* for headings, • for bullets
 5. If no slots are available, suggest alternative dates
 6. Always confirm booking details with the patient before calling book_appointment
-7. If a tool returns no useful results, do not keep retrying similar tool calls. Give the best direct answer you can with the information you already have.`;
+7. If a tool returns no useful results, do not keep retrying similar tool calls. Give the best direct answer you can with the information you already have.
+8. NEVER tell the patient that you are "having trouble", "facing an error", or to "try again later". If you cannot answer a question, a tool fails, or the knowledge base has no answer, warmly ask the patient to contact the clinic directly. If a clinic contact number is provided in the CURRENT CONTEXT, share that exact number and invite them to call or message it. If no contact number is given, simply ask them to contact the clinic/reception directly.`;
 
 const MAX_TOOL_ROUNDS = 8;
 const MAX_REPEAT_PER_SIGNATURE = 2;
@@ -137,6 +138,20 @@ const MONTH_LOOKUP: Record<string, number> = {
 };
 
 const DEFAULT_ALLOWED_LANGUAGES = ["English", "Hindi", "Gujarati"];
+
+/**
+ * Build the patient-facing message used when the bot cannot complete a request
+ * (unexpected error, tool failure, etc). We never tell the patient the bot is
+ * "having trouble" — instead we point them to the clinic's contact number so
+ * they always have a real way to get help.
+ */
+function buildContactFallbackMessage(contactNumber?: string): string {
+  const trimmed = (contactNumber || "").trim();
+  if (trimmed) {
+    return `I'm sorry, I couldn't complete that for you right now. 🙏\n\nPlease contact the clinic directly on ${trimmed} and our team will be happy to help you.`;
+  }
+  return `I'm sorry, I couldn't complete that for you right now. 🙏\n\nPlease contact the clinic/reception directly and our team will be happy to help you.`;
+}
 
 function normalizeAllowedLanguages(value: unknown): string[] {
   const input = Array.isArray(value) ? value : [];
@@ -718,7 +733,8 @@ export class HIMSChatbotService {
             content: msg.content,
           })),
           system_prompt:
-            "You are a helpful hospital information assistant. Answer the question using only the provided context. Be concise.\n\n" +
+            "You are a helpful hospital information assistant. Answer the question using only the provided context. Be concise. " +
+            "If the context does not contain the answer, do NOT say you are having trouble or to try again later — instead ask the patient to contact the clinic/reception directly for help.\n\n" +
             buildLanguagePolicyPrompt(allowedLanguages),
           match_count: 5,
           channel: "whatsapp",
@@ -930,6 +946,7 @@ export class HIMSChatbotService {
     ownerSystemPrompt?: string,
     appUserId?: string,
     allowedLanguages: string[] = DEFAULT_ALLOWED_LANGUAGES,
+    contactNumber?: string,
   ): Promise<string> {
     const tag = "[HIMSChatbotService]";
 
@@ -949,7 +966,11 @@ export class HIMSChatbotService {
 - Organization ID: ${patient.organizationId}
 - Current Date: ${currentIst.date}
 - Current Time: ${currentIst.time}
-- Timezone: IST (${IST_TIME_ZONE})
+- Timezone: IST (${IST_TIME_ZONE})${
+      contactNumber && contactNumber.trim()
+        ? `\n- Clinic Contact Number: ${contactNumber.trim()} (share this when you cannot help, when a request fails, or when the patient needs to reach a human)`
+        : ""
+    }
 
 IMPORTANT: Always use organizationId="${patient.organizationId}" and patientPhone="${patient.phoneNumber}" in ALL function calls.`;
 
@@ -1146,6 +1167,9 @@ IMPORTANT: Always use organizationId="${patient.organizationId}" and patientPhon
   ): Promise<void> {
     const tag = "[HIMSChatbotService]";
 
+    // Hoisted so the catch block can point the patient to the clinic contact.
+    let ownerContactNumber: string | undefined;
+
     try {
       console.log(
         `${tag} 📥 Processing from ${phoneNumber}${audioData ? " (voice)" : ""}`,
@@ -1177,6 +1201,7 @@ IMPORTANT: Always use organizationId="${patient.organizationId}" and patientPhon
           const features = ownerRows[0].enabledFeatures as any;
           ownerSystemPrompt = features?.himsSystemPrompt;
           ownerAllowedLanguages = normalizeAllowedLanguages(features?.himsAllowedLanguages);
+          ownerContactNumber = (features?.himsContactNumber || "").trim() || undefined;
         }
       } catch (e) {
         console.log(`${tag} ⚠️ Could not look up owner prompt: ${(e as Error).message}`);
@@ -1195,6 +1220,7 @@ IMPORTANT: Always use organizationId="${patient.organizationId}" and patientPhon
         ownerSystemPrompt,
         appUserId,
         ownerAllowedLanguages,
+        ownerContactNumber,
       );
 
       if (audioData) {
@@ -1226,7 +1252,7 @@ IMPORTANT: Always use organizationId="${patient.organizationId}" and patientPhon
         const sendTo = replyTo || phoneNumber;
         await this.whatsappService.sendTextMessage(
           sendTo,
-          "Sorry, I'm having trouble right now. Please try again in a moment. 🙏",
+          buildContactFallbackMessage(ownerContactNumber),
         );
       } catch {
         // Swallow send error

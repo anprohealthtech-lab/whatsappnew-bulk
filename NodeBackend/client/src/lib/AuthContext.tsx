@@ -15,6 +15,7 @@ interface User {
     himsTriggerKeywords?: string[];
     himsGreetingMessage?: string;
     himsSystemPrompt?: string;
+    himsContactNumber?: string;
     himsAllowedLanguages?: string[];
     dataManagementPrompt?: string;
     dataManagementSystemPrompt?: string;
