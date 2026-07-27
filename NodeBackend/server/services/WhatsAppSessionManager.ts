@@ -5,7 +5,7 @@ import makeWASocket, {
   downloadMediaMessage,
   proto,
   WAMessageKey,
-} from '@whiskeysockets/baileys';
+} from 'baileys';
 import { EventEmitter } from 'events';
 import fs from 'fs';
 import path from 'path';
@@ -83,6 +83,10 @@ class ManagedBaileysSession extends EventEmitter implements WAServiceInstance {
   private badSessionRetryCount = 0;
   private presenceRefreshTimer: NodeJS.Timeout | null = null;
   private readonly backendSentMessageIds = new Map<string, number>();
+  // Recently sent message bodies, so getMessage() can answer a recipient's
+  // decryption-retry request. Returning undefined there loses the message
+  // silently — the send still looks successful on our side.
+  private readonly sentMessages = new Map<string, { message: proto.IMessage; createdAt: number }>();
   private authCreds: any = null;
 
   constructor(
@@ -164,7 +168,17 @@ class ManagedBaileysSession extends EventEmitter implements WAServiceInstance {
           trace: () => {},
         }),
       } as any,
-      getMessage: async (_key: WAMessageKey): Promise<proto.IMessage | undefined> => undefined,
+      // Answer decryption-retry requests from our recent-send cache. Returning
+      // undefined here drops the message on the recipient's side with no error.
+      getMessage: async (key: WAMessageKey): Promise<proto.IMessage | undefined> => {
+        const hit = this.sentMessages.get(this.sentMessageKey(key?.remoteJid, key?.id));
+        if (!hit) {
+          log(`[WA] getMessage miss for ${this.userId}/${this.sessionName}: ${key?.remoteJid} (${key?.id})`);
+          return undefined;
+        }
+        log(`[WA] getMessage serving retry for ${this.userId}/${this.sessionName}: ${key?.remoteJid} (${key?.id})`);
+        return hit.message;
+      },
       defaultQueryTimeoutMs: 60000,
       connectTimeoutMs: 60000,
       keepAliveIntervalMs: 25000,
@@ -847,20 +861,33 @@ class ManagedBaileysSession extends EventEmitter implements WAServiceInstance {
     });
   }
 
-  async sendTextMessage(phoneNumber: string, message: string): Promise<any> {
+  /** Return a live socket, waiting out a reconnect first. Throws if unavailable. */
+  private async requireSocket(context: string): Promise<WASocket> {
     if (!this.socket || !this.status.isConnected) {
       // If reconnecting, wait briefly instead of failing immediately
       const reconnected = await this.waitForReconnection();
       if (!reconnected) {
         throw new Error('WhatsApp not connected');
       }
-      log(`[WA] sendTextMessage: waited for reconnection, now connected`);
+      log(`[WA] ${context}: waited for reconnection, now connected`);
     }
+
+    // waitForReconnection() can report success before the socket is reassigned.
+    if (!this.socket) {
+      throw new Error('WhatsApp not connected');
+    }
+
+    return this.socket;
+  }
+
+  async sendTextMessage(phoneNumber: string, message: string): Promise<any> {
+    const socket = await this.requireSocket('sendTextMessage');
 
     const jid = await this.resolveOutgoingJid(phoneNumber);
     log(`[WA] sendTextMessage ${this.userId}/${this.sessionName} target="${phoneNumber}" resolvedJid="${jid}"`);
-    const result = await this.socket.sendMessage(jid, { text: message });
+    const result = await socket.sendMessage(jid, { text: message });
     this.rememberBackendSentMessageId(result?.key?.id);
+    this.rememberSentMessage(result);
 
     this.status.lastSeen = new Date();
     this.emit('message-sent', {
@@ -878,13 +905,7 @@ class ManagedBaileysSession extends EventEmitter implements WAServiceInstance {
   }
 
   async sendMediaMessage(phoneNumber: string, filePath: string, caption?: string, fileName?: string): Promise<any> {
-    if (!this.socket || !this.status.isConnected) {
-      const reconnected = await this.waitForReconnection();
-      if (!reconnected) {
-        throw new Error('WhatsApp not connected');
-      }
-      log(`[WA] sendMediaMessage: waited for reconnection, now connected`);
-    }
+    const socket = await this.requireSocket('sendMediaMessage');
 
     const jid = await this.resolveOutgoingJid(phoneNumber);
     const fileBuffer = fs.readFileSync(filePath);
@@ -916,8 +937,9 @@ class ManagedBaileysSession extends EventEmitter implements WAServiceInstance {
       };
     }
 
-    const result = await this.socket.sendMessage(jid, payload);
+    const result = await socket.sendMessage(jid, payload);
     this.rememberBackendSentMessageId(result?.key?.id);
+    this.rememberSentMessage(result);
     this.status.lastSeen = new Date();
     this.emit('message-sent', {
       messageId: result?.key?.id,
@@ -1104,6 +1126,9 @@ class ManagedBaileysSession extends EventEmitter implements WAServiceInstance {
 
     // LID-migrated contacts silently drop messages sent to their phone-number
     // JID, so replies must go back to the same @lid identity they arrived from.
+    // This needs Baileys >= 7, which keys Signal sessions per address type
+    // (`user_${domainType}`) and maps LID <-> PN. On 6.x these sends were
+    // encrypted against a colliding session and never decrypted by the peer.
     if (fromValue.endsWith('@lid')) {
       return fromValue;
     }
@@ -1177,6 +1202,32 @@ class ManagedBaileysSession extends EventEmitter implements WAServiceInstance {
     for (const [messageId, createdAt] of this.backendSentMessageIds.entries()) {
       if (createdAt < cutoff) {
         this.backendSentMessageIds.delete(messageId);
+      }
+    }
+  }
+
+  private sentMessageKey(remoteJid?: string | null, id?: string | null): string {
+    return `${remoteJid || ''}:${id || ''}`;
+  }
+
+  /** Keep a sent message around so a decryption retry can be answered. */
+  private rememberSentMessage(result: proto.IWebMessageInfo | null | undefined): void {
+    const id = result?.key?.id;
+    const message = result?.message;
+    if (!id || !message) return;
+
+    this.sentMessages.set(this.sentMessageKey(result?.key?.remoteJid, id), {
+      message,
+      createdAt: Date.now(),
+    });
+    this.cleanupSentMessages();
+  }
+
+  private cleanupSentMessages(): void {
+    const cutoff = Date.now() - 10 * 60 * 1000;
+    for (const [key, entry] of Array.from(this.sentMessages.entries())) {
+      if (entry.createdAt < cutoff) {
+        this.sentMessages.delete(key);
       }
     }
   }
