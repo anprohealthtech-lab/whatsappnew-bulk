@@ -18,6 +18,7 @@ interface Campaign {
   fixedParams: Record<string, any>;
   selectedVariation?: string;
   totalContacts: number;
+  attachmentPath?: string;
   attachmentName?: string;
   attachmentPaths?: string[];
   attachmentFileNames?: string[];
@@ -393,6 +394,34 @@ export function CampaignMessageVariationPanel({
       }
     } catch (err: any) {
       setError('Failed to upload attachment: ' + err.message);
+    } finally {
+      setIsUploading(false);
+    }
+  };
+
+  const handleRemoveAttachment = async () => {
+    if (!campaignId) return;
+    if (!confirm('Remove this attachment? Messages will be sent without it.')) return;
+
+    try {
+      setIsUploading(true);
+      setError('');
+
+      const response = await fetch(`/api/campaigns/${campaignId}/attachment`, {
+        method: 'DELETE',
+        headers: { Authorization: `Bearer ${getAuthToken()}` },
+      });
+
+      const data = await response.json();
+
+      if (data.success) {
+        setSuccess('Attachment removed.');
+        await loadCampaign();
+      } else {
+        setError(data.error);
+      }
+    } catch (err: any) {
+      setError('Failed to remove attachment: ' + err.message);
     } finally {
       setIsUploading(false);
     }
@@ -785,6 +814,7 @@ export function CampaignMessageVariationPanel({
               <input
                 type="file"
                 id="attachment"
+                accept="image/*,.pdf,.doc,.docx"
                 onChange={(e) => setAttachmentFile(e.target.files?.[0] || null)}
                 className="hidden"
               />
@@ -799,6 +829,9 @@ export function CampaignMessageVariationPanel({
                     <Upload className="w-8 h-8 mx-auto mb-2 text-muted-foreground group-hover:text-primary transition-colors" />
                     <p className="font-medium text-sm text-foreground">
                       Click to upload image or document
+                    </p>
+                    <p className="text-xs text-muted-foreground mt-1">
+                      Not the contact list — upload that under "Upload Recipients"
                     </p>
                   </>
                 )}
@@ -865,6 +898,34 @@ export function CampaignMessageVariationPanel({
                   Attachment missing from storage: {missingAttachmentNames.join(', ')}. Re-upload the file to send this campaign with attachments.
                 </AlertDescription>
               </Alert>
+            )}
+
+            {/* Single Attachment (sent with every message when the pool is empty) */}
+            {campaign.attachmentPath && (
+              <div className="mt-4 border border-border rounded-xl p-4 bg-accent/10">
+                <Label className="text-sm font-semibold flex items-center gap-2">
+                  <FileText className="w-4 h-4 text-primary" />
+                  Attachment sent with every message
+                </Label>
+                <div className="flex items-center gap-2 mt-2 p-2 rounded-lg border bg-muted/50 text-sm">
+                  <FileText className="w-4 h-4 text-primary flex-shrink-0" />
+                  <span className="truncate flex-1">
+                    {campaign.attachmentName || campaign.attachmentPath.split(/[\\/]/).pop()}
+                  </span>
+                  <Button
+                    variant="ghost"
+                    size="icon"
+                    className="h-6 w-6 flex-shrink-0"
+                    disabled={isUploading}
+                    onClick={handleRemoveAttachment}
+                  >
+                    <Trash2 className="w-3 h-3 text-destructive" />
+                  </Button>
+                </div>
+                <p className="text-xs text-muted-foreground mt-2">
+                  Remove this if it is your contact list — recipients would receive the sheet.
+                </p>
+              </div>
             )}
 
             {/* Multi-Attachment Pool */}

@@ -22,6 +22,7 @@ import type { HIMSPatient } from "@shared/schema";
 import { db } from "../db";
 import { users } from "@shared/schema";
 import { sql as drizzleSql } from "drizzle-orm";
+import { sendNotificationForEvent } from "./UserNotificationService";
 
 // ───────────────────── HIMS Supabase Edge Functions (direct) ─────────────────────
 const HIMS_SUPABASE_URL =
@@ -501,6 +502,11 @@ const MAX_CONVERSATION_HISTORY = 10;
 export class HIMSChatbotService {
   private anthropic: Anthropic | null = null;
 
+  // Tenant (session owner) context used to look up internal-notification
+  // recipients. Set per-message in processHIMSMessage so a successful
+  // appointment booking can alert the configured admin number(s).
+  private notificationTenant?: { organizationId: string; userId: string };
+
   constructor(
     private storage: IStorage,
     private whatsappService: any,
@@ -856,13 +862,26 @@ export class HIMSChatbotService {
             reason: toolInput.reason,
           });
           if (result.success) {
+            const dateDisplay = getDateDisplay(result.date || toolInput.date) || undefined;
+            // Alert the configured admin/notification number(s). Fire-and-forget.
+            void this.notifyBookingConfirmed({
+              appointmentId: result.appointmentId,
+              doctorName: result.doctorName,
+              patientName: result.patientName || toolInput.patientName || patient.name,
+              patientPhone: result.patientPhone || toolInput.patientPhone || patient.phoneNumber,
+              date: result.date || toolInput.date,
+              dateDisplay,
+              timeSlot: result.timeSlot || normalizedTimeSlot,
+              status: result.status,
+              reason: toolInput.reason,
+            });
             return JSON.stringify({
               success: true,
               appointmentId: result.appointmentId,
               doctorName: result.doctorName,
               patientName: result.patientName,
               date: result.date,
-              dateDisplay: getDateDisplay(result.date || toolInput.date),
+              dateDisplay,
               timeSlot: result.timeSlot,
               status: result.status,
             });
@@ -1156,6 +1175,55 @@ IMPORTANT: Always use organizationId="${patient.organizationId}" and patientPhon
     }
   }
 
+  // ─── Internal notification on successful booking ───
+
+  /**
+   * Alert the session owner's configured notification recipients (e.g. an
+   * admin/reception number) when a HIMS appointment is booked. Fire-and-forget:
+   * failures are logged and never break the patient-facing flow.
+   */
+  private async notifyBookingConfirmed(
+    booking: {
+      appointmentId?: string;
+      doctorName?: string;
+      patientName?: string;
+      patientPhone?: string;
+      date?: string;
+      dateDisplay?: string;
+      timeSlot?: string;
+      status?: string;
+      reason?: string;
+    },
+  ): Promise<void> {
+    const tenant = this.notificationTenant;
+    if (!tenant || !this.whatsappService?.sendTextMessage) return;
+
+    try {
+      const lines = [
+        booking.patientName ? `👤 Patient: ${booking.patientName}` : "",
+        booking.patientPhone ? `📞 Phone: ${booking.patientPhone}` : "",
+        booking.doctorName ? `👨‍⚕️ Doctor: ${booking.doctorName}` : "",
+        booking.dateDisplay || booking.date ? `📅 Date: ${booking.dateDisplay || booking.date}` : "",
+        booking.timeSlot ? `🕐 Time: ${booking.timeSlot}` : "",
+        booking.reason ? `📝 Reason: ${booking.reason}` : "",
+        booking.status ? `📌 Status: ${booking.status}` : "",
+        booking.appointmentId ? `🔖 Appointment ID: ${booking.appointmentId}` : "",
+      ].filter(Boolean);
+
+      await sendNotificationForEvent(
+        tenant,
+        this.whatsappService,
+        "booking_confirmed",
+        { title: "🏥 *New Appointment Booked*", lines },
+      );
+    } catch (error: any) {
+      console.error(
+        `[HIMSChatbotService] Failed to send booking_confirmed notification:`,
+        error?.message || error,
+      );
+    }
+  }
+
   // ─── Main entry point ───
 
   async processHIMSMessage(
@@ -1164,6 +1232,7 @@ IMPORTANT: Always use organizationId="${patient.organizationId}" and patientPhon
     audioData?: { base64: string; mimetype: string },
     replyTo?: string,
     appUserId?: string,
+    ownerOrganizationId?: string,
   ): Promise<void> {
     const tag = "[HIMSChatbotService]";
 
@@ -1185,6 +1254,13 @@ IMPORTANT: Always use organizationId="${patient.organizationId}" and patientPhon
         console.log(`${tag} ⏸️ Chatbot paused for ${phoneNumber}`);
         return;
       }
+
+      // Tenant context for internal notifications (needs both owner user id
+      // and org id — the same scope recipients are stored under).
+      this.notificationTenant =
+        appUserId && ownerOrganizationId
+          ? { organizationId: ownerOrganizationId, userId: appUserId }
+          : undefined;
 
       const history = this.getConversationFromCache(phoneNumber);
       console.log(`${tag}    ${history.length} cached messages`);

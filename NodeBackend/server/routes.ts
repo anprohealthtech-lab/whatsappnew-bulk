@@ -52,6 +52,16 @@ const upload = multer({
   },
 });
 
+// Contact lists are uploaded through the recipients endpoints, never as a message
+// attachment - blocking them here stops the contact sheet from going out to every recipient.
+const CONTACT_LIST_EXTENSIONS = ['.csv', '.xls', '.xlsx', '.xlsm', '.xlsb', '.ods'];
+
+function rejectContactListUpload(originalName?: string): string | null {
+  const ext = path.extname(originalName || '').toLowerCase();
+  if (!CONTACT_LIST_EXTENSIONS.includes(ext)) return null;
+  return `Spreadsheet files (${ext}) can't be used as a message attachment. Use "Upload Recipients" for the contact list.`;
+}
+
 type ParsedWebhookLead = {
   source?: string;
   name?: string;
@@ -2022,7 +2032,7 @@ export async function registerRoutes(app: Express): Promise<Server> {
             console.log(`🎤 Processing voice note from HIMS Patient ${data.phoneNumber}`);
             const audioPayload = { base64: data.audioData, mimetype: data.mediaInfo?.mimetype || 'audio/ogg' };
             const replyTo = data.replyTo || data.from || data.phoneNumber;
-            await himsChatbotService.processHIMSMessage(data.phoneNumber, '[Voice Note]', audioPayload, replyTo, ownerUserId);
+            await himsChatbotService.processHIMSMessage(data.phoneNumber, '[Voice Note]', audioPayload, replyTo, ownerUserId, ownerOrganizationId);
             broadcast('hims-chatbot-response-sent', { phoneNumber: data.phoneNumber, type: 'voice_processed' });
             broadcast('incoming-message', data);
             return;
@@ -2052,7 +2062,7 @@ export async function registerRoutes(app: Express): Promise<Server> {
         // Process text message through HIMS chatbot
         console.log(`🏥 Processing HIMS message from ${data.phoneNumber} (org: ${himsPatient?.organizationId})`);
         const replyTo = data.replyTo || data.from || data.phoneNumber;
-        await himsChatbotService.processHIMSMessage(data.phoneNumber, data.content, undefined, replyTo, ownerUserId);
+        await himsChatbotService.processHIMSMessage(data.phoneNumber, data.content, undefined, replyTo, ownerUserId, ownerOrganizationId);
         broadcast('hims-chatbot-response-sent', { phoneNumber: data.phoneNumber });
         broadcast('incoming-message', data);
         return;
@@ -2109,7 +2119,7 @@ export async function registerRoutes(app: Express): Promise<Server> {
 
               // Process the original message through HIMS bot
               const replyTo = data.replyTo || data.from || data.phoneNumber;
-              await himsChatbotService.processHIMSMessage(data.phoneNumber, data.content, undefined, replyTo, ownerUserId);
+              await himsChatbotService.processHIMSMessage(data.phoneNumber, data.content, undefined, replyTo, ownerUserId, ownerOrganizationId);
               broadcast('hims-chatbot-response-sent', { phoneNumber: data.phoneNumber });
               broadcast('incoming-message', data);
               return;
@@ -2746,6 +2756,11 @@ export async function registerRoutes(app: Express): Promise<Server> {
         });
       }
 
+      const contactListError = rejectContactListUpload(req.file.originalname);
+      if (contactListError) {
+        return res.status(400).json({ success: false, error: contactListError });
+      }
+
       // Save uploaded file
       const fileInfo = process.env.DATABASE_URL
         ? await persistentFileService.saveFile(req.file)
@@ -2755,7 +2770,7 @@ export async function registerRoutes(app: Express): Promise<Server> {
       const campaign = await campaignService.updateCampaignAttachment(
         campaignId,
         fileInfo.filePath,
-        fileInfo.fileName,
+        req.file.originalname || fileInfo.fileName,
         tenant
       );
 
@@ -2767,6 +2782,20 @@ export async function registerRoutes(app: Express): Promise<Server> {
         success: false,
         error: errorMessage
       });
+    }
+  });
+
+  // Remove the campaign's single attachment
+  app.delete('/api/campaigns/:campaignId/attachment', requireAuth, async (req, res) => {
+    try {
+      const tenant = getTenantFromRequest(req);
+      const { campaignId } = req.params;
+      const campaign = await campaignService.clearCampaignAttachment(campaignId, tenant);
+      res.json({ success: true, data: campaign });
+    } catch (error) {
+      const errorMessage = error instanceof Error ? error.message : 'Unknown error';
+      log(`Remove attachment error: ${errorMessage}`);
+      res.status(400).json({ success: false, error: errorMessage });
     }
   });
 
@@ -3021,6 +3050,11 @@ export async function registerRoutes(app: Express): Promise<Server> {
       const tenant = getTenantFromRequest(req);
       const { campaignId } = req.params;
       if (!req.file) return res.status(400).json({ success: false, error: 'No file provided' });
+
+      const contactListError = rejectContactListUpload(req.file.originalname);
+      if (contactListError) {
+        return res.status(400).json({ success: false, error: contactListError });
+      }
 
       const fileInfo = process.env.DATABASE_URL
         ? await persistentFileService.saveFile(req.file)

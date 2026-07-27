@@ -305,6 +305,29 @@ export class CampaignService {
     return this.enrichCampaign(updated);
   }
 
+  async clearCampaignAttachment(campaignId: string, tenant?: Partial<TenantContext>) {
+    const normalizedTenant = this.normalizeTenant(tenant);
+    const [updated] = await db
+      .update(campaigns)
+      .set({
+        attachmentPath: null,
+        attachmentName: null,
+        updatedAt: new Date(),
+      })
+      .where(and(
+        eq(campaigns.id, campaignId),
+        eq(campaigns.organizationId, normalizedTenant.organizationId),
+        eq(campaigns.userId, normalizedTenant.userId)
+      ))
+      .returning();
+
+    if (!updated) {
+      throw new Error('Campaign not found');
+    }
+
+    return this.enrichCampaign(updated);
+  }
+
   async addAttachmentToPool(campaignId: string, filePath: string, tenant?: Partial<TenantContext>) {
     const campaign = await this.getCampaign(campaignId, tenant);
     if (!campaign) {
@@ -1077,7 +1100,7 @@ export class CampaignService {
           throw new Error(`Attachment file not found: ${path.basename(selectedAttachment.path)}`);
         }
         if (attachmentToSend) {
-          log(`  📎 Sending with attachment: ${campaign.attachmentPath}`);
+          log(`  📎 Sending with attachment: ${path.basename(attachmentToSend)}${selectedAttachment?.fileName ? ` (as ${selectedAttachment.fileName})` : ''}`);
           await waService.sendMediaMessage(
             contact.phone,
             attachmentToSend,
