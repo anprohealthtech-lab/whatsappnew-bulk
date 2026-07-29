@@ -54,6 +54,61 @@ export async function useDbAuthState(sessionId: string): Promise<{
 }> {
   const diag = getDiag(sessionId);
 
+  // ---------- in-memory key cache ----------
+  //
+  // Baileys 7 looks up 'lid-mapping' and 'device-list' once per JID — a campaign
+  // fires hundreds of separate keys.get calls, each holding a single id. Batching
+  // cannot help a call of one, so those all hit Postgres at once and every read
+  // lands in the multi-second range from pool contention, stalling the send.
+  //
+  // These two categories are stable identity mappings, so holding them in memory
+  // is safe. Signal 'session'/'pre-key' are deliberately NOT cached — serving
+  // those stale broke sending once already (commit beebc5e).
+  const CACHEABLE = new Set(['lid-mapping', 'device-list']);
+  const HIT_TTL_MS = 10 * 60 * 1000;
+  const MISS_TTL_MS = 60 * 1000;   // shorter: a miss usually means we're about to learn it
+  const MAX_CACHED = 5000;
+
+  const memCache = new Map<string, { value: any; at: number }>();
+  const inFlight = new Map<string, Promise<Record<string, any>>>();
+
+  function cacheGet(category: string, keyId: string): { value: any } | null {
+    const entry = memCache.get(`${category}:${keyId}`);
+    if (!entry) return null;
+    const ttl = entry.value == null ? MISS_TTL_MS : HIT_TTL_MS;
+    if (Date.now() - entry.at > ttl) {
+      memCache.delete(`${category}:${keyId}`);
+      return null;
+    }
+    return { value: entry.value };
+  }
+
+  function cacheSet(category: string, keyId: string, value: any): void {
+    if (memCache.size >= MAX_CACHED) {
+      // Cheap eviction: drop the oldest insertion (Map preserves insert order).
+      const oldest = memCache.keys().next();
+      if (!oldest.done) memCache.delete(oldest.value);
+    }
+    memCache.set(`${category}:${keyId}`, { value: value ?? null, at: Date.now() });
+  }
+
+  function cacheInvalidate(category: string, keyId: string): void {
+    memCache.delete(`${category}:${keyId}`);
+  }
+
+  /** Share one in-flight query between concurrent lookups of the same key. */
+  function readCoalesced(category: string, keyIds: string[]): Promise<Record<string, any>> {
+    if (keyIds.length !== 1) return readMany(category, keyIds);
+
+    const key = `${category}:${keyIds[0]}`;
+    const existing = inFlight.get(key);
+    if (existing) return existing;
+
+    const pending = readMany(category, keyIds).finally(() => inFlight.delete(key));
+    inFlight.set(key, pending);
+    return pending;
+  }
+
   // ---------- low-level helpers with retry + timing ----------
 
   async function readData(category: string, keyId: string): Promise<any> {
@@ -294,20 +349,39 @@ export async function useDbAuthState(sessionId: string): Promise<{
         ): Promise<{ [id: string]: SignalDataTypeMap[T] }> => {
           const result: { [id: string]: SignalDataTypeMap[T] } = {};
           const start = Date.now();
+          const cacheable = CACHEABLE.has(type);
 
-          const rows = await readMany(type, ids);
+          const missing: string[] = [];
+          let cacheHits = 0;
           for (const id of ids) {
-            let value = rows[id];
-            if (type === 'app-state-sync-key' && value) {
-              value = proto.Message.AppStateSyncKeyData.fromObject(value);
+            const cached = cacheable ? cacheGet(type, id) : null;
+            if (cached) {
+              cacheHits++;
+              if (cached.value) result[id] = cached.value;
+            } else {
+              missing.push(id);
             }
-            if (value) {
-              result[id] = value;
+          }
+
+          if (missing.length > 0) {
+            const rows = await readCoalesced(type, missing);
+            for (const id of missing) {
+              let value = rows[id];
+              if (type === 'app-state-sync-key' && value) {
+                value = proto.Message.AppStateSyncKeyData.fromObject(value);
+              }
+              if (cacheable) cacheSet(type, id, value);
+              if (value) {
+                result[id] = value;
+              }
             }
           }
 
           const found = Object.keys(result).length;
           const elapsed = Date.now() - start;
+          if (cacheHits === ids.length) {
+            return result; // fully served from memory — not worth a log line
+          }
           if (type === 'session' || type === 'pre-key' || elapsed > 2000) {
             console.log(
               `🔑 keys.get(${type}, [${ids.length} ids]) → found ${found}/${ids.length} (${elapsed}ms)` +
@@ -329,6 +403,8 @@ export async function useDbAuthState(sessionId: string): Promise<{
             let deletes = 0;
             for (const id in entries) {
               const value = entries[id];
+              // Keep the in-memory copy honest — a write always supersedes it.
+              cacheInvalidate(category, id);
               if (value != null) {
                 upserts.push({ keyId: id, value });
               } else {
