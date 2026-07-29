@@ -1124,16 +1124,17 @@ class ManagedBaileysSession extends EventEmitter implements WAServiceInstance {
     const fromValue = from || '';
     const senderDigits = (senderPn || '').replace(/\D/g, '');
 
-    // LID-migrated contacts silently drop messages sent to their phone-number
-    // JID, so replies must go back to the same @lid identity they arrived from.
-    // This needs Baileys >= 7, which keys Signal sessions per address type
-    // (`user_${domainType}`) and maps LID <-> PN. On 6.x these sends were
-    // encrypted against a colliding session and never decrypted by the peer.
-    if (fromValue.endsWith('@lid')) {
-      return fromValue;
-    }
-
-    if (senderDigits.length >= 10 && (!fromValue || !fromValue.includes('@'))) {
+    // Always reply on the phone-number JID when WhatsApp gives us one, even if
+    // the message arrived from an @lid identity.
+    //
+    // This has been flipped both ways historically (ebf163a went to @lid,
+    // d53f569 forced PN). On Baileys >= 7 the PN form is correct: the send path
+    // resolves PN -> LID itself via signalRepository.lidMapping.getLIDForPN, so
+    // handing it the phone-number JID lets it pick the right Signal identity and
+    // populate its mapping store. Passing a raw @lid bypasses that resolution.
+    // Do not "fix" this back to @lid without first checking lidMapping usage in
+    // node_modules/baileys/lib/Socket/messages-send.js.
+    if (senderDigits.length >= 10) {
       return `${this.formatPhoneNumber(senderDigits)}@s.whatsapp.net`;
     }
 
@@ -1259,10 +1260,24 @@ class ManagedBaileysSession extends EventEmitter implements WAServiceInstance {
         limit: 20,
       });
 
+      const usable = (jid?: string | null): boolean =>
+        !!jid && jid.includes('@') && !jid.endsWith('@g.us') && !jid.includes('status@broadcast');
+
+      // Prefer the stored phone-number JID. Rows written before the LID fix
+      // hold an @lid in `from`, and returning those re-poisons recentJidByPhone
+      // on every restart — the reason outbound sends kept reverting to @lid.
+      for (const message of recentMessages) {
+        const metadata = message.metadata as Record<string, unknown> | null;
+        const senderPn = typeof metadata?.senderPn === 'string' ? metadata.senderPn : null;
+        if (usable(senderPn)) {
+          return senderPn;
+        }
+      }
+
       for (const message of recentMessages) {
         const metadata = message.metadata as Record<string, unknown> | null;
         const from = typeof metadata?.from === 'string' ? metadata.from : null;
-        if (from && from.includes('@') && !from.endsWith('@g.us') && !from.includes('status@broadcast')) {
+        if (usable(from) && !from!.endsWith('@lid')) {
           return from;
         }
       }
