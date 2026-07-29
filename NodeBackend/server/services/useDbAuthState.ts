@@ -2,7 +2,7 @@ import { proto, initAuthCreds, BufferJSON } from 'baileys';
 import type { AuthenticationCreds, AuthenticationState, SignalDataTypeMap, SignalDataSet } from 'baileys';
 import { db } from '../db';
 import { baileysAuthKeys } from '@shared/schema';
-import { eq, and, sql } from 'drizzle-orm';
+import { eq, and, inArray, sql } from 'drizzle-orm';
 
 // ─── Per-session diagnostics exposed for logging in disconnect handlers ───
 export interface DbAuthDiagnostics {
@@ -98,6 +98,60 @@ export async function useDbAuthState(sessionId: string): Promise<{
     }
   }
 
+  /**
+   * Fetch many keys of one category in a single round trip.
+   *
+   * Baileys 7 asks for hundreds of ids at once (notably 'lid-mapping', one per
+   * recipient of a campaign). Reading those one query at a time saturates the
+   * connection pool and pushes every read into multi-second territory, which
+   * stalls the send. Keep this batched.
+   */
+  async function readMany(category: string, keyIds: string[]): Promise<Record<string, any>> {
+    if (keyIds.length === 0) return {};
+
+    const start = Date.now();
+    try {
+      const rows = await db
+        .select()
+        .from(baileysAuthKeys)
+        .where(and(
+          eq(baileysAuthKeys.sessionId, sessionId),
+          eq(baileysAuthKeys.category, category),
+          inArray(baileysAuthKeys.keyId, keyIds),
+        ));
+
+      const elapsed = Date.now() - start;
+      diag.totalReads += keyIds.length;
+      if (elapsed > 2000) {
+        diag.slowQueries++;
+        console.warn(
+          `⚠️ [DbAuth:${sessionId}] SLOW batch read ${category} [${keyIds.length} ids] took ${elapsed}ms`
+        );
+      }
+
+      const out: Record<string, any> = {};
+      for (const row of rows) {
+        out[row.keyId] = JSON.parse(JSON.stringify(row.data), BufferJSON.reviver);
+      }
+      return out;
+    } catch (err: any) {
+      const elapsed = Date.now() - start;
+      diag.readFailures++;
+      diag.lastReadFailure = {
+        category,
+        keyId: `<batch of ${keyIds.length}>`,
+        error: err?.code || err?.message || String(err),
+        at: new Date().toISOString(),
+      };
+      console.error(
+        `❌ [DbAuth:${sessionId}] readMany FAILED [${category}, ${keyIds.length} ids] after ${elapsed}ms ` +
+        `(total read failures: ${diag.readFailures}): ${err?.code || err?.message}`
+      );
+      // Missing keys are safe for Baileys; a thrown error here is not.
+      return {};
+    }
+  }
+
   async function writeData(category: string, keyId: string, value: any): Promise<void> {
     const dataJson = JSON.stringify(value, BufferJSON.replacer);
     const maxRetries = category === 'creds' ? 3 : 2;
@@ -153,6 +207,59 @@ export async function useDbAuthState(sessionId: string): Promise<{
     }
   }
 
+  /** Upsert many keys of one category in a single statement. See readMany. */
+  async function writeMany(category: string, entries: Array<{ keyId: string; value: any }>): Promise<number> {
+    if (entries.length === 0) return 0;
+
+    const start = Date.now();
+    try {
+      await db
+        .insert(baileysAuthKeys)
+        .values(entries.map(({ keyId, value }) => ({
+          sessionId,
+          category,
+          keyId,
+          data: sql`${JSON.stringify(value, BufferJSON.replacer)}::jsonb`,
+        })))
+        .onConflictDoUpdate({
+          target: [baileysAuthKeys.sessionId, baileysAuthKeys.category, baileysAuthKeys.keyId],
+          set: {
+            data: sql`excluded.data`,
+            updatedAt: new Date(),
+          },
+        });
+
+      const elapsed = Date.now() - start;
+      diag.totalWrites += entries.length;
+      if (elapsed > 2000) {
+        diag.slowQueries++;
+        console.warn(
+          `⚠️ [DbAuth:${sessionId}] SLOW batch write ${category} [${entries.length} keys] took ${elapsed}ms`
+        );
+      }
+      return 0;
+    } catch (err: any) {
+      diag.writeFailures++;
+      diag.lastWriteFailure = {
+        category,
+        keyId: `<batch of ${entries.length}>`,
+        error: err?.code || err?.message || String(err),
+        at: new Date().toISOString(),
+      };
+      console.error(
+        `❌ [DbAuth:${sessionId}] writeMany FAILED [${category}, ${entries.length} keys]: ` +
+        `${err?.code || err?.message} — falling back to per-key writes`
+      );
+
+      // Fall back so one bad row cannot lose the whole batch.
+      let failed = 0;
+      await Promise.all(entries.map(({ keyId, value }) =>
+        writeData(category, keyId, value).catch(() => { failed++; })
+      ));
+      return failed;
+    }
+  }
+
   async function removeData(category: string, keyId: string): Promise<void> {
     try {
       await db
@@ -187,20 +294,21 @@ export async function useDbAuthState(sessionId: string): Promise<{
         ): Promise<{ [id: string]: SignalDataTypeMap[T] }> => {
           const result: { [id: string]: SignalDataTypeMap[T] } = {};
           const start = Date.now();
-          await Promise.all(
-            ids.map(async (id) => {
-              let value = await readData(type, id);
-              if (type === 'app-state-sync-key' && value) {
-                value = proto.Message.AppStateSyncKeyData.fromObject(value);
-              }
-              if (value) {
-                result[id] = value;
-              }
-            }),
-          );
+
+          const rows = await readMany(type, ids);
+          for (const id of ids) {
+            let value = rows[id];
+            if (type === 'app-state-sync-key' && value) {
+              value = proto.Message.AppStateSyncKeyData.fromObject(value);
+            }
+            if (value) {
+              result[id] = value;
+            }
+          }
+
           const found = Object.keys(result).length;
           const elapsed = Date.now() - start;
-          if (type === 'session' || type === 'pre-key') {
+          if (type === 'session' || type === 'pre-key' || elapsed > 2000) {
             console.log(
               `🔑 keys.get(${type}, [${ids.length} ids]) → found ${found}/${ids.length} (${elapsed}ms)` +
               (diag.readFailures > 0 ? ` ⚠️ cumulative read failures: ${diag.readFailures}` : '')
@@ -217,23 +325,23 @@ export async function useDbAuthState(sessionId: string): Promise<{
 
           for (const category in data) {
             const entries = data[category as keyof SignalDataTypeMap]!;
-            let writes = 0, deletes = 0;
+            const upserts: Array<{ keyId: string; value: any }> = [];
+            let deletes = 0;
             for (const id in entries) {
               const value = entries[id];
               if (value != null) {
-                writes++;
-                tasks.push(
-                  writeData(category, id, value).catch((err) => {
-                    failedWrites++;
-                    // Don't rethrow — allow other writes to complete
-                  })
-                );
+                upserts.push({ keyId: id, value });
               } else {
                 deletes++;
                 tasks.push(removeData(category, id));
               }
             }
-            summary.push(`${category}: +${writes} -${deletes}`);
+            if (upserts.length > 0) {
+              tasks.push(
+                writeMany(category, upserts).then((failed) => { failedWrites += failed; })
+              );
+            }
+            summary.push(`${category}: +${upserts.length} -${deletes}`);
           }
           await Promise.all(tasks);
           const elapsed = Date.now() - start;
