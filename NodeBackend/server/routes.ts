@@ -20,7 +20,7 @@ import { voiceTenantService } from "./services/VoiceTenantService";
 import { sendMessageSchema, sendReportSchema, createCampaignSchema, bulkSendSchema, chatbotConfigSchema, flagLeadSchema, registerHRAdminSchema, hrChatbotConfigSchema, demoSchedules, scheduleCampaignSchema, userRagAgentSchema, userRagAgents, userNotificationRecipientSchema, userNotificationRecipients, registerSchema, loginSchema, registerHIMSPatientSchema, leadPipelineSchema, leadPipelines } from "@shared/schema";
 import { log } from "./utils";
 import { getDbHealth, db } from "./db";
-import { sql as drizzleSql, eq, and, desc } from "drizzle-orm";
+import { sql as drizzleSql, eq, and, desc, like } from "drizzle-orm";
 import { withRetry } from "./dbRetry";
 import { z } from "zod";
 import * as XLSX from 'xlsx';
@@ -3408,13 +3408,17 @@ export async function registerRoutes(app: Express): Promise<Server> {
   });
 
   // List bot-scheduled follow-ups for the current tenant (newest first).
+  // Optional ?phone=9909991405 narrows it to one lead — the fastest way to tell
+  // "never scheduled" apart from "scheduled but not sent yet / failed".
   app.get('/api/lead-followups', requireAuth, async (req, res) => {
     try {
       const tenant = getTenantFromRequest(req);
+      const phone = String(req.query.phone || '').replace(/\D/g, '');
       const rows = await db.select().from(leadFollowups).where(and(
         eq(leadFollowups.organizationId, tenant.organizationId),
-        eq(leadFollowups.userId, tenant.userId)
-      )).orderBy(desc(leadFollowups.scheduledAt)).limit(50);
+        eq(leadFollowups.userId, tenant.userId),
+        ...(phone ? [like(leadFollowups.phoneNumber, `%${phone}`)] : [])
+      )).orderBy(desc(leadFollowups.scheduledAt)).limit(phone ? 200 : 50);
       res.json({ success: true, data: rows });
     } catch (error) {
       const errorMessage = error instanceof Error ? error.message : 'Unknown error';
@@ -3649,7 +3653,12 @@ export async function registerRoutes(app: Express): Promise<Server> {
         }
       }
 
+      if (!pipelineHasDrip && !botSequenceTemplate) {
+        log(`[LeadIngest] pipeline "${pipeline.name}" has no drip source — pipeline.dripEnabled=${pipeline.dripEnabled}, dripTemplate=${Array.isArray(pipeline.dripTemplate) ? (pipeline.dripTemplate as any).length : 0} item(s), and no lead bot with an active auto-sequence. Leads will be saved but nothing will be sent.`);
+      }
+
       let processed = 0;
+      const outcomes: Array<{ phone: string; drip: string }> = [];
       const errors: Array<{ phone: string; error: string }> = [];
       for (const lead of rawLeads) {
         const rawPhone = lead?.phone ?? lead?.phoneNumber ?? lead?.mobile;
@@ -3659,13 +3668,16 @@ export async function registerRoutes(app: Express): Promise<Server> {
           // Preserve any extra sheet columns for context.
           const { phone: _p, phoneNumber: _pn, mobile: _m, name: _n, Name: _N, token: _t, ...extra } = lead || {};
 
-          // Only brand-new contacts should trigger the drip sequence.
-          const [existing] = await db.select({ id: contactsTable.id }).from(contactsTable).where(and(
-            eq(contactsTable.organizationId, pipeline.organizationId),
-            eq(contactsTable.userId, pipeline.userId),
-            eq(contactsTable.phoneNumber, phone)
+          // Don't drip a lead twice. The test is "have we ever queued a drip for
+          // this number?" — NOT "is the contact row new". A contact can already
+          // exist for unrelated reasons (bulk campaign upload, an inbound message,
+          // the external API), and gating on that silently swallowed the drip for
+          // every sheet lead that happened to be in the contact book already.
+          const [alreadyDripped] = await db.select({ id: leadFollowups.id }).from(leadFollowups).where(and(
+            eq(leadFollowups.organizationId, pipeline.organizationId),
+            eq(leadFollowups.userId, pipeline.userId),
+            eq(leadFollowups.phoneNumber, phone)
           )).limit(1);
-          const isNewContact = !existing;
 
           await db.insert(contactsTable).values({
             organizationId: pipeline.organizationId,
@@ -3686,26 +3698,36 @@ export async function registerRoutes(app: Express): Promise<Server> {
             },
           });
 
-          // New lead → schedule the pre-generated sequence (no LLM call here):
+          // Schedule the pre-generated sequence (no LLM call here): the
           // pipeline's own drip if set, otherwise the lead bot's own sequence.
-          if (isNewContact) {
-            const template = pipelineHasDrip ? (pipeline.dripTemplate as any) : botSequenceTemplate;
-            if (template && template.length) {
-              await leadDripService.scheduleForLead(
-                { organizationId: pipeline.organizationId, userId: pipeline.userId },
-                phone,
-                template,
-                name
-              );
-            }
+          const template = pipelineHasDrip ? (pipeline.dripTemplate as any) : botSequenceTemplate;
+          let drip: string;
+          if (alreadyDripped) {
+            drip = 'skipped: already dripped earlier';
+          } else if (!template || !template.length) {
+            drip = 'skipped: pipeline has no drip template and no lead-bot auto-sequence';
+          } else {
+            const queued = await leadDripService.scheduleForLead(
+              { organizationId: pipeline.organizationId, userId: pipeline.userId },
+              phone,
+              template,
+              name
+            );
+            drip = queued > 0 ? `queued ${queued}` : 'skipped: template produced no sendable message';
           }
+          if (!drip.startsWith('queued')) {
+            log(`[LeadIngest] ${phone} (${pipeline.name}) — drip ${drip}`);
+          }
+          outcomes.push({ phone, drip });
           processed++;
         } catch (e) {
-          errors.push({ phone: String(rawPhone || 'unknown'), error: e instanceof Error ? e.message : 'Unknown error' });
+          const reason = e instanceof Error ? e.message : 'Unknown error';
+          log(`[LeadIngest] ❌ ${String(rawPhone || 'unknown')} (${pipeline.name}) — ${reason}`);
+          errors.push({ phone: String(rawPhone || 'unknown'), error: reason });
         }
       }
 
-      res.json({ success: true, pipeline: pipeline.name, processed, failed: errors.length, errors });
+      res.json({ success: true, pipeline: pipeline.name, processed, failed: errors.length, errors, leads: outcomes });
     } catch (error) {
       res.status(500).json({ success: false, error: error instanceof Error ? error.message : 'Unknown error' });
     }
