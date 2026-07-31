@@ -1108,7 +1108,48 @@ class ManagedBaileysSession extends EventEmitter implements WAServiceInstance {
       return stored;
     }
 
-    return `${digits}@s.whatsapp.net`;
+    // Cold number — nobody at this address has ever messaged us, so both lookups
+    // above miss. Chatbot replies and campaigns rarely land here (they reply to a
+    // JID WhatsApp gave us, or address the existing contact book), but every lead
+    // ingested from a sheet does. Constructing "<digits>@s.whatsapp.net" and
+    // hoping is what made those sends succeed locally and never arrive: the
+    // stanza goes out, we get a message id and our own echo back, and the
+    // recipient's device list was never resolved. Ask WhatsApp for the real jid.
+    return await this.lookupJidOnWhatsApp(digits);
+  }
+
+  /**
+   * Resolve a cold number to its real jid via the server. Throws if the number
+   * simply isn't on WhatsApp — better a follow-up marked failed with a real
+   * reason than one reported as sent that nobody received. A lookup that errors
+   * or times out falls back to the constructed jid rather than blocking sends.
+   */
+  private async lookupJidOnWhatsApp(digits: string): Promise<string> {
+    const fallback = `${digits}@s.whatsapp.net`;
+    if (!this.socket) {
+      return fallback;
+    }
+
+    let results: Array<{ exists: boolean; jid: string; lid?: string }> | undefined;
+    try {
+      results = await this.socket.onWhatsApp(fallback) as any;
+    } catch (error: any) {
+      log(`[WA] onWhatsApp lookup failed for ${digits} (${this.userId}/${this.sessionName}): ${error?.message || error} — sending to ${fallback} unverified`);
+      return fallback;
+    }
+
+    const hit = results?.[0];
+    if (!hit) {
+      throw new Error(`${digits} is not registered on WhatsApp`);
+    }
+    if (hit.exists === false) {
+      throw new Error(`${digits} is not registered on WhatsApp`);
+    }
+
+    const jid = hit.jid || fallback;
+    log(`[WA] onWhatsApp resolved ${digits} → ${jid}${hit.lid ? ` (lid ${hit.lid})` : ''} for ${this.userId}/${this.sessionName}`);
+    this.recentJidByPhone.set(digits, { jid, updatedAt: Date.now() });
+    return jid;
   }
 
   private resolveIncomingPhoneNumber(from?: string | null, senderPn?: string | null): string {

@@ -10,7 +10,7 @@
 
 import { db } from '../db';
 import { leadFollowups } from '@shared/schema';
-import { and, eq, lte } from 'drizzle-orm';
+import { and, eq, gte, lte } from 'drizzle-orm';
 import { sessionManager } from './WhatsAppSessionManager';
 import { storage } from '../storage';
 import { log } from '../utils';
@@ -20,6 +20,11 @@ const STALE_AFTER_MS = 3 * 24 * 60 * 60 * 1000; // 3 days
 // A send that never settles must not wedge the ticker — `running` would stay true
 // forever and every later drip would silently stop going out.
 const SEND_TIMEOUT_MS = 60 * 1000;
+// Two rows carrying the same text to the same lead inside this window are a
+// duplicate, not a deliberate repeat.
+const DUPLICATE_WINDOW_MS = 24 * 60 * 60 * 1000;
+// How often to re-report follow-ups held for a disconnected session.
+const HELD_LOG_INTERVAL_MS = 10 * 60 * 1000;
 
 export class LeadFollowupService {
   private timer: NodeJS.Timeout | null = null;
@@ -54,9 +59,13 @@ export class LeadFollowupService {
         eq(leadFollowups.status, 'scheduled'),
         lte(leadFollowups.scheduledAt, now),
       ));
-      if (due.length > 0) {
-        log(`⏰ Lead follow-up tick: ${due.length} due`);
-      }
+
+      let sent = 0, cancelled = 0, failed = 0, retrying = 0;
+      // Rows we can't send yet, grouped by owner — a bare count of "due" says
+      // nothing about WHY nothing is moving.
+      const heldByUser = new Map<string, { count: number; sessions: string }>();
+      // One session lookup per user per tick, not one per row.
+      const sessionsByUser = new Map<string, Awaited<ReturnType<typeof sessionManager.listSessions>>>();
 
       for (const followup of due) {
         const tenant = { organizationId: followup.organizationId, userId: followup.userId };
@@ -66,25 +75,54 @@ export class LeadFollowupService {
           if (contact?.chatbotActive === 'false') {
             log(`⏸️ Follow-up ${followup.id} to ${followup.phoneNumber} cancelled — chatbot paused for this lead`);
             await this.mark(followup.id, 'cancelled', 'chatbot paused for lead');
+            cancelled++;
             continue;
           }
 
-          const sessions = await sessionManager.listSessions(followup.userId);
+          // Never send the same text to the same lead twice. Two rows carrying
+          // the same message (double ingest, overlapping pipelines, a drip that
+          // duplicates a bot follow-up) otherwise both fire in the same tick and
+          // the lead gets the message twice, one second apart.
+          const [duplicate] = await db.select({ id: leadFollowups.id }).from(leadFollowups).where(and(
+            eq(leadFollowups.organizationId, followup.organizationId),
+            eq(leadFollowups.userId, followup.userId),
+            eq(leadFollowups.phoneNumber, followup.phoneNumber),
+            eq(leadFollowups.message, followup.message),
+            eq(leadFollowups.status, 'sent'),
+            gte(leadFollowups.sentAt, new Date(now.getTime() - DUPLICATE_WINDOW_MS)),
+          )).limit(1);
+          if (duplicate) {
+            log(`🚫 Follow-up ${followup.id} to ${followup.phoneNumber} cancelled — same message already sent (${duplicate.id})`);
+            await this.mark(followup.id, 'cancelled', `duplicate of already-sent follow-up ${duplicate.id}`);
+            cancelled++;
+            continue;
+          }
+
+          let sessions = sessionsByUser.get(followup.userId);
+          if (!sessions) {
+            sessions = await sessionManager.listSessions(followup.userId);
+            sessionsByUser.set(followup.userId, sessions);
+          }
           const connected = sessions.find((s) => s.status === 'connected');
           if (!connected) {
             const overdueMs = now.getTime() - new Date(followup.scheduledAt).getTime();
             if (overdueMs > STALE_AFTER_MS) {
               log(`❌ Follow-up ${followup.id} to ${followup.phoneNumber} expired — no connected WhatsApp session for 3 days`);
               await this.mark(followup.id, 'failed', 'no connected WhatsApp session before expiry');
+              failed++;
               continue;
             }
             // Leave scheduled — retry on a later tick when a session connects.
             // This used to be entirely silent, which made a stalled drip look
             // identical to one that was never scheduled at all.
-            const lastLoggedAt = this.lastNoSessionLogAt.get(followup.userId) || 0;
-            if (Date.now() - lastLoggedAt > 10 * 60 * 1000) {
-              this.lastNoSessionLogAt.set(followup.userId, Date.now());
-              log(`⏳ Holding lead follow-up(s) for user ${followup.userId}: no connected WhatsApp session (sessions: ${JSON.stringify(sessions.map((s) => ({ sessionName: s.sessionName, status: s.status })))})`);
+            const held = heldByUser.get(followup.userId);
+            if (held) {
+              held.count++;
+            } else {
+              heldByUser.set(followup.userId, {
+                count: 1,
+                sessions: JSON.stringify(sessions.map((s) => ({ sessionName: s.sessionName, status: s.status }))),
+              });
             }
             continue;
           }
@@ -108,6 +146,7 @@ export class LeadFollowupService {
           });
 
           log(`📤 Sent bot follow-up ${followup.id} to ${followup.phoneNumber}`);
+          sent++;
         } catch (error) {
           const reason = error instanceof Error ? error.message : 'Unknown error';
           const overdueMs = now.getTime() - new Date(followup.scheduledAt).getTime();
@@ -116,12 +155,27 @@ export class LeadFollowupService {
           // instead of burning the message, until it goes stale.
           if (this.isTransient(reason) && overdueMs <= STALE_AFTER_MS) {
             log(`⏳ Retrying follow-up ${followup.id} to ${followup.phoneNumber} later: ${reason}`);
+            retrying++;
             continue;
           }
           log(`⚠️ Failed to send follow-up ${followup.id} to ${followup.phoneNumber}: ${reason}`);
           await this.mark(followup.id, 'failed', reason);
+          failed++;
         }
       }
+
+      // Only report a tick that did something; a steady "N due" line every 30s
+      // is noise that hides the one line that matters.
+      if (sent || cancelled || failed || retrying) {
+        log(`⏰ Lead follow-up tick: ${due.length} due → ${sent} sent, ${cancelled} cancelled, ${failed} failed, ${retrying} retrying, ${due.length - sent - cancelled - failed - retrying} held`);
+      }
+      heldByUser.forEach((held, userId) => {
+        const lastLoggedAt = this.lastNoSessionLogAt.get(userId) || 0;
+        if (Date.now() - lastLoggedAt > HELD_LOG_INTERVAL_MS) {
+          this.lastNoSessionLogAt.set(userId, Date.now());
+          log(`⏳ Holding ${held.count} lead follow-up(s) for user ${userId}: no connected WhatsApp session (sessions: ${held.sessions})`);
+        }
+      });
     } finally {
       this.running = false;
     }
