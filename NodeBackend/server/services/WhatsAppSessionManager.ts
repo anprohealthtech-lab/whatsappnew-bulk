@@ -57,6 +57,11 @@ export interface WAServiceInstance {
   cleanup(): Promise<void>;
 }
 
+// How long a sent message stays available to answer a decryption retry, and the
+// hard cap on that store (two keys per message).
+const SENT_MESSAGE_TTL_MS = 24 * 60 * 60 * 1000;
+const SENT_MESSAGE_MAX_ENTRIES = 10000;
+
 class ManagedBaileysSession extends EventEmitter implements WAServiceInstance {
   private socket: WASocket | null = null;
   private reconnectTimer: NodeJS.Timeout | null = null;
@@ -171,13 +176,13 @@ class ManagedBaileysSession extends EventEmitter implements WAServiceInstance {
       // Answer decryption-retry requests from our recent-send cache. Returning
       // undefined here drops the message on the recipient's side with no error.
       getMessage: async (key: WAMessageKey): Promise<proto.IMessage | undefined> => {
-        const hit = this.sentMessages.get(this.sentMessageKey(key?.remoteJid, key?.id));
+        const hit = this.lookupSentMessage(key?.remoteJid, key?.id);
         if (!hit) {
-          log(`[WA] getMessage miss for ${this.userId}/${this.sessionName}: ${key?.remoteJid} (${key?.id})`);
+          log(`[WA] ⚠️ getMessage MISS for ${this.userId}/${this.sessionName}: ${key?.remoteJid} (${key?.id}) — recipient asked to re-decrypt a message we no longer hold, so it is lost on their side despite being reported as sent`);
           return undefined;
         }
         log(`[WA] getMessage serving retry for ${this.userId}/${this.sessionName}: ${key?.remoteJid} (${key?.id})`);
-        return hit.message;
+        return hit;
       },
       defaultQueryTimeoutMs: 60000,
       connectTimeoutMs: 60000,
@@ -1252,23 +1257,49 @@ class ManagedBaileysSession extends EventEmitter implements WAServiceInstance {
     return `${remoteJid || ''}:${id || ''}`;
   }
 
-  /** Keep a sent message around so a decryption retry can be answered. */
+  /**
+   * Keep a sent message around so a decryption retry can be answered.
+   *
+   * Stored under the message id on its own as well as jid+id. A retry for a
+   * message we addressed to "<pn>@s.whatsapp.net" comes back with the sender's
+   * @lid as remoteJid, so a jid-qualified lookup misses and getMessage returns
+   * undefined — which loses the message on the recipient's side while our send
+   * still reports success.
+   */
   private rememberSentMessage(result: proto.IWebMessageInfo | null | undefined): void {
     const id = result?.key?.id;
     const message = result?.message;
     if (!id || !message) return;
 
-    this.sentMessages.set(this.sentMessageKey(result?.key?.remoteJid, id), {
-      message,
-      createdAt: Date.now(),
-    });
+    const entry = { message, createdAt: Date.now() };
+    this.sentMessages.set(this.sentMessageKey(result?.key?.remoteJid, id), entry);
+    this.sentMessages.set(id, entry);
     this.cleanupSentMessages();
   }
 
+  private lookupSentMessage(remoteJid?: string | null, id?: string | null): proto.IMessage | undefined {
+    return (
+      this.sentMessages.get(this.sentMessageKey(remoteJid, id))?.message
+      ?? (id ? this.sentMessages.get(id)?.message : undefined)
+    );
+  }
+
   private cleanupSentMessages(): void {
-    const cutoff = Date.now() - 10 * 60 * 1000;
+    // A recipient whose phone was offline can ask for a retry hours later. The
+    // old 10-minute window meant those retries found nothing and the message was
+    // silently dropped — the failure mode drips hit most, since they fire from a
+    // timer to cold numbers rather than into an active conversation.
+    const cutoff = Date.now() - SENT_MESSAGE_TTL_MS;
     for (const [key, entry] of Array.from(this.sentMessages.entries())) {
       if (entry.createdAt < cutoff) {
+        this.sentMessages.delete(key);
+      }
+    }
+    // Bound the map regardless of TTL — two keys per message, oldest first.
+    let overflow = this.sentMessages.size - SENT_MESSAGE_MAX_ENTRIES;
+    if (overflow > 0) {
+      for (const key of Array.from(this.sentMessages.keys())) {
+        if (overflow-- <= 0) break;
         this.sentMessages.delete(key);
       }
     }
