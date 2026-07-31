@@ -61,10 +61,9 @@ export interface WAServiceInstance {
 // hard cap on that store (two keys per message).
 const SENT_MESSAGE_TTL_MS = 24 * 60 * 60 * 1000;
 const SENT_MESSAGE_MAX_ENTRIES = 10000;
-// How long to wait for WhatsApp to acknowledge a message we sent before treating
-// the send as failed. Acks normally land well inside a second.
-const SERVER_ACK_TIMEOUT_MS = parseInt(process.env.WA_SERVER_ACK_TIMEOUT_MS || '15000');
-const WA_STATUS_SERVER_ACK = 2;
+// proto.WebMessageInfo.Status — 0 ERROR, 3 DELIVERY_ACK.
+const WA_STATUS_ERROR = 0;
+const WA_STATUS_DELIVERY_ACK = 3;
 
 class ManagedBaileysSession extends EventEmitter implements WAServiceInstance {
   private socket: WASocket | null = null;
@@ -96,9 +95,8 @@ class ManagedBaileysSession extends EventEmitter implements WAServiceInstance {
   // decryption-retry request. Returning undefined there loses the message
   // silently — the send still looks successful on our side.
   private readonly sentMessages = new Map<string, { message: proto.IMessage; createdAt: number }>();
-  // Server acks for messages we sent, and anyone currently blocked on one.
+  // Latest status the server/recipient reported for messages we sent.
   private readonly ackedMessageIds = new Map<string, { status: number; at: number }>();
-  private readonly ackWaiters = new Map<string, (status: number) => void>();
   private authCreds: any = null;
 
   constructor(
@@ -162,24 +160,12 @@ class ManagedBaileysSession extends EventEmitter implements WAServiceInstance {
       printQRInTerminal: false,
       browser,
       generateHighQualityLinkPreview: false,
-      logger: {
-        level: 'silent',
-        fatal: () => {},
-        error: () => {},
-        warn: () => {},
-        info: () => {},
-        debug: () => {},
-        trace: () => {},
-        child: () => ({
-          level: 'silent',
-          fatal: () => {},
-          error: () => {},
-          warn: () => {},
-          info: () => {},
-          debug: () => {},
-          trace: () => {},
-        }),
-      } as any,
+      // Baileys reports why the server rejected a stanza at warn/error level —
+      // "received error in ack", "smax-invalid (479): stanza rejected by server".
+      // These used to be no-ops, so a rejected send left no trace anywhere and
+      // looked exactly like a successful one. Keep debug/trace silent, surface
+      // the rest.
+      logger: this.buildBaileysLogger(),
       // Answer decryption-retry requests from our recent-send cache. Returning
       // undefined here drops the message on the recipient's side with no error.
       getMessage: async (key: WAMessageKey): Promise<proto.IMessage | undefined> => {
@@ -913,7 +899,6 @@ class ManagedBaileysSession extends EventEmitter implements WAServiceInstance {
     const result = await socket.sendMessage(jid, { text: message });
     this.rememberBackendSentMessageId(result?.key?.id);
     this.rememberSentMessage(result);
-    await this.waitForServerAck(result?.key?.id, `text message to ${jid}`);
 
     this.status.lastSeen = new Date();
     this.emit('message-sent', {
@@ -966,7 +951,6 @@ class ManagedBaileysSession extends EventEmitter implements WAServiceInstance {
     const result = await socket.sendMessage(jid, payload);
     this.rememberBackendSentMessageId(result?.key?.id);
     this.rememberSentMessage(result);
-    await this.waitForServerAck(result?.key?.id, `media message to ${jid}`);
     this.status.lastSeen = new Date();
     this.emit('message-sent', {
       messageId: result?.key?.id,
@@ -1275,55 +1259,56 @@ class ManagedBaileysSession extends EventEmitter implements WAServiceInstance {
     }
   }
 
+  private buildBaileysLogger(): any {
+    const emit = (level: string) => (...args: any[]) => {
+      try {
+        // Baileys calls logger.warn(obj, msg) or logger.warn(msg).
+        const [first, second] = args;
+        const message = typeof first === 'string' ? first : second;
+        const detail = typeof first === 'string' ? undefined : first;
+        if (!message && !detail) return;
+        const detailText = detail ? ` ${JSON.stringify(detail, (_k, v) => (Buffer.isBuffer(v) ? '<buffer>' : v))}` : '';
+        log(`[WA:baileys:${level}] ${this.userId}/${this.sessionName} ${message || ''}${detailText}`.slice(0, 2000));
+      } catch {}
+    };
+    const logger: any = {
+      level: 'warn',
+      fatal: emit('fatal'),
+      error: emit('error'),
+      warn: emit('warn'),
+      info: () => {},
+      debug: () => {},
+      trace: () => {},
+    };
+    logger.child = () => logger;
+    return logger;
+  }
+
+  /**
+   * Record what the server/recipient said about a message we sent.
+   *
+   * Baileys only emits a status here in two cases: an ERROR ack (the server
+   * rejected the stanza) or a receipt from the recipient's device (DELIVERY_ACK
+   * / READ). There is NO event for a plain successful relay, so absence of a
+   * status means nothing on its own — only ERROR is a real negative signal, and
+   * DELIVERY_ACK is the only real proof a message landed.
+   */
   private recordServerAck(id: string, status: number): void {
     this.ackedMessageIds.set(id, { status, at: Date.now() });
-    const waiter = this.ackWaiters.get(id);
-    if (waiter && status >= WA_STATUS_SERVER_ACK) {
-      this.ackWaiters.delete(id);
-      waiter(status);
+
+    if (!this.backendSentMessageIds.has(id)) return;
+    if (status === WA_STATUS_ERROR) {
+      log(`[WA] ❌ WhatsApp REJECTED our message ${id} for ${this.userId}/${this.sessionName} — it was never delivered`);
+    } else if (status >= WA_STATUS_DELIVERY_ACK) {
+      log(`[WA] ✅ Delivery confirmed for ${id} (${this.userId}/${this.sessionName})`);
     }
+
     // Keep the ack map from growing without bound on long-lived sessions.
     if (this.ackedMessageIds.size > SENT_MESSAGE_MAX_ENTRIES) {
       const cutoff = Date.now() - SENT_MESSAGE_TTL_MS;
       this.ackedMessageIds.forEach((entry, key) => {
         if (entry.at < cutoff) this.ackedMessageIds.delete(key);
       });
-    }
-  }
-
-  /**
-   * Block until WhatsApp acknowledges the message, or give up.
-   *
-   * relayMessage() only does `await sendNode(stanza)` — it hands bytes to the
-   * websocket and returns. On a half-open socket (one the keep-alive has not yet
-   * noticed, which is what an idle backend gets on a cloud host) the write
-   * succeeds, sendMessage() resolves with a message id, and the message reaches
-   * nobody — not the recipient, not the sender's own phone. That is
-   * indistinguishable from success unless we wait for this ack.
-   */
-  private async waitForServerAck(id: string | null | undefined, context: string): Promise<void> {
-    // Escape hatch: WA_SERVER_ACK_TIMEOUT_MS=0 restores the old fire-and-forget
-    // behaviour if acks ever turn out to be unreliable for some message type.
-    if (!id || SERVER_ACK_TIMEOUT_MS <= 0) return;
-
-    const existing = this.ackedMessageIds.get(id);
-    if (existing && existing.status >= WA_STATUS_SERVER_ACK) return;
-
-    const acked = await new Promise<boolean>((resolve) => {
-      const timer = setTimeout(() => {
-        this.ackWaiters.delete(id);
-        resolve(false);
-      }, SERVER_ACK_TIMEOUT_MS);
-      this.ackWaiters.set(id, () => {
-        clearTimeout(timer);
-        resolve(true);
-      });
-    });
-
-    if (!acked) {
-      throw new Error(
-        `WhatsApp did not acknowledge ${context} (${id}) within ${SERVER_ACK_TIMEOUT_MS / 1000}s — the socket accepted the write but the server never confirmed it`,
-      );
     }
   }
 
