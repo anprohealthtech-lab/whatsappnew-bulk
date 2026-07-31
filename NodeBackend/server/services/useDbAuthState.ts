@@ -1,5 +1,5 @@
-import { proto, initAuthCreds, BufferJSON } from 'baileys';
-import type { AuthenticationCreds, AuthenticationState, SignalDataTypeMap, SignalDataSet } from 'baileys';
+import { proto, initAuthCreds, BufferJSON } from '@whiskeysockets/baileys';
+import type { AuthenticationCreds, AuthenticationState, SignalDataTypeMap, SignalDataSet } from '@whiskeysockets/baileys';
 import { db } from '../db';
 import { baileysAuthKeys } from '@shared/schema';
 import { eq, and, inArray, sql } from 'drizzle-orm';

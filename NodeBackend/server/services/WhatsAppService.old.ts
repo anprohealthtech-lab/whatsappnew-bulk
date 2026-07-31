@@ -5,7 +5,7 @@ import makeWASocket, {
   WASocket,
   ConnectionState,
   proto
-} from 'baileys';
+} from '@whiskeysockets/baileys';
 import { Boom } from '@hapi/boom';
 import QRCode from 'qrcode-terminal';
 import { EventEmitter } from 'events';

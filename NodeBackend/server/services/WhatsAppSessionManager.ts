@@ -5,7 +5,7 @@ import makeWASocket, {
   downloadMediaMessage,
   proto,
   WAMessageKey,
-} from 'baileys';
+} from '@whiskeysockets/baileys';
 import { EventEmitter } from 'events';
 import fs from 'fs';
 import path from 'path';
