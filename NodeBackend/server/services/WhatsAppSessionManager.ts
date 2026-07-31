@@ -61,6 +61,10 @@ export interface WAServiceInstance {
 // hard cap on that store (two keys per message).
 const SENT_MESSAGE_TTL_MS = 24 * 60 * 60 * 1000;
 const SENT_MESSAGE_MAX_ENTRIES = 10000;
+// How long to wait for WhatsApp to acknowledge a message we sent before treating
+// the send as failed. Acks normally land well inside a second.
+const SERVER_ACK_TIMEOUT_MS = parseInt(process.env.WA_SERVER_ACK_TIMEOUT_MS || '15000');
+const WA_STATUS_SERVER_ACK = 2;
 
 class ManagedBaileysSession extends EventEmitter implements WAServiceInstance {
   private socket: WASocket | null = null;
@@ -92,6 +96,9 @@ class ManagedBaileysSession extends EventEmitter implements WAServiceInstance {
   // decryption-retry request. Returning undefined there loses the message
   // silently — the send still looks successful on our side.
   private readonly sentMessages = new Map<string, { message: proto.IMessage; createdAt: number }>();
+  // Server acks for messages we sent, and anyone currently blocked on one.
+  private readonly ackedMessageIds = new Map<string, { status: number; at: number }>();
+  private readonly ackWaiters = new Map<string, (status: number) => void>();
   private authCreds: any = null;
 
   constructor(
@@ -213,6 +220,19 @@ class ManagedBaileysSession extends EventEmitter implements WAServiceInstance {
         log(`[WA] Saved auth for ${this.userId}/${this.sessionName} (dbSession=${this.dbSessionId})`);
       } catch (error: any) {
         log(`[WA] 🚨 CRITICAL: Failed saving auth for ${this.userId}/${this.sessionName}: ${error?.message || error}`);
+      }
+    });
+
+    // The server ack for a message we sent. Baileys' sendMessage() resolves as
+    // soon as the stanza is written to the websocket — it never waits for this —
+    // so without it a send into a half-open socket looks identical to a
+    // successful one.
+    socket.ev.on('messages.update', (updates: any[]) => {
+      for (const update of updates || []) {
+        const id = update?.key?.id;
+        const status = update?.update?.status;
+        if (!id || typeof status !== 'number') continue;
+        this.recordServerAck(id, status);
       }
     });
 
@@ -893,6 +913,7 @@ class ManagedBaileysSession extends EventEmitter implements WAServiceInstance {
     const result = await socket.sendMessage(jid, { text: message });
     this.rememberBackendSentMessageId(result?.key?.id);
     this.rememberSentMessage(result);
+    await this.waitForServerAck(result?.key?.id, `text message to ${jid}`);
 
     this.status.lastSeen = new Date();
     this.emit('message-sent', {
@@ -945,6 +966,7 @@ class ManagedBaileysSession extends EventEmitter implements WAServiceInstance {
     const result = await socket.sendMessage(jid, payload);
     this.rememberBackendSentMessageId(result?.key?.id);
     this.rememberSentMessage(result);
+    await this.waitForServerAck(result?.key?.id, `media message to ${jid}`);
     this.status.lastSeen = new Date();
     this.emit('message-sent', {
       messageId: result?.key?.id,
@@ -1250,6 +1272,58 @@ class ManagedBaileysSession extends EventEmitter implements WAServiceInstance {
       if (createdAt < cutoff) {
         this.backendSentMessageIds.delete(messageId);
       }
+    }
+  }
+
+  private recordServerAck(id: string, status: number): void {
+    this.ackedMessageIds.set(id, { status, at: Date.now() });
+    const waiter = this.ackWaiters.get(id);
+    if (waiter && status >= WA_STATUS_SERVER_ACK) {
+      this.ackWaiters.delete(id);
+      waiter(status);
+    }
+    // Keep the ack map from growing without bound on long-lived sessions.
+    if (this.ackedMessageIds.size > SENT_MESSAGE_MAX_ENTRIES) {
+      const cutoff = Date.now() - SENT_MESSAGE_TTL_MS;
+      this.ackedMessageIds.forEach((entry, key) => {
+        if (entry.at < cutoff) this.ackedMessageIds.delete(key);
+      });
+    }
+  }
+
+  /**
+   * Block until WhatsApp acknowledges the message, or give up.
+   *
+   * relayMessage() only does `await sendNode(stanza)` — it hands bytes to the
+   * websocket and returns. On a half-open socket (one the keep-alive has not yet
+   * noticed, which is what an idle backend gets on a cloud host) the write
+   * succeeds, sendMessage() resolves with a message id, and the message reaches
+   * nobody — not the recipient, not the sender's own phone. That is
+   * indistinguishable from success unless we wait for this ack.
+   */
+  private async waitForServerAck(id: string | null | undefined, context: string): Promise<void> {
+    // Escape hatch: WA_SERVER_ACK_TIMEOUT_MS=0 restores the old fire-and-forget
+    // behaviour if acks ever turn out to be unreliable for some message type.
+    if (!id || SERVER_ACK_TIMEOUT_MS <= 0) return;
+
+    const existing = this.ackedMessageIds.get(id);
+    if (existing && existing.status >= WA_STATUS_SERVER_ACK) return;
+
+    const acked = await new Promise<boolean>((resolve) => {
+      const timer = setTimeout(() => {
+        this.ackWaiters.delete(id);
+        resolve(false);
+      }, SERVER_ACK_TIMEOUT_MS);
+      this.ackWaiters.set(id, () => {
+        clearTimeout(timer);
+        resolve(true);
+      });
+    });
+
+    if (!acked) {
+      throw new Error(
+        `WhatsApp did not acknowledge ${context} (${id}) within ${SERVER_ACK_TIMEOUT_MS / 1000}s — the socket accepted the write but the server never confirmed it`,
+      );
     }
   }
 
