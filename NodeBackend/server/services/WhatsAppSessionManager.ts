@@ -61,6 +61,10 @@ export interface WAServiceInstance {
 // hard cap on that store (two keys per message).
 const SENT_MESSAGE_TTL_MS = 24 * 60 * 60 * 1000;
 const SENT_MESSAGE_MAX_ENTRIES = 10000;
+// WhatsApp can reject a stanza just after Baileys' sendMessage() resolves. Give
+// that negative acknowledgement a brief chance to arrive, but do not require a
+// positive receipt (successful relays do not always emit one).
+const SEND_REJECTION_GRACE_MS = parseInt(process.env.WA_SEND_REJECTION_GRACE_MS || '2000');
 // proto.WebMessageInfo.Status — 0 ERROR, 3 DELIVERY_ACK.
 const WA_STATUS_ERROR = 0;
 const WA_STATUS_DELIVERY_ACK = 3;
@@ -191,7 +195,10 @@ class ManagedBaileysSession extends EventEmitter implements WAServiceInstance {
         delayBetweenTriesMs: 3000,
       },
       mobile: false,
-      shouldSyncHistoryMessage: () => false,
+      // Baileys 7 needs initial history notifications to populate LID mappings
+      // and per-contact tokens. syncFullHistory remains false, so this does not
+      // request the complete message archive.
+      shouldSyncHistoryMessage: () => true,
       shouldIgnoreJid: (jid: string) => jid.includes('status@broadcast'),
       patchMessageBeforeSending: (msg: any) => msg,
     });
@@ -899,6 +906,7 @@ class ManagedBaileysSession extends EventEmitter implements WAServiceInstance {
     const result = await socket.sendMessage(jid, { text: message });
     this.rememberBackendSentMessageId(result?.key?.id);
     this.rememberSentMessage(result);
+    await this.throwIfImmediatelyRejected(result?.key?.id, jid);
 
     this.status.lastSeen = new Date();
     this.emit('message-sent', {
@@ -951,6 +959,7 @@ class ManagedBaileysSession extends EventEmitter implements WAServiceInstance {
     const result = await socket.sendMessage(jid, payload);
     this.rememberBackendSentMessageId(result?.key?.id);
     this.rememberSentMessage(result);
+    await this.throwIfImmediatelyRejected(result?.key?.id, jid);
     this.status.lastSeen = new Date();
     this.emit('message-sent', {
       messageId: result?.key?.id,
@@ -1309,6 +1318,32 @@ class ManagedBaileysSession extends EventEmitter implements WAServiceInstance {
       this.ackedMessageIds.forEach((entry, key) => {
         if (entry.at < cutoff) this.ackedMessageIds.delete(key);
       });
+    }
+  }
+
+  /**
+   * Detect the fast ERROR acknowledgement WhatsApp emits for a rejected send.
+   * Missing acknowledgement is not failure: valid sends may emit no status
+   * until delivery or read, which can happen much later.
+   */
+  private async throwIfImmediatelyRejected(id: string | null | undefined, jid: string): Promise<void> {
+    if (!id || SEND_REJECTION_GRACE_MS <= 0) return;
+
+    const deadline = Date.now() + SEND_REJECTION_GRACE_MS;
+    while (Date.now() < deadline) {
+      const ack = this.ackedMessageIds.get(id);
+      if (ack?.status === WA_STATUS_ERROR) {
+        throw new Error(
+          `WhatsApp rejected the message to ${jid}. The contact token or address mapping is unavailable; wait for contact sync or ask the contact to message this account first.`,
+        );
+      }
+      if (ack && ack.status >= WA_STATUS_DELIVERY_ACK) return;
+      await new Promise((resolve) => setTimeout(resolve, 50));
+    }
+
+    const finalAck = this.ackedMessageIds.get(id);
+    if (finalAck?.status === WA_STATUS_ERROR) {
+      throw new Error(`WhatsApp rejected the message to ${jid}. The contact token or address mapping is unavailable.`);
     }
   }
 
