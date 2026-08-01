@@ -1185,16 +1185,14 @@ class ManagedBaileysSession extends EventEmitter implements WAServiceInstance {
     const fromValue = from || '';
     const senderDigits = (senderPn || '').replace(/\D/g, '');
 
-    // Always reply on the phone-number JID when WhatsApp gives us one, even if
-    // the message arrived from an @lid identity.
-    //
-    // This has been flipped both ways historically (ebf163a went to @lid,
-    // d53f569 forced PN). On Baileys >= 7 the PN form is correct: the send path
-    // resolves PN -> LID itself via signalRepository.lidMapping.getLIDForPN, so
-    // handing it the phone-number JID lets it pick the right Signal identity and
-    // populate its mapping store. Passing a raw @lid bypasses that resolution.
-    // Do not "fix" this back to @lid without first checking lidMapping usage in
-    // node_modules/baileys/lib/Socket/messages-send.js.
+    // Baileys 6 has no PN -> LID mapping layer. When WhatsApp delivered the
+    // incoming message on a LID, preserve that exact address for the reply;
+    // converting it to a PN JID makes the server demand a contact token and
+    // reject the message with error 463.
+    if (fromValue.endsWith('@lid')) {
+      return fromValue;
+    }
+
     if (senderDigits.length >= 10) {
       return `${this.formatPhoneNumber(senderDigits)}@s.whatsapp.net`;
     }
@@ -1276,6 +1274,13 @@ class ManagedBaileysSession extends EventEmitter implements WAServiceInstance {
         const message = typeof first === 'string' ? first : second;
         const detail = typeof first === 'string' ? undefined : first;
         if (!message && !detail) return;
+        // Baileys 6 reports a rejected stanza only through its logger and does
+        // not emit messages.update status=ERROR. Feed that acknowledgement into
+        // the same rejection map used by the send grace window.
+        const attrs = detail?.attrs;
+        if (message === 'received error in ack' && attrs?.id && attrs?.error) {
+          this.recordServerAck(String(attrs.id), WA_STATUS_ERROR);
+        }
         const detailText = detail ? ` ${JSON.stringify(detail, (_k, v) => (Buffer.isBuffer(v) ? '<buffer>' : v))}` : '';
         log(`[WA:baileys:${level}] ${this.userId}/${this.sessionName} ${message || ''}${detailText}`.slice(0, 2000));
       } catch {}
@@ -1429,6 +1434,16 @@ class ManagedBaileysSession extends EventEmitter implements WAServiceInstance {
       const usable = (jid?: string | null): boolean =>
         !!jid && jid.includes('@') && !jid.endsWith('@g.us') && !jid.includes('status@broadcast');
 
+      // Baileys 6 cannot map PN -> LID itself. Reuse the exact LID WhatsApp
+      // supplied for a known contact before falling back to its phone JID.
+      for (const message of recentMessages) {
+        const metadata = message.metadata as Record<string, unknown> | null;
+        const from = typeof metadata?.from === 'string' ? metadata.from : null;
+        if (usable(from) && from!.endsWith('@lid')) {
+          return from;
+        }
+      }
+
       // Prefer the stored phone-number JID. Rows written before the LID fix
       // hold an @lid in `from`, and returning those re-poisons recentJidByPhone
       // on every restart — the reason outbound sends kept reverting to @lid.
@@ -1443,7 +1458,7 @@ class ManagedBaileysSession extends EventEmitter implements WAServiceInstance {
       for (const message of recentMessages) {
         const metadata = message.metadata as Record<string, unknown> | null;
         const from = typeof metadata?.from === 'string' ? metadata.from : null;
-        if (usable(from) && !from!.endsWith('@lid')) {
+        if (usable(from)) {
           return from;
         }
       }
