@@ -157,9 +157,23 @@ export function UserRagSettingsPanel() {
     onError: (err: any) => toast({ title: "Error", description: err.message, variant: "destructive" }),
   });
 
+  // Persist the on/off switch on its own — sending dripPrompt here would wipe the
+  // saved template when the prompt box is empty (the server regenerates from it).
+  const toggleDripMutation = useMutation({
+    mutationFn: async ({ id, dripEnabled }: { id: string; dripEnabled: boolean }) => {
+      const res = await apiRequest("PATCH", `/api/lead-pipelines/${id}`, { dripEnabled });
+      return res.json();
+    },
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ["/api/lead-pipelines"] });
+    },
+    onError: (err: any) => toast({ title: "Error", description: err.message, variant: "destructive" }),
+  });
+
   const saveTemplateMutation = useMutation({
     mutationFn: async ({ id, dripTemplate }: { id: string; dripTemplate: Array<{ delay: string; message: string }> }) => {
-      const res = await apiRequest("PATCH", `/api/lead-pipelines/${id}`, { dripTemplate });
+      // Saving a sequence implies the drip is on, otherwise ingest ignores it.
+      const res = await apiRequest("PATCH", `/api/lead-pipelines/${id}`, { dripTemplate, dripEnabled: true });
       return res.json();
     },
     onSuccess: () => {
@@ -667,6 +681,7 @@ export function UserRagSettingsPanel() {
                     onDelete={() => deletePipelineMutation.mutate(p.id)}
                     onRotate={() => rotateTokenMutation.mutate(p.id)}
                     onSaveDrip={(dripEnabled, dripPrompt) => saveDripMutation.mutate({ id: p.id, dripEnabled, dripPrompt })}
+                    onToggleDrip={(dripEnabled) => toggleDripMutation.mutate({ id: p.id, dripEnabled })}
                     onSaveTemplate={(dripTemplate) => saveTemplateMutation.mutate({ id: p.id, dripTemplate })}
                     savingDrip={saveDripMutation.isPending}
                     savingTemplate={saveTemplateMutation.isPending}
@@ -690,6 +705,7 @@ function PipelineRow({
   onDelete,
   onRotate,
   onSaveDrip,
+  onToggleDrip,
   onSaveTemplate,
   savingDrip,
   savingTemplate,
@@ -702,6 +718,7 @@ function PipelineRow({
   onDelete: () => void;
   onRotate: () => void;
   onSaveDrip: (dripEnabled: boolean, dripPrompt: string) => void;
+  onToggleDrip: (dripEnabled: boolean) => void;
   onSaveTemplate: (dripTemplate: Array<{ delay: string; message: string }>) => void;
   savingDrip: boolean;
   savingTemplate: boolean;
@@ -713,9 +730,11 @@ function PipelineRow({
   const [steps, setSteps] = useState<Array<{ delay: string; message: string }>>(
     Array.isArray(pipeline.dripTemplate) ? pipeline.dripTemplate.map((m: any) => ({ delay: m.delay, message: m.message })) : []
   );
-  // Re-sync the editable steps whenever the pipeline is saved/regenerated server-side.
+  // Re-sync the editable state whenever the pipeline is saved/regenerated server-side.
   useEffect(() => {
     setSteps(Array.isArray(pipeline.dripTemplate) ? pipeline.dripTemplate.map((m: any) => ({ delay: m.delay, message: m.message })) : []);
+    setDripEnabled(pipeline.dripEnabled === "true");
+    setDripPrompt(pipeline.dripPrompt || "");
   }, [pipeline.updatedAt]);
   const updateStep = (i: number, field: "delay" | "message", value: string) =>
     setSteps((prev) => prev.map((s, idx) => (idx === i ? { ...s, [field]: value } : s)));
@@ -787,7 +806,7 @@ function PipelineRow({
             checked={dripEnabled}
             onCheckedChange={(v) => {
               setDripEnabled(v);
-              if (!v) onSaveDrip(false, dripPrompt); // persist disable immediately
+              onToggleDrip(v); // persist on/off immediately, either direction
             }}
           />
         </div>
