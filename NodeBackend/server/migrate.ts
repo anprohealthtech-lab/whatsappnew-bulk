@@ -651,6 +651,32 @@ export async function runMigrations(): Promise<void> {
       CREATE INDEX IF NOT EXISTS "idx_data_general_records_tenant"
         ON "data_general_records" ("organization_id", "user_id", "record_type");
 
+      -- 0014: Hierarchical clinical index on parsed attachments
+      ALTER TABLE "data_documents"
+        ADD COLUMN IF NOT EXISTS "index_level1" text,
+        ADD COLUMN IF NOT EXISTS "index_level2" text,
+        ADD COLUMN IF NOT EXISTS "index_level3" text,
+        ADD COLUMN IF NOT EXISTS "index_path" text,
+        ADD COLUMN IF NOT EXISTS "index_modality" text,
+        ADD COLUMN IF NOT EXISTS "index_labels" jsonb DEFAULT '[]'::jsonb,
+        ADD COLUMN IF NOT EXISTS "index_confidence" real,
+        ADD COLUMN IF NOT EXISTS "index_source" text;
+
+      -- Drill-down by level, newest first.
+      CREATE INDEX IF NOT EXISTS "idx_data_documents_index_levels"
+        ON "data_documents" ("organization_id", "user_id", "index_level1", "index_level2", "index_level3", "created_at" DESC);
+
+      -- Prefix match on the materialised path: index_path LIKE 'knee/knee_replacement%'
+      CREATE INDEX IF NOT EXISTS "idx_data_documents_index_path"
+        ON "data_documents" ("organization_id", "user_id", "index_path" text_pattern_ops);
+
+      CREATE INDEX IF NOT EXISTS "idx_data_documents_index_modality"
+        ON "data_documents" ("organization_id", "user_id", "index_modality", "created_at" DESC);
+
+      -- Containment match on the flat synonym labels: index_labels @> '["tkr"]'
+      CREATE INDEX IF NOT EXISTS "idx_data_documents_index_labels"
+        ON "data_documents" USING gin ("index_labels");
+
       -- 0011: Voice service pre-generated audio chunk cache
       CREATE TABLE IF NOT EXISTS "voice_flow_audio_chunks" (
         "id" varchar PRIMARY KEY DEFAULT gen_random_uuid() NOT NULL,

@@ -574,6 +574,18 @@ export const dataDocuments = pgTable("data_documents", {
   sequenceNumber: integer("sequence_number"),
   caption: text("caption"),
   documentType: text("document_type").default("unknown").notNull(),
+  // Hierarchical clinical index assigned by the AI reader, e.g.
+  // level1 "knee" > level2 "knee_replacement" > level3 "post_operative".
+  indexLevel1: text("index_level1"),
+  indexLevel2: text("index_level2"),
+  indexLevel3: text("index_level3"),
+  // Materialised "knee/knee_replacement/post_operative" path for prefix drill-down.
+  indexPath: text("index_path"),
+  indexModality: text("index_modality"),
+  indexLabels: jsonb("index_labels").default([]),
+  indexConfidence: real("index_confidence"),
+  // "ai" when classified automatically, "manual" once a doctor corrects it.
+  indexSource: text("index_source"),
   ocrText: text("ocr_text"),
   extractedJson: jsonb("extracted_json").default({}),
   confidence: real("confidence"),

@@ -64,11 +64,21 @@ type ExtractedPatient = {
   identity_confidence?: number | null;
 };
 
+export type ClinicalIndex = {
+  level1?: string | null;
+  level2?: string | null;
+  level3?: string | null;
+  modality?: string | null;
+  labels?: string[];
+  confidence?: number | null;
+};
+
 type DataExtraction = {
   record_scope: "patient" | "general" | "unknown";
   document_type?: string;
   record_type?: string;
   title?: string;
+  clinical_index?: ClinicalIndex | null;
   patient?: ExtractedPatient;
   event_date?: string | null;
   period_start?: string | null;
@@ -145,10 +155,29 @@ Rules:
 - Separate tests ordered from test results.
 - Include all visible pages. Do not silently ignore later PDF pages.
 
+Clinical index (required for every record):
+- Also return clinical_index, a 2-3 level subject index so the doctor can later retrieve a whole group of records at once, such as "all post knee replacement X-rays".
+- clinical_index.level1 is the broad subject: the anatomical region or data domain. Examples: knee, hip, spine, shoulder, chest, abdomen, brain, blood, finance, inventory.
+- clinical_index.level2 is the specific condition, procedure, or study within level1. Examples: knee_replacement, acl_tear, fracture_distal_femur, lumbar_canal_stenosis, cbc, package_price.
+- clinical_index.level3 is the stage, timing, or qualifier. Examples: pre_operative, intra_operative, post_operative, follow_up, immediate_post_op, six_week_follow_up, revision. Use null when no stage applies.
+- Use lowercase snake_case for all three levels. Use a level only when the document actually supports it. Set level3 to null rather than guessing a stage, and set level2 to null rather than guessing a diagnosis.
+- clinical_index.modality describes what kind of artefact this is: xray, ct, mri, ultrasound, ecg, clinical_photo, pathology_slide, lab_report, prescription, discharge_summary, operative_note, case_paper, invoice, other.
+- clinical_index.labels is a flat list of up to 8 lowercase search keywords including common abbreviations and synonyms, so alternative wording still finds the record. For a post-op total knee replacement X-ray: ["knee","tkr","total_knee_replacement","arthroplasty","post_op","xray"].
+- clinical_index.confidence is 0 to 1 for the index assignment specifically, independent of the overall extraction confidence.
+- Index the clinical subject of the document, not the document format. A knee X-ray taken after a knee replacement is knee > knee_replacement > post_operative, not imaging > xray > report.
+
 For patient records, return:
 {
   "record_scope": "patient",
   "document_type": "case_paper|lab_report|prescription|discharge_summary|surgery_note|invoice|imaging_report|radiology_image|clinical_photo|pathology_report|procedure_note|unknown",
+  "clinical_index": {
+    "level1": string|null,
+    "level2": string|null,
+    "level3": string|null,
+    "modality": string|null,
+    "labels": [string],
+    "confidence": number|null
+  },
   "patient": {
     "name": string|null,
     "age": number|null,
@@ -214,6 +243,14 @@ For general records, return:
 {
   "record_scope": "general",
   "record_type": "price_list|surgery_count|package_list|clinic_note|inventory|revenue|general_note",
+  "clinical_index": {
+    "level1": string|null,
+    "level2": string|null,
+    "level3": string|null,
+    "modality": string|null,
+    "labels": [string],
+    "confidence": number|null
+  },
   "title": string,
   "period_start": "YYYY-MM-DD"|null,
   "period_end": "YYYY-MM-DD"|null,
@@ -232,6 +269,36 @@ const DATA_EXTRACTION_TOOL: Anthropic.Tool = {
       document_type: { type: ["string", "null"] },
       record_type: { type: ["string", "null"] },
       title: { type: ["string", "null"] },
+      clinical_index: {
+        type: ["object", "null"],
+        description: "Hierarchical subject index used to retrieve groups of related records later, e.g. every post knee replacement X-ray.",
+        properties: {
+          level1: {
+            type: ["string", "null"],
+            description: "Broad subject: anatomical region or data domain, lowercase snake_case. Examples: knee, hip, spine, chest, blood, finance.",
+          },
+          level2: {
+            type: ["string", "null"],
+            description: "Specific condition, procedure, or study within level1, lowercase snake_case. Examples: knee_replacement, acl_tear, cbc. Null when the document does not support one.",
+          },
+          level3: {
+            type: ["string", "null"],
+            description: "Stage, timing, or qualifier, lowercase snake_case. Examples: pre_operative, post_operative, follow_up, revision. Null when no stage applies.",
+          },
+          modality: {
+            type: ["string", "null"],
+            description: "Artefact kind: xray, ct, mri, ultrasound, ecg, clinical_photo, pathology_slide, lab_report, prescription, discharge_summary, operative_note, case_paper, invoice, other.",
+          },
+          labels: {
+            type: ["array", "null"],
+            items: { type: "string" },
+            description: "Up to 8 lowercase search keywords including abbreviations and synonyms, e.g. [\"knee\",\"tkr\",\"total_knee_replacement\",\"post_op\",\"xray\"].",
+          },
+          confidence: { type: ["number", "null"], description: "0 to 1 confidence in this index assignment." },
+        },
+        required: ["level1", "level2", "level3", "modality", "labels", "confidence"],
+        additionalProperties: false,
+      },
       patient: {
         type: ["object", "null"],
         properties: {
@@ -261,6 +328,7 @@ const DATA_EXTRACTION_TOOL: Anthropic.Tool = {
       "document_type",
       "record_type",
       "title",
+      "clinical_index",
       "patient",
       "event_date",
       "period_start",
@@ -276,10 +344,58 @@ const DATA_EXTRACTION_TOOL: Anthropic.Tool = {
   },
 };
 
+const CLINICAL_INDEX_SYSTEM_PROMPT = `You assign a 2-3 level subject index to already-parsed clinical records so a doctor can retrieve a whole group at once, such as "all post knee replacement X-rays".
+
+level1 is the broad subject: anatomical region or data domain (knee, hip, spine, chest, abdomen, brain, blood, finance, inventory).
+level2 is the specific condition, procedure, or study within level1 (knee_replacement, acl_tear, lumbar_canal_stenosis, cbc, package_price).
+level3 is the stage, timing, or qualifier (pre_operative, post_operative, follow_up, revision). Use null when no stage is stated.
+modality is the artefact kind (xray, ct, mri, ultrasound, ecg, clinical_photo, lab_report, prescription, discharge_summary, operative_note, case_paper, invoice, other).
+labels are up to 8 lowercase search keywords including abbreviations and synonyms.
+
+Use lowercase snake_case. Index the clinical subject, not the document format. Never invent a stage or diagnosis that the record does not state - return null instead.`;
+
+const CLINICAL_INDEX_TOOL: Anthropic.Tool = {
+  name: "save_clinical_index",
+  description: "Return the hierarchical subject index for an already-parsed clinical record.",
+  input_schema: {
+    type: "object",
+    properties: {
+      level1: { type: ["string", "null"] },
+      level2: { type: ["string", "null"] },
+      level3: { type: ["string", "null"] },
+      modality: { type: ["string", "null"] },
+      labels: { type: "array", items: { type: "string" } },
+      confidence: { type: "number" },
+    },
+    required: ["level1", "level2", "level3", "modality", "labels", "confidence"],
+    additionalProperties: false,
+  },
+};
+
+export type DocumentIndexFilters = {
+  q?: string;
+  level1?: string | null;
+  level2?: string | null;
+  level3?: string | null;
+  path?: string | null;
+  modality?: string | null;
+  labels?: string[];
+  documentType?: string;
+  status?: string;
+  patientId?: string;
+  from?: string;
+  to?: string;
+  indexedOnly?: boolean;
+  unindexedOnly?: boolean;
+  limit?: number;
+  offset?: number;
+};
+
 const DATA_QA_SYSTEM_PROMPT = `You are a private clinical data Q&A agent for a doctor on WhatsApp.
 
 You answer only from the database tools provided. Do not invent patients, reports, prices, counts, lab values, or dates.
 Use tools whenever a question asks about saved patients, reports, timelines, lab values, trends, surgeries, price lists, packages, or general clinic records.
+Every saved attachment carries a 2-3 level subject index (region > condition/procedure > stage) plus a modality. When the doctor asks for a group of records rather than one patient - "all post knee replacement x-rays", "every pre-op spine MRI" - use search_documents_by_index. Call list_index_tree first if you are unsure which index values exist, and say so if the closest match is not exactly what was asked for.
 
 Style:
 - Be concise and WhatsApp-friendly.
@@ -330,6 +446,33 @@ const DATA_QA_TOOLS: Anthropic.Tool[] = [
       properties: {
         patientId: { type: "string" },
         patientName: { type: "string" },
+        limit: { type: "number" },
+      },
+    },
+  },
+  {
+    name: "list_index_tree",
+    description: "List the subject index actually present in the saved records: level1 > level2 > level3 with document counts, plus available modalities. Call this first when unsure which index values exist.",
+    input_schema: {
+      type: "object",
+      properties: {},
+    },
+  },
+  {
+    name: "search_documents_by_index",
+    description: "Retrieve saved attachments (photos, X-rays, scans, PDFs) by their subject index. Use this for group questions such as 'all post knee replacement x-rays' or 'every pre-op spine MRI'. Combine path/levels with modality to narrow.",
+    input_schema: {
+      type: "object",
+      properties: {
+        path: { type: "string", description: "Drill-down path, e.g. 'knee/knee_replacement/post_operative' or just 'knee'. Matches that node and everything under it." },
+        level1: { type: "string", description: "Broad region or domain, e.g. knee." },
+        level2: { type: "string", description: "Condition or procedure, e.g. knee_replacement." },
+        level3: { type: "string", description: "Stage or qualifier, e.g. post_operative." },
+        modality: { type: "string", description: "Artefact kind, e.g. xray, mri, ct, ultrasound, lab_report." },
+        labels: { type: "array", items: { type: "string" }, description: "Keywords that must all be present, e.g. ['tkr']." },
+        patientId: { type: "string", description: "Restrict to one patient." },
+        from: { type: "string", description: "Earliest date, YYYY-MM-DD." },
+        to: { type: "string", description: "Latest date, YYYY-MM-DD." },
         limit: { type: "number" },
       },
     },
@@ -1263,6 +1406,8 @@ export class DataManagementAgentService {
         await db.update(dataDocuments).set({
           patientId: patient.id,
           documentType: extraction.document_type || document.documentType || "unknown",
+          // A doctor-corrected index outranks anything the model infers on re-parse.
+          ...(document.indexSource === "manual" ? {} : this.documentIndexColumns(extraction)),
           ocrText: extraction.raw_text || null,
           extractedJson: extraction as any,
           confidence: extraction.confidence || null,
@@ -1824,6 +1969,50 @@ export class DataManagementAgentService {
           return { success: true, data: { patient: this.publicPatient(patient), documents: this.compactDocuments(documents) } };
         }
 
+        case "list_index_tree": {
+          const tree = await this.getIndexTree(tenant);
+          return { success: true, data: tree };
+        }
+
+        case "search_documents_by_index": {
+          const limit = this.limitNumber(input.limit, 15, 1, 50);
+          const result = await this.searchDocumentsByIndex(tenant, {
+            path: typeof input.path === "string" ? input.path : null,
+            level1: typeof input.level1 === "string" ? input.level1 : null,
+            level2: typeof input.level2 === "string" ? input.level2 : null,
+            level3: typeof input.level3 === "string" ? input.level3 : null,
+            modality: typeof input.modality === "string" ? input.modality : null,
+            labels: Array.isArray(input.labels) ? input.labels.map(String) : undefined,
+            patientId: typeof input.patientId === "string" ? input.patientId : undefined,
+            from: typeof input.from === "string" ? input.from : undefined,
+            to: typeof input.to === "string" ? input.to : undefined,
+            limit,
+          });
+          return {
+            success: true,
+            data: {
+              total: result.total,
+              returned: result.documents.length,
+              documents: result.documents.map((document) => ({
+                id: document.id,
+                patientId: document.patientId,
+                patientName: document.patientName,
+                fileName: document.fileName,
+                documentType: document.documentType,
+                indexPath: document.indexPath,
+                indexModality: document.indexModality,
+                indexLabels: document.indexLabels,
+                status: document.status,
+                date: document.processedAt || document.createdAt,
+                summary: this.truncateText(
+                  ((document.extractedJson as any)?.summary as string) || document.ocrText || "",
+                  400,
+                ),
+              })),
+            },
+          };
+        }
+
         case "search_general_records": {
           const query = String(input.query || "").trim();
           const recordType = String(input.recordType || "").trim();
@@ -1986,6 +2175,8 @@ export class DataManagementAgentService {
       caption: data.mediaInfo?.caption || data.content || null,
     };
 
+    const indexValues = this.documentIndexColumns(extraction);
+
     if (extraction.record_scope === "patient") {
       const patientName = extraction.patient?.name?.trim();
       if (!patientName) {
@@ -1995,6 +2186,7 @@ export class DataManagementAgentService {
           sourcePhoneNumber: data.phoneNumber,
           ...attachmentValues,
           documentType: extraction.document_type || "unknown",
+          ...indexValues,
           extractedJson: extraction as any,
           confidence: extraction.confidence || 0,
           status: "needs_review",
@@ -2012,6 +2204,7 @@ export class DataManagementAgentService {
         sourcePhoneNumber: data.phoneNumber,
         ...attachmentValues,
         documentType: extraction.document_type || "unknown",
+        ...indexValues,
         ocrText: extraction.raw_text || null,
         extractedJson: extraction as any,
         confidence: extraction.confidence || null,
@@ -2055,6 +2248,7 @@ export class DataManagementAgentService {
         sourcePhoneNumber: data.phoneNumber,
         ...attachmentValues,
         documentType: extraction.record_type || "general",
+        ...indexValues,
         ocrText: extraction.raw_text || extraction.summary || data.content || null,
         extractedJson: extraction as any,
         confidence: extraction.confidence || null,
@@ -2084,6 +2278,7 @@ export class DataManagementAgentService {
       sourcePhoneNumber: data.phoneNumber,
       ...attachmentValues,
       documentType: "unknown",
+      ...indexValues,
       extractedJson: extraction as any,
       confidence: extraction.confidence || 0,
       status: "needs_review",
@@ -2207,6 +2402,284 @@ export class DataManagementAgentService {
     }));
   }
 
+  /**
+   * Normalise a user-supplied drill-down path such as "Knee / Knee Replacement"
+   * into the stored form "knee/knee_replacement".
+   */
+  normalizeIndexPathInput(value: unknown): string | null {
+    const text = typeof value === "string" ? value : "";
+    const parts = text
+      .split("/")
+      .map((part) => this.indexSlug(part))
+      .filter((part): part is string => Boolean(part))
+      .slice(0, 3);
+    return parts.length ? parts.join("/") : null;
+  }
+
+  normalizeIndexLevelInput(value: unknown): string | null {
+    return this.indexSlug(value);
+  }
+
+  normalizeIndexModalityInput(value: unknown): string | null {
+    return this.canonicalModality(value);
+  }
+
+  /**
+   * Indexed retrieval of attachments by their AI-assigned subject index, e.g.
+   * every post-knee-replacement X-ray across all patients.
+   */
+  async searchDocumentsByIndex(tenant: TenantContext, filters: DocumentIndexFilters) {
+    const limit = this.limitNumber(filters.limit, 50, 1, 200);
+    const offset = Math.max(0, Math.floor(Number(filters.offset) || 0));
+    const conditions: any[] = [
+      eq(dataDocuments.organizationId, tenant.organizationId),
+      eq(dataDocuments.userId, tenant.userId),
+    ];
+
+    const level1 = this.indexSlug(filters.level1);
+    const level2 = this.indexSlug(filters.level2);
+    const level3 = this.indexSlug(filters.level3);
+    if (level1) conditions.push(eq(dataDocuments.indexLevel1, level1));
+    if (level2) conditions.push(eq(dataDocuments.indexLevel2, level2));
+    if (level3) conditions.push(eq(dataDocuments.indexLevel3, level3));
+
+    const path = this.normalizeIndexPathInput(filters.path);
+    if (path) {
+      // Exact node plus every descendant. The slug alphabet has no LIKE
+      // metacharacters, so the prefix needs no escaping.
+      conditions.push(sql`(${dataDocuments.indexPath} = ${path} OR ${dataDocuments.indexPath} LIKE ${`${path}/%`})`);
+    }
+
+    const modality = this.canonicalModality(filters.modality);
+    if (modality) conditions.push(eq(dataDocuments.indexModality, modality));
+
+    const labels = (Array.isArray(filters.labels) ? filters.labels : [])
+      .map((label) => this.indexSlug(label, 48))
+      .filter((label): label is string => Boolean(label))
+      .slice(0, 8);
+    if (labels.length) {
+      conditions.push(sql`${dataDocuments.indexLabels} @> ${JSON.stringify(labels)}::jsonb`);
+    }
+
+    if (filters.patientId) conditions.push(eq(dataDocuments.patientId, String(filters.patientId)));
+    if (filters.documentType) conditions.push(eq(dataDocuments.documentType, String(filters.documentType)));
+    if (filters.status) conditions.push(eq(dataDocuments.status, String(filters.status)));
+    if (filters.indexedOnly) conditions.push(sql`${dataDocuments.indexPath} IS NOT NULL`);
+    if (filters.unindexedOnly) conditions.push(sql`${dataDocuments.indexPath} IS NULL`);
+
+    const from = this.isoDateString(filters.from);
+    const to = this.isoDateString(filters.to);
+    if (from) conditions.push(sql`${dataDocuments.createdAt} >= ${`${from} 00:00:00`}::timestamp`);
+    if (to) conditions.push(sql`${dataDocuments.createdAt} <= ${`${to} 23:59:59`}::timestamp`);
+
+    const query = String(filters.q || "").trim();
+    if (query) {
+      const like = `%${query.replace(/[%_\\]/g, (char) => `\\${char}`)}%`;
+      const slug = this.indexSlug(query, 48);
+      conditions.push(sql`(
+        ${dataDocuments.indexPath} ILIKE ${like}
+        OR ${dataDocuments.indexLabels}::text ILIKE ${like}
+        OR ${dataDocuments.fileName} ILIKE ${like}
+        OR ${dataDocuments.caption} ILIKE ${like}
+        OR ${dataDocuments.documentType} ILIKE ${like}
+        OR ${dataDocuments.ocrText} ILIKE ${like}
+        ${slug ? sql`OR ${dataDocuments.indexLabels} @> ${JSON.stringify([slug])}::jsonb` : sql``}
+      )`);
+    }
+
+    const where = and(...conditions);
+    const [rows, totalRows] = await Promise.all([
+      db.select({
+        document: dataDocuments,
+        patientName: dataPatients.canonicalName,
+      })
+        .from(dataDocuments)
+        .leftJoin(dataPatients, eq(dataDocuments.patientId, dataPatients.id))
+        .where(where)
+        .orderBy(desc(dataDocuments.createdAt))
+        .limit(limit)
+        .offset(offset),
+      db.select({ count: sql<number>`count(*)` }).from(dataDocuments).where(where),
+    ]);
+
+    return {
+      total: Number(totalRows[0]?.count || 0),
+      limit,
+      offset,
+      documents: rows.map(({ document, patientName }) => ({
+        ...document,
+        patientName: patientName || null,
+      })),
+    };
+  }
+
+  /**
+   * Counts per index node, used to build the drill-down tree in the dashboard
+   * and to tell the doctor which subjects actually exist.
+   */
+  async getIndexTree(tenant: TenantContext) {
+    const tenantWhere = and(
+      eq(dataDocuments.organizationId, tenant.organizationId),
+      eq(dataDocuments.userId, tenant.userId),
+    );
+
+    const [levelRows, modalityRows, unindexedRows] = await Promise.all([
+      db.select({
+        level1: dataDocuments.indexLevel1,
+        level2: dataDocuments.indexLevel2,
+        level3: dataDocuments.indexLevel3,
+        count: sql<number>`count(*)`,
+      })
+        .from(dataDocuments)
+        .where(and(tenantWhere, sql`${dataDocuments.indexLevel1} IS NOT NULL`))
+        .groupBy(dataDocuments.indexLevel1, dataDocuments.indexLevel2, dataDocuments.indexLevel3)
+        .orderBy(dataDocuments.indexLevel1, dataDocuments.indexLevel2, dataDocuments.indexLevel3),
+      db.select({
+        modality: dataDocuments.indexModality,
+        count: sql<number>`count(*)`,
+      })
+        .from(dataDocuments)
+        .where(and(tenantWhere, sql`${dataDocuments.indexModality} IS NOT NULL`))
+        .groupBy(dataDocuments.indexModality)
+        .orderBy(desc(sql`count(*)`)),
+      db.select({ count: sql<number>`count(*)` })
+        .from(dataDocuments)
+        .where(and(tenantWhere, sql`${dataDocuments.indexPath} IS NULL`)),
+    ]);
+
+    const tree: Array<{
+      level1: string;
+      count: number;
+      children: Array<{ level2: string; count: number; children: Array<{ level3: string; count: number }> }>;
+    }> = [];
+
+    for (const row of levelRows) {
+      const count = Number(row.count || 0);
+      if (!row.level1) continue;
+
+      let node1 = tree.find((item) => item.level1 === row.level1);
+      if (!node1) {
+        node1 = { level1: row.level1, count: 0, children: [] };
+        tree.push(node1);
+      }
+      node1.count += count;
+      if (!row.level2) continue;
+
+      let node2 = node1.children.find((item) => item.level2 === row.level2);
+      if (!node2) {
+        node2 = { level2: row.level2, count: 0, children: [] };
+        node1.children.push(node2);
+      }
+      node2.count += count;
+      if (!row.level3) continue;
+
+      const node3 = node2.children.find((item) => item.level3 === row.level3);
+      if (node3) node3.count += count;
+      else node2.children.push({ level3: row.level3, count });
+    }
+
+    tree.sort((a, b) => b.count - a.count);
+
+    return {
+      tree,
+      modalities: modalityRows
+        .filter((row) => row.modality)
+        .map((row) => ({ modality: row.modality as string, count: Number(row.count || 0) })),
+      unindexedCount: Number(unindexedRows[0]?.count || 0),
+    };
+  }
+
+  /**
+   * Backfill the index for documents parsed before indexing existed. Classifies
+   * from the stored OCR text and extraction rather than re-downloading and
+   * re-reading the original file.
+   */
+  async reindexDocuments(tenant: TenantContext, limit = 25): Promise<{ scanned: number; indexed: number; skipped: number }> {
+    const batchSize = this.limitNumber(limit, 25, 1, 100);
+    const documents = await db.select().from(dataDocuments).where(and(
+      eq(dataDocuments.organizationId, tenant.organizationId),
+      eq(dataDocuments.userId, tenant.userId),
+      sql`${dataDocuments.indexPath} IS NULL`,
+      sql`${dataDocuments.indexSource} IS DISTINCT FROM 'manual'`,
+    )).orderBy(desc(dataDocuments.createdAt)).limit(batchSize);
+
+    let indexed = 0;
+    let skipped = 0;
+
+    for (const document of documents) {
+      try {
+        const index = await this.classifyStoredDocument(document);
+        if (!index) {
+          skipped += 1;
+          continue;
+        }
+        await db.update(dataDocuments).set({
+          indexLevel1: index.level1 || null,
+          indexLevel2: index.level2 || null,
+          indexLevel3: index.level3 || null,
+          indexPath: this.buildIndexPath(index),
+          indexModality: index.modality || null,
+          indexLabels: (index.labels || []) as any,
+          indexConfidence: index.confidence ?? null,
+          indexSource: "ai",
+          updatedAt: new Date(),
+        }).where(eq(dataDocuments.id, document.id));
+        indexed += 1;
+      } catch (error: any) {
+        skipped += 1;
+        console.warn(`[DataManagementAgentService] Reindex failed for ${document.id}:`, error?.message || error);
+      }
+    }
+
+    return { scanned: documents.length, indexed, skipped };
+  }
+
+  /**
+   * Text-only classification pass over an already-parsed document. Cheap enough
+   * to run over a backlog because it never touches the original image or PDF.
+   */
+  private async classifyStoredDocument(
+    document: typeof dataDocuments.$inferSelect,
+  ): Promise<ClinicalIndex | null> {
+    const stored = (document.extractedJson && typeof document.extractedJson === "object"
+      ? document.extractedJson
+      : {}) as DataExtraction;
+
+    // A document parsed after this feature shipped already carries the index.
+    const embedded = this.normalizeClinicalIndex(stored.clinical_index, stored);
+    if (embedded?.level1) return embedded;
+
+    const evidence = [
+      document.fileName ? `File name: ${document.fileName}` : "",
+      document.caption ? `Caption: ${document.caption}` : "",
+      `Document type: ${document.documentType}`,
+      stored.summary ? `Summary: ${stored.summary}` : "",
+      stored.emr_fields ? `Clinical fields: ${this.truncateText(JSON.stringify(stored.emr_fields), 4000)}` : "",
+      document.ocrText ? `Transcribed text: ${this.truncateText(document.ocrText, 6000)}` : "",
+    ].filter(Boolean).join("\n");
+
+    if (!evidence.trim() || !this.anthropic) {
+      // No model available, but a heuristic index still beats none.
+      return this.normalizeClinicalIndex(stored.clinical_index, stored);
+    }
+
+    const response = await this.anthropic.messages.create({
+      model: process.env.DATA_AGENT_MODEL || "claude-sonnet-4-6",
+      max_tokens: 500,
+      system: CLINICAL_INDEX_SYSTEM_PROMPT,
+      tools: [CLINICAL_INDEX_TOOL],
+      tool_choice: { type: "tool", name: CLINICAL_INDEX_TOOL.name },
+      messages: [{ role: "user", content: `Assign the subject index for this already-parsed record.\n\n${evidence}` }],
+    } as any);
+
+    const toolUse = response.content.find(
+      (block: any) => block.type === "tool_use" && block.name === CLINICAL_INDEX_TOOL.name,
+    ) as Anthropic.ToolUseBlock | undefined;
+    if (!toolUse?.input || typeof toolUse.input !== "object") return null;
+
+    return this.normalizeClinicalIndex(toolUse.input as ClinicalIndex, stored);
+  }
+
   private async findLabValueMatches(tenant: TenantContext, patientId: string, testName: string, limit: number) {
     const needle = this.normalizeName(testName);
     const [events, documents] = await Promise.all([
@@ -2309,6 +2782,7 @@ export class DataManagementAgentService {
       return {
         ...input,
         record_scope: scope,
+        clinical_index: this.normalizeClinicalIndex(input.clinical_index, input),
         confidence,
         needs_confirmation: scope === "unknown" ? true : Boolean(input.needs_confirmation),
       };
@@ -2416,6 +2890,7 @@ export class DataManagementAgentService {
       ...input,
       record_scope: "patient",
       patient,
+      clinical_index: this.normalizeClinicalIndex(input.clinical_index, input),
       confidence,
       needs_confirmation: Boolean(input.needs_confirmation)
         || !patient?.name_source_text
@@ -2441,6 +2916,128 @@ export class DataManagementAgentService {
         observations,
         schema_version: "clinical-record-v2",
       },
+    };
+  }
+
+  /**
+   * Lowercase snake_case slug used for every index level, label, and modality so
+   * "Post-Operative", "post operative", and "post_operative" collapse to one key.
+   */
+  private indexSlug(value: unknown, maxLength = 60): string | null {
+    const text = typeof value === "string" ? value : value == null ? "" : String(value);
+    const slug = text
+      .toLowerCase()
+      .replace(/[^a-z0-9]+/g, "_")
+      .replace(/^_+|_+$/g, "")
+      .slice(0, maxLength)
+      .replace(/_+$/g, "");
+    return slug || null;
+  }
+
+  private canonicalModality(value: unknown): string | null {
+    const slug = this.indexSlug(value, 40);
+    if (!slug) return null;
+    const aliases: Record<string, string> = {
+      x_ray: "xray", xray: "xray", xrays: "xray", radiograph: "xray", radiography: "xray", plain_film: "xray",
+      ct: "ct", ct_scan: "ct", cect: "ct", hrct: "ct", computed_tomography: "ct",
+      mri: "mri", mr: "mri", magnetic_resonance_imaging: "mri",
+      usg: "ultrasound", ultrasound: "ultrasound", ultrasonography: "ultrasound", sonography: "ultrasound", doppler: "ultrasound",
+      ecg: "ecg", ekg: "ecg", electrocardiogram: "ecg",
+      photo: "clinical_photo", clinical_photo: "clinical_photo", wound_photo: "clinical_photo",
+      lab: "lab_report", lab_report: "lab_report", blood_report: "lab_report", pathology_report: "lab_report",
+      histopathology: "pathology_slide", pathology_slide: "pathology_slide", biopsy: "pathology_slide",
+      rx: "prescription", prescription: "prescription",
+      op_note: "operative_note", operative_note: "operative_note", surgery_note: "operative_note", procedure_note: "operative_note",
+      discharge: "discharge_summary", discharge_summary: "discharge_summary",
+      case_paper: "case_paper", opd_paper: "case_paper",
+      bill: "invoice", invoice: "invoice", receipt: "invoice",
+    };
+    return aliases[slug] || slug;
+  }
+
+  /**
+   * Normalise the AI-assigned subject index, and fall back to the clinical
+   * fields already extracted when the index is missing. The fallback matters
+   * because a user may override the system prompt, in which case the model only
+   * sees the tool schema.
+   */
+  private normalizeClinicalIndex(input: ClinicalIndex | null | undefined, extraction: DataExtraction): ClinicalIndex | null {
+    const raw = input && typeof input === "object" ? input : {};
+    const emr = this.asRecord(extraction.emr_fields);
+    const imaging = this.asRecord(emr.imaging_analysis);
+
+    let level1 = this.indexSlug(raw.level1);
+    let level2 = this.indexSlug(raw.level2);
+    const level3 = this.indexSlug(raw.level3);
+    let modality = this.canonicalModality(raw.modality);
+
+    if (!level1) {
+      level1 = this.indexSlug(imaging.body_part);
+    }
+    if (!level2) {
+      const primaryDiagnosis = this.asRecordArray(emr.diagnoses)
+        .find((item) => item.is_primary === true) || this.asRecordArray(emr.diagnoses)[0];
+      level2 = this.indexSlug(primaryDiagnosis?.name);
+    }
+    if (!modality) {
+      modality = this.canonicalModality(imaging.modality)
+        || this.canonicalModality(extraction.document_type)
+        || this.canonicalModality(extraction.record_type);
+    }
+
+    // A level is meaningless without its parent, so collapse orphaned levels up.
+    const levels = [level1, level2, level3].filter((value): value is string => Boolean(value));
+    const [normalizedL1 = null, normalizedL2 = null, normalizedL3 = null] = levels;
+
+    const labels = Array.from(new Set([
+      ...(Array.isArray(raw.labels) ? raw.labels : []),
+      ...levels,
+      modality,
+      this.indexSlug(imaging.laterality),
+    ]
+      .map((value) => this.indexSlug(value, 48))
+      .filter((value): value is string => Boolean(value)))).slice(0, 12);
+
+    const confidence = typeof raw.confidence === "number" && Number.isFinite(raw.confidence)
+      ? Math.max(0, Math.min(1, raw.confidence))
+      : null;
+
+    if (!normalizedL1 && !modality && labels.length === 0) return null;
+
+    return {
+      level1: normalizedL1,
+      level2: normalizedL2,
+      level3: normalizedL3,
+      modality: modality || null,
+      labels,
+      confidence,
+    };
+  }
+
+  /** "knee/knee_replacement/post_operative" — prefix-matchable drill-down key. */
+  private buildIndexPath(index: ClinicalIndex | null | undefined): string | null {
+    if (!index) return null;
+    const path = [index.level1, index.level2, index.level3]
+      .filter((value): value is string => Boolean(value))
+      .join("/");
+    return path || null;
+  }
+
+  /**
+   * data_documents column values for an extraction. Kept in one place so every
+   * insert and update writes a consistent index.
+   */
+  private documentIndexColumns(extraction: DataExtraction) {
+    const index = this.normalizeClinicalIndex(extraction.clinical_index, extraction);
+    return {
+      indexLevel1: index?.level1 || null,
+      indexLevel2: index?.level2 || null,
+      indexLevel3: index?.level3 || null,
+      indexPath: this.buildIndexPath(index),
+      indexModality: index?.modality || null,
+      indexLabels: (index?.labels || []) as any,
+      indexConfidence: index?.confidence ?? null,
+      indexSource: index ? "ai" : null,
     };
   }
 

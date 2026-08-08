@@ -1,6 +1,6 @@
-import { useMemo, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
-import { Activity, CalendarClock, ClipboardList, Database, Edit3, FileText, Loader2, Plus, TableProperties, Upload, UserRound, Users } from "lucide-react";
+import { Activity, CalendarClock, ClipboardList, Database, Edit3, FileText, FolderTree, Loader2, Plus, RefreshCw, Search, TableProperties, Upload, UserRound, Users, X } from "lucide-react";
 import { apiRequest } from "@/lib/queryClient";
 import { getAuthToken } from "@/lib/AuthContext";
 import { useToast } from "@/hooks/use-toast";
@@ -58,6 +58,65 @@ type DataSummary = {
     createdAt: string | null;
   }>;
 };
+
+type IndexedDocument = {
+  id: string;
+  patientId: string | null;
+  patientName: string | null;
+  fileName: string | null;
+  caption: string | null;
+  documentType: string;
+  status: string;
+  confidence: number | null;
+  indexLevel1: string | null;
+  indexLevel2: string | null;
+  indexLevel3: string | null;
+  indexPath: string | null;
+  indexModality: string | null;
+  indexLabels: unknown;
+  indexConfidence: number | null;
+  indexSource: string | null;
+  ocrText?: string | null;
+  extractedJson?: unknown;
+  createdAt: string | null;
+};
+
+type DocumentSearchResult = {
+  total: number;
+  limit: number;
+  offset: number;
+  documents: IndexedDocument[];
+};
+
+type IndexTree = {
+  tree: Array<{
+    level1: string;
+    count: number;
+    children: Array<{
+      level2: string;
+      count: number;
+      children: Array<{ level3: string; count: number }>;
+    }>;
+  }>;
+  modalities: Array<{ modality: string; count: number }>;
+  unindexedCount: number;
+};
+
+const DOCUMENT_PAGE_SIZE = 25;
+
+/** "post_knee_replacement" reads better as "Post knee replacement" in the UI. */
+function humanizeIndexTerm(value: string | null | undefined) {
+  if (!value) return "";
+  const spaced = value.replace(/_/g, " ").trim();
+  return spaced.charAt(0).toUpperCase() + spaced.slice(1);
+}
+
+function formatIndexPath(document: Pick<IndexedDocument, "indexLevel1" | "indexLevel2" | "indexLevel3">) {
+  return [document.indexLevel1, document.indexLevel2, document.indexLevel3]
+    .filter(Boolean)
+    .map((level) => humanizeIndexTerm(level))
+    .join(" › ");
+}
 
 type PatientAnalysis = {
   patient: DataSummary["patientList"][number];
@@ -196,8 +255,29 @@ export function DataManagementPanel() {
   const [uploadFiles, setUploadFiles] = useState<File[]>([]);
   const [editingEvent, setEditingEvent] = useState<DataSummary["recentEvents"][number] | null>(null);
   const [eventForm, setEventForm] = useState({ eventDate: "", eventType: "", summary: "", structuredData: "{}" });
-  const [editingDocument, setEditingDocument] = useState<DataSummary["recentDocuments"][number] | null>(null);
-  const [documentForm, setDocumentForm] = useState({ documentType: "", status: "", ocrText: "", extractedJson: "{}" });
+  const [editingDocument, setEditingDocument] = useState<IndexedDocument | null>(null);
+  const [documentForm, setDocumentForm] = useState({
+    documentType: "",
+    status: "",
+    ocrText: "",
+    extractedJson: "{}",
+    indexLevel1: "",
+    indexLevel2: "",
+    indexLevel3: "",
+    indexModality: "",
+    indexLabels: "",
+  });
+  const [docFilters, setDocFilters] = useState({
+    q: "",
+    level1: "",
+    level2: "",
+    level3: "",
+    modality: "",
+    status: "",
+    patientId: "",
+  });
+  const [docSearch, setDocSearch] = useState("");
+  const [docOffset, setDocOffset] = useState(0);
   const queryClient = useQueryClient();
   const { toast } = useToast();
   const { data, isLoading } = useQuery<DataSummary>({
@@ -209,8 +289,41 @@ export function DataManagementPanel() {
     enabled: Boolean(selectedPatientId),
   });
 
+  const { data: indexTree } = useQuery<IndexTree>({
+    queryKey: ["/api/data-management/index-tree"],
+    enabled: activeTab === "documents",
+  });
+
+  // Typing in the search box should not fire a request per keystroke.
+  useEffect(() => {
+    const timer = setTimeout(() => {
+      setDocFilters((current) => (current.q === docSearch ? current : { ...current, q: docSearch }));
+      setDocOffset(0);
+    }, 350);
+    return () => clearTimeout(timer);
+  }, [docSearch]);
+
+  const documentsUrl = useMemo(() => {
+    const params = new URLSearchParams();
+    Object.entries(docFilters).forEach(([key, value]) => {
+      if (value) params.set(key, value);
+    });
+    params.set("limit", String(DOCUMENT_PAGE_SIZE));
+    params.set("offset", String(docOffset));
+    return `/api/data-management/documents?${params.toString()}`;
+  }, [docFilters, docOffset]);
+
+  const { data: documentSearch, isLoading: isDocumentsLoading } = useQuery<DocumentSearchResult>({
+    queryKey: [documentsUrl],
+    enabled: activeTab === "documents",
+  });
+
   const refreshData = async (patientId?: string | null) => {
     await queryClient.invalidateQueries({ queryKey: ["/api/data-management/summary"] });
+    await queryClient.invalidateQueries({
+      predicate: (query) => String(query.queryKey[0] || "").startsWith("/api/data-management/documents"),
+    });
+    await queryClient.invalidateQueries({ queryKey: ["/api/data-management/index-tree"] });
     if (patientId) {
       await queryClient.invalidateQueries({ queryKey: [`/api/data-management/patients/${patientId}/analysis`] });
     }
@@ -314,6 +427,11 @@ export function DataManagementPanel() {
         status: documentForm.status,
         ocrText: documentForm.ocrText || null,
         extractedJson,
+        indexLevel1: documentForm.indexLevel1.trim() || null,
+        indexLevel2: documentForm.indexLevel2.trim() || null,
+        indexLevel3: documentForm.indexLevel3.trim() || null,
+        indexModality: documentForm.indexModality.trim() || null,
+        indexLabels: documentForm.indexLabels.split(",").map((label) => label.trim()).filter(Boolean),
       });
       return response.json();
     },
@@ -323,6 +441,23 @@ export function DataManagementPanel() {
       toast({ title: "Document updated" });
     },
     onError: (error: any) => toast({ title: "Could not update document", description: error.message, variant: "destructive" }),
+  });
+
+  const reindexMutation = useMutation({
+    mutationFn: async () => {
+      const response = await apiRequest("POST", "/api/data-management/reindex", { limit: 25 });
+      return response.json() as Promise<{ scanned: number; indexed: number; skipped: number }>;
+    },
+    onSuccess: async (result) => {
+      await refreshData(selectedPatientId);
+      toast({
+        title: `Indexed ${result.indexed} of ${result.scanned} document(s)`,
+        description: result.skipped
+          ? `${result.skipped} could not be classified from the saved text. Run again to continue through the backlog.`
+          : "Run again to continue through the backlog.",
+      });
+    },
+    onError: (error: any) => toast({ title: "Reindex failed", description: error.message, variant: "destructive" }),
   });
 
   const openCreatePatient = () => {
@@ -360,15 +495,46 @@ export function DataManagementPanel() {
     });
   };
 
-  const openEditDocument = (document: DataSummary["recentDocuments"][number]) => {
+  const openEditDocument = (document: IndexedDocument) => {
     setEditingDocument(document);
     setDocumentForm({
       documentType: document.documentType,
       status: document.status,
       ocrText: document.ocrText || "",
       extractedJson: JSON.stringify(document.extractedJson || {}, null, 2),
+      indexLevel1: document.indexLevel1 || "",
+      indexLevel2: document.indexLevel2 || "",
+      indexLevel3: document.indexLevel3 || "",
+      indexModality: document.indexModality || "",
+      indexLabels: Array.isArray(document.indexLabels) ? document.indexLabels.join(", ") : "",
     });
   };
+
+  // Selecting a level clears the levels below it, so the drill-down stays valid.
+  const applyIndexFilter = (patch: Partial<typeof docFilters>) => {
+    setDocFilters((current) => {
+      const next = { ...current, ...patch };
+      if (patch.level1 !== undefined) {
+        next.level2 = patch.level2 ?? "";
+        next.level3 = patch.level3 ?? "";
+      } else if (patch.level2 !== undefined) {
+        next.level3 = patch.level3 ?? "";
+      }
+      return next;
+    });
+    setDocOffset(0);
+  };
+
+  const clearIndexFilters = () => {
+    setDocSearch("");
+    setDocFilters({ q: "", level1: "", level2: "", level3: "", modality: "", status: "", patientId: "" });
+    setDocOffset(0);
+  };
+
+  const level1Options = indexTree?.tree || [];
+  const level2Options = level1Options.find((node) => node.level1 === docFilters.level1)?.children || [];
+  const level3Options = level2Options.find((node) => node.level2 === docFilters.level2)?.children || [];
+  const hasActiveDocFilters = Object.values(docFilters).some(Boolean);
 
   const eventsByPatient = useMemo(() => {
     const map = new Map<string, DataSummary["recentEvents"]>();
@@ -702,35 +868,240 @@ export function DataManagementPanel() {
       )}
 
       {activeTab === "documents" && (
-      <div className="bg-card rounded-xl border overflow-hidden">
-        <div className="px-5 py-4 border-b flex items-center gap-2">
-          <Database className="w-5 h-5 text-primary" />
-          <h3 className="font-semibold">Recent Parsed Documents</h3>
-        </div>
-        <div className="divide-y">
-          {isLoading ? (
-            <p className="p-5 text-sm text-muted-foreground">Loading data records...</p>
-          ) : data?.recentDocuments?.length ? (
-            data.recentDocuments.map((doc) => (
-              <div key={doc.id} className="px-5 py-3 flex items-center justify-between gap-4">
-                <div className="min-w-0">
-                  <p className="font-medium truncate">{doc.fileName || doc.documentType || "WhatsApp document"}</p>
-                  <p className="text-xs text-muted-foreground">
-                    {doc.documentType} · {doc.status} · {doc.createdAt ? new Date(doc.createdAt).toLocaleString() : ""}
-                  </p>
-                </div>
-                <div className="flex items-center gap-2">
-                  <span className="text-xs text-muted-foreground">
-                    {typeof doc.confidence === "number" ? `${Math.round(doc.confidence * 100)}%` : ""}
-                  </span>
-                  <Button size="sm" variant="ghost" onClick={() => openEditDocument(doc)}>
-                    <Edit3 className="mr-1 h-3.5 w-3.5" /> Edit
-                  </Button>
+      <div className="space-y-4">
+        <div className="bg-card rounded-xl border overflow-hidden">
+          <div className="px-5 py-4 border-b flex flex-wrap items-center justify-between gap-2">
+            <div className="flex items-center gap-2">
+              <FolderTree className="w-5 h-5 text-primary" />
+              <h3 className="font-semibold">Subject Index</h3>
+            </div>
+            <div className="flex items-center gap-2">
+              {indexTree?.unindexedCount ? (
+                <span className="text-xs text-muted-foreground">{indexTree.unindexedCount} not indexed yet</span>
+              ) : null}
+              <Button
+                size="sm"
+                variant="outline"
+                onClick={() => reindexMutation.mutate()}
+                disabled={reindexMutation.isPending || !indexTree?.unindexedCount}
+                title="Classify older documents that were parsed before indexing existed"
+              >
+                {reindexMutation.isPending
+                  ? <Loader2 className="mr-1 h-3.5 w-3.5 animate-spin" />
+                  : <RefreshCw className="mr-1 h-3.5 w-3.5" />}
+                Index backlog
+              </Button>
+            </div>
+          </div>
+
+          <div className="p-5 space-y-4">
+            <div className="flex flex-col gap-3 lg:flex-row lg:items-end">
+              <div className="flex-1 space-y-1">
+                <Label htmlFor="doc-search" className="text-xs text-muted-foreground">Search</Label>
+                <div className="relative">
+                  <Search className="absolute left-3 top-1/2 h-4 w-4 -translate-y-1/2 text-muted-foreground" />
+                  <Input
+                    id="doc-search"
+                    className="pl-9"
+                    value={docSearch}
+                    onChange={(event) => setDocSearch(event.target.value)}
+                    placeholder="File name, caption, index term, or text inside the report"
+                  />
                 </div>
               </div>
-            ))
-          ) : (
-            <p className="p-5 text-sm text-muted-foreground">No parsed documents yet. Send a report image or PDF to the connected WhatsApp number.</p>
+              <div className="space-y-1">
+                <Label htmlFor="doc-modality" className="text-xs text-muted-foreground">Type of study</Label>
+                <select
+                  id="doc-modality"
+                  value={docFilters.modality}
+                  onChange={(event) => applyIndexFilter({ modality: event.target.value })}
+                  className="flex h-10 w-full min-w-[10rem] rounded-md border border-input bg-background px-3 py-2 text-sm"
+                >
+                  <option value="">Any</option>
+                  {(indexTree?.modalities || []).map((item) => (
+                    <option key={item.modality} value={item.modality}>
+                      {humanizeIndexTerm(item.modality)} ({item.count})
+                    </option>
+                  ))}
+                </select>
+              </div>
+              <div className="space-y-1">
+                <Label htmlFor="doc-status" className="text-xs text-muted-foreground">Status</Label>
+                <select
+                  id="doc-status"
+                  value={docFilters.status}
+                  onChange={(event) => applyIndexFilter({ status: event.target.value })}
+                  className="flex h-10 w-full min-w-[9rem] rounded-md border border-input bg-background px-3 py-2 text-sm"
+                >
+                  <option value="">Any</option>
+                  <option value="processed">Processed</option>
+                  <option value="needs_review">Needs review</option>
+                  <option value="pending">Pending</option>
+                  <option value="failed">Failed</option>
+                </select>
+              </div>
+            </div>
+
+            <div className="grid gap-3 md:grid-cols-3">
+              <div className="space-y-1">
+                <Label htmlFor="doc-level1" className="text-xs text-muted-foreground">Region / domain</Label>
+                <select
+                  id="doc-level1"
+                  value={docFilters.level1}
+                  onChange={(event) => applyIndexFilter({ level1: event.target.value })}
+                  className="flex h-10 w-full rounded-md border border-input bg-background px-3 py-2 text-sm"
+                >
+                  <option value="">All</option>
+                  {level1Options.map((node) => (
+                    <option key={node.level1} value={node.level1}>
+                      {humanizeIndexTerm(node.level1)} ({node.count})
+                    </option>
+                  ))}
+                </select>
+              </div>
+              <div className="space-y-1">
+                <Label htmlFor="doc-level2" className="text-xs text-muted-foreground">Condition / procedure</Label>
+                <select
+                  id="doc-level2"
+                  value={docFilters.level2}
+                  onChange={(event) => applyIndexFilter({ level2: event.target.value })}
+                  disabled={!docFilters.level1}
+                  className="flex h-10 w-full rounded-md border border-input bg-background px-3 py-2 text-sm disabled:opacity-50"
+                >
+                  <option value="">All</option>
+                  {level2Options.map((node) => (
+                    <option key={node.level2} value={node.level2}>
+                      {humanizeIndexTerm(node.level2)} ({node.count})
+                    </option>
+                  ))}
+                </select>
+              </div>
+              <div className="space-y-1">
+                <Label htmlFor="doc-level3" className="text-xs text-muted-foreground">Stage</Label>
+                <select
+                  id="doc-level3"
+                  value={docFilters.level3}
+                  onChange={(event) => applyIndexFilter({ level3: event.target.value })}
+                  disabled={!docFilters.level2}
+                  className="flex h-10 w-full rounded-md border border-input bg-background px-3 py-2 text-sm disabled:opacity-50"
+                >
+                  <option value="">All</option>
+                  {level3Options.map((node) => (
+                    <option key={node.level3} value={node.level3}>
+                      {humanizeIndexTerm(node.level3)} ({node.count})
+                    </option>
+                  ))}
+                </select>
+              </div>
+            </div>
+
+            {hasActiveDocFilters && (
+              <div className="flex items-center justify-between gap-2 text-sm">
+                <p className="text-muted-foreground">
+                  {documentSearch?.total ?? 0} matching document{documentSearch?.total === 1 ? "" : "s"}
+                </p>
+                <Button size="sm" variant="ghost" onClick={clearIndexFilters}>
+                  <X className="mr-1 h-3.5 w-3.5" /> Clear filters
+                </Button>
+              </div>
+            )}
+
+            {!level1Options.length && (
+              <p className="text-sm text-muted-foreground">
+                No subject index yet. New uploads are indexed automatically as the AI reads them; use "Index backlog" for documents parsed earlier.
+              </p>
+            )}
+          </div>
+        </div>
+
+        <div className="bg-card rounded-xl border overflow-hidden">
+          <div className="px-5 py-4 border-b flex items-center gap-2">
+            <Database className="w-5 h-5 text-primary" />
+            <h3 className="font-semibold">Parsed Documents</h3>
+          </div>
+          <div className="divide-y">
+            {isDocumentsLoading ? (
+              <p className="p-5 text-sm text-muted-foreground">Loading data records...</p>
+            ) : documentSearch?.documents?.length ? (
+              documentSearch.documents.map((doc) => {
+                const indexPath = formatIndexPath(doc);
+                return (
+                  <div key={doc.id} className="px-5 py-3 flex flex-col gap-2 md:flex-row md:items-center md:justify-between">
+                    <div className="min-w-0 space-y-1">
+                      <p className="font-medium truncate">{doc.fileName || doc.documentType || "WhatsApp document"}</p>
+                      <div className="flex flex-wrap items-center gap-1.5">
+                        {indexPath ? (
+                          <span className="inline-flex items-center rounded-full bg-primary/10 px-2 py-0.5 text-xs font-medium text-primary">
+                            {indexPath}
+                          </span>
+                        ) : (
+                          <span className="inline-flex items-center rounded-full bg-muted px-2 py-0.5 text-xs text-muted-foreground">
+                            Not indexed
+                          </span>
+                        )}
+                        {doc.indexModality && (
+                          <span className="inline-flex items-center rounded-full border px-2 py-0.5 text-xs">
+                            {humanizeIndexTerm(doc.indexModality)}
+                          </span>
+                        )}
+                        {doc.indexSource === "manual" && (
+                          <span className="inline-flex items-center rounded-full border px-2 py-0.5 text-xs text-muted-foreground">
+                            Manually indexed
+                          </span>
+                        )}
+                      </div>
+                      <p className="text-xs text-muted-foreground">
+                        {[
+                          doc.patientName,
+                          doc.documentType,
+                          doc.status,
+                          doc.createdAt ? new Date(doc.createdAt).toLocaleString() : "",
+                        ].filter(Boolean).join(" · ")}
+                      </p>
+                    </div>
+                    <div className="flex items-center gap-2 shrink-0">
+                      <span className="text-xs text-muted-foreground">
+                        {typeof doc.confidence === "number" ? `${Math.round(doc.confidence * 100)}%` : ""}
+                      </span>
+                      <Button size="sm" variant="ghost" onClick={() => openEditDocument(doc)}>
+                        <Edit3 className="mr-1 h-3.5 w-3.5" /> Edit
+                      </Button>
+                    </div>
+                  </div>
+                );
+              })
+            ) : (
+              <p className="p-5 text-sm text-muted-foreground">
+                {hasActiveDocFilters
+                  ? "No documents match these index filters."
+                  : "No parsed documents yet. Send a report image or PDF to the connected WhatsApp number."}
+              </p>
+            )}
+          </div>
+          {(documentSearch?.total || 0) > DOCUMENT_PAGE_SIZE && (
+            <div className="px-5 py-3 border-t flex items-center justify-between gap-2">
+              <p className="text-xs text-muted-foreground">
+                {docOffset + 1}-{Math.min(docOffset + DOCUMENT_PAGE_SIZE, documentSearch?.total || 0)} of {documentSearch?.total || 0}
+              </p>
+              <div className="flex gap-2">
+                <Button
+                  size="sm"
+                  variant="outline"
+                  onClick={() => setDocOffset((current) => Math.max(0, current - DOCUMENT_PAGE_SIZE))}
+                  disabled={docOffset === 0}
+                >
+                  Previous
+                </Button>
+                <Button
+                  size="sm"
+                  variant="outline"
+                  onClick={() => setDocOffset((current) => current + DOCUMENT_PAGE_SIZE)}
+                  disabled={docOffset + DOCUMENT_PAGE_SIZE >= (documentSearch?.total || 0)}
+                >
+                  Next
+                </Button>
+              </div>
+            </div>
           )}
         </div>
       </div>
@@ -959,6 +1330,63 @@ export function DataManagementPanel() {
                 <option value="needs_review">Needs review</option>
                 <option value="failed">Failed</option>
               </select>
+            </div>
+            <div className="space-y-2 md:col-span-2 rounded-lg border p-4">
+              <div className="flex items-center gap-2">
+                <FolderTree className="h-4 w-4 text-primary" />
+                <p className="text-sm font-medium">Subject index</p>
+              </div>
+              <p className="text-xs text-muted-foreground">
+                Three levels from broad to specific, for example knee › knee_replacement › post_operative.
+                Editing these marks the index as manually set so re-parsing will not overwrite it.
+              </p>
+              <div className="grid gap-3 md:grid-cols-3 pt-1">
+                <div className="space-y-2">
+                  <Label htmlFor="document-index1" className="text-xs">Level 1 — region / domain</Label>
+                  <Input
+                    id="document-index1"
+                    value={documentForm.indexLevel1}
+                    onChange={(event) => setDocumentForm((current) => ({ ...current, indexLevel1: event.target.value }))}
+                    placeholder="knee"
+                  />
+                </div>
+                <div className="space-y-2">
+                  <Label htmlFor="document-index2" className="text-xs">Level 2 — condition / procedure</Label>
+                  <Input
+                    id="document-index2"
+                    value={documentForm.indexLevel2}
+                    onChange={(event) => setDocumentForm((current) => ({ ...current, indexLevel2: event.target.value }))}
+                    placeholder="knee_replacement"
+                  />
+                </div>
+                <div className="space-y-2">
+                  <Label htmlFor="document-index3" className="text-xs">Level 3 — stage</Label>
+                  <Input
+                    id="document-index3"
+                    value={documentForm.indexLevel3}
+                    onChange={(event) => setDocumentForm((current) => ({ ...current, indexLevel3: event.target.value }))}
+                    placeholder="post_operative"
+                  />
+                </div>
+                <div className="space-y-2">
+                  <Label htmlFor="document-modality" className="text-xs">Type of study</Label>
+                  <Input
+                    id="document-modality"
+                    value={documentForm.indexModality}
+                    onChange={(event) => setDocumentForm((current) => ({ ...current, indexModality: event.target.value }))}
+                    placeholder="xray"
+                  />
+                </div>
+                <div className="space-y-2 md:col-span-2">
+                  <Label htmlFor="document-labels" className="text-xs">Search keywords</Label>
+                  <Input
+                    id="document-labels"
+                    value={documentForm.indexLabels}
+                    onChange={(event) => setDocumentForm((current) => ({ ...current, indexLabels: event.target.value }))}
+                    placeholder="tkr, total_knee_replacement, arthroplasty"
+                  />
+                </div>
+              </div>
             </div>
             <div className="space-y-2 md:col-span-2">
               <Label htmlFor="document-ocr">OCR/raw text</Label>

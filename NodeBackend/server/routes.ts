@@ -1397,9 +1397,45 @@ export async function registerRoutes(app: Express): Promise<Server> {
         status: z.enum(["pending", "processed", "needs_review", "failed"]).optional(),
         ocrText: z.string().max(1000000).nullable().optional(),
         extractedJson: z.record(z.unknown()).optional(),
+        indexLevel1: z.string().trim().max(60).nullable().optional(),
+        indexLevel2: z.string().trim().max(60).nullable().optional(),
+        indexLevel3: z.string().trim().max(60).nullable().optional(),
+        indexModality: z.string().trim().max(40).nullable().optional(),
+        indexLabels: z.array(z.string().trim().max(48)).max(12).optional(),
       }).parse(req.body);
+
+      const { indexLevel1, indexLevel2, indexLevel3, indexModality, indexLabels, ...rest } = input;
+      const touchesIndex = [indexLevel1, indexLevel2, indexLevel3, indexModality, indexLabels]
+        .some((value) => value !== undefined);
+
+      // A manual edit becomes the authoritative index and survives re-parsing.
+      let indexValues: Record<string, unknown> = {};
+      if (touchesIndex) {
+        const service = new DataManagementAgentService();
+        const level1 = service.normalizeIndexLevelInput(indexLevel1);
+        const level2 = service.normalizeIndexLevelInput(indexLevel2);
+        const level3 = service.normalizeIndexLevelInput(indexLevel3);
+        const modality = service.normalizeIndexModalityInput(indexModality);
+        const levels = [level1, level2, level3].filter(Boolean) as string[];
+        const labels = Array.from(new Set([
+          ...(indexLabels || []).map((label) => service.normalizeIndexLevelInput(label)),
+          ...levels,
+          modality,
+        ].filter(Boolean) as string[])).slice(0, 12);
+        indexValues = {
+          indexLevel1: levels[0] ?? null,
+          indexLevel2: levels[1] ?? null,
+          indexLevel3: levels[2] ?? null,
+          indexPath: levels.length ? levels.join("/") : null,
+          indexModality: modality,
+          indexLabels: labels,
+          indexSource: levels.length || modality ? "manual" : null,
+        };
+      }
+
       const [document] = await db.update(dataDocuments).set({
-        ...input,
+        ...rest,
+        ...indexValues,
         updatedAt: new Date(),
       }).where(and(
         eq(dataDocuments.id, req.params.documentId),
@@ -1459,6 +1495,69 @@ export async function registerRoutes(app: Express): Promise<Server> {
       });
     } catch (error: any) {
       res.status(error.status || 500).json({ message: error.message });
+    }
+  });
+
+  // Indexed attachment retrieval: "every post knee replacement X-ray" is
+  // ?path=knee/knee_replacement/post_operative&modality=xray
+  app.get('/api/data-management/documents', requireAuth, async (req, res) => {
+    try {
+      await requireDataManagementFeature(req);
+      const tenant = getTenantFromRequest(req);
+      const query = z.object({
+        q: z.string().trim().max(200).optional(),
+        path: z.string().trim().max(200).optional(),
+        level1: z.string().trim().max(60).optional(),
+        level2: z.string().trim().max(60).optional(),
+        level3: z.string().trim().max(60).optional(),
+        modality: z.string().trim().max(40).optional(),
+        labels: z.string().trim().max(400).optional(),
+        patientId: z.string().trim().max(64).optional(),
+        documentType: z.string().trim().max(100).optional(),
+        status: z.enum(["pending", "processed", "needs_review", "failed"]).optional(),
+        from: z.string().trim().max(20).optional(),
+        to: z.string().trim().max(20).optional(),
+        indexed: z.enum(["only", "missing"]).optional(),
+        limit: z.coerce.number().int().min(1).max(200).optional(),
+        offset: z.coerce.number().int().min(0).optional(),
+      }).parse(req.query);
+
+      const service = new DataManagementAgentService();
+      const result = await service.searchDocumentsByIndex(tenant, {
+        ...query,
+        labels: query.labels ? query.labels.split(",").map((label) => label.trim()).filter(Boolean) : undefined,
+        indexedOnly: query.indexed === "only",
+        unindexedOnly: query.indexed === "missing",
+      });
+      res.json(result);
+    } catch (error: any) {
+      res.status(error instanceof z.ZodError ? 400 : error.status || 500).json({ message: error.message });
+    }
+  });
+
+  app.get('/api/data-management/index-tree', requireAuth, async (req, res) => {
+    try {
+      await requireDataManagementFeature(req);
+      const tenant = getTenantFromRequest(req);
+      const service = new DataManagementAgentService();
+      res.json(await service.getIndexTree(tenant));
+    } catch (error: any) {
+      res.status(error.status || 500).json({ message: error.message });
+    }
+  });
+
+  // Backfill the index for documents parsed before indexing existed.
+  app.post('/api/data-management/reindex', requireAuth, async (req, res) => {
+    try {
+      await requireDataManagementFeature(req);
+      const tenant = getTenantFromRequest(req);
+      const { limit } = z.object({
+        limit: z.number().int().min(1).max(100).optional(),
+      }).parse(req.body || {});
+      const service = new DataManagementAgentService();
+      res.json(await service.reindexDocuments(tenant, limit ?? 25));
+    } catch (error: any) {
+      res.status(error instanceof z.ZodError ? 400 : error.status || 500).json({ message: error.message });
     }
   });
 
