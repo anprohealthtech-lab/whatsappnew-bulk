@@ -35,12 +35,28 @@ import { sendNotificationForEvent } from "./services/UserNotificationService";
 import { registerExternalApiRoutes } from "./externalApiRoutes";
 
 // Configure CORS
+// Browsers send Origin as `scheme://host[:port]` with no trailing slash, and the cors
+// package matches it as an exact string - so entries are trimmed, stripped of any
+// trailing slash, and given https:// when the scheme was left off.
+function parseOriginList(value: string | undefined): string[] {
+  return (value || '')
+    .split(',')
+    .map((entry) => entry.trim().replace(/\/+$/, ''))
+    .filter(Boolean)
+    .map((entry) => (/^https?:\/\//i.test(entry) ? entry : `https://${entry}`));
+}
+
+// REPLIT_DOMAINS is the legacy name for this list; it is still read so a deploy that
+// only has the old variable set keeps working.
+const allowedOrigins = Array.from(new Set([
+  "http://localhost:4173",
+  "http://localhost:5173",
+  ...parseOriginList(process.env.CORS_ORIGINS),
+  ...parseOriginList(process.env.REPLIT_DOMAINS),
+]));
+
 const corsOptions = {
-  origin: [
-    "http://localhost:4173",
-    "http://localhost:5173",
-    ...(process.env.REPLIT_DOMAINS ? process.env.REPLIT_DOMAINS.split(',') : [])
-  ],
+  origin: allowedOrigins,
   credentials: true,
 };
 
@@ -655,6 +671,7 @@ function buildVoiceSystemPrompt(basePrompt?: string | null, languageMode?: strin
 
 export async function registerRoutes(app: Express): Promise<Server> {
   // Apply CORS middleware
+  console.log(`CORS allowed origins: ${allowedOrigins.join(', ')}`);
   app.use(cors(corsOptions));
 
   // External machine-to-machine API (x-api-key, acts on behalf of registered users)
@@ -5524,12 +5541,16 @@ export async function registerRoutes(app: Express): Promise<Server> {
 
   // ==================== NOTIFICATION API ====================
 
-  // Verify API key for notification endpoints
+  // Verify API key for notification endpoints.
+  // The external machine-to-machine key is accepted here too, so a caller that
+  // already drives a session through /api/external/* can post notifications
+  // with the one key it holds instead of needing the notification secret.
   const NOTIFICATION_API_KEY = process.env.NOTIFICATION_API_KEY || 'whatsapp-notification-secret-key';
+  const NOTIFICATION_EXTERNAL_API_KEY = process.env.EXTERNAL_WA_API_KEY || 'whatsapp-lims-api-key-2024';
 
   const verifyNotificationApiKey = (req: any, res: any): boolean => {
     const apiKey = req.headers['x-api-key'] || req.headers['authorization']?.replace('Bearer ', '');
-    if (apiKey !== NOTIFICATION_API_KEY) {
+    if (apiKey !== NOTIFICATION_API_KEY && apiKey !== NOTIFICATION_EXTERNAL_API_KEY) {
       res.status(401).json({ success: false, error: 'Invalid API key' });
       return false;
     }
@@ -5545,16 +5566,19 @@ export async function registerRoutes(app: Express): Promise<Server> {
     return cleaned;
   };
 
+  // Resolve which WhatsApp session sends a notification.
+  //
+  // Preferred sender is an HR admin registered against the Task Management
+  // organization. External callers have no HR admin record, so a `userId`
+  // owning its own connected session is accepted as a fallback sender — that
+  // is what lets an externally-driven session send notifications. Orgs with
+  // neither an admin session nor a usable `userId` still get the 403/503 they
+  // got before, so existing callers see no behaviour change.
   const resolveNotificationSender = async (
     organizationId: string,
     preferredUserId?: string,
   ): Promise<{ admin: any; session: WAServiceInstance }> => {
-    const orgAdmins = await storage.getHRAdminsByOrganization(organizationId);
-    if (!orgAdmins || orgAdmins.length === 0) {
-      const error = new Error('Organization not enabled for WhatsApp notifications. Register an HR admin first.');
-      (error as any).status = 403;
-      throw error;
-    }
+    const orgAdmins = (await storage.getHRAdminsByOrganization(organizationId)) || [];
 
     const orderedAdmins = preferredUserId
       ? [
@@ -5569,6 +5593,24 @@ export async function registerRoutes(app: Express): Promise<Server> {
       if (session) {
         return { admin, session };
       }
+    }
+
+    // No admin session available — fall back to the caller's own session.
+    if (preferredUserId) {
+      const session = await sessionManager.getFirstConnectedSession(preferredUserId);
+      if (session) {
+        log(`[Notify] Using external session for user ${preferredUserId} (org ${organizationId}, no HR admin session)`);
+        return {
+          admin: { userId: preferredUserId, whatsappUserId: preferredUserId, phoneNumber: null },
+          session,
+        };
+      }
+    }
+
+    if (orgAdmins.length === 0) {
+      const error = new Error('Organization not enabled for WhatsApp notifications. Register an HR admin, or pass a userId that owns a connected session.');
+      (error as any).status = 403;
+      throw error;
     }
 
     const error = new Error(`No connected WhatsApp session found for organization ${organizationId}`);
@@ -5715,8 +5757,6 @@ export async function registerRoutes(app: Express): Promise<Server> {
         });
       }
 
-      // REQUIRED: Check if organization has any HR admin registered
-      // Only orgs with HR admins can receive WhatsApp notifications
       if (!organizationId) {
         return res.status(400).json({
           success: false,
@@ -5724,17 +5764,9 @@ export async function registerRoutes(app: Express): Promise<Server> {
         });
       }
 
-      const orgAdmins = await storage.getHRAdminsByOrganization(organizationId);
-      if (!orgAdmins || orgAdmins.length === 0) {
-        log(`🚫 Org ${organizationId} not enabled for WhatsApp - no HR admins registered`);
-        return res.status(403).json({
-          success: false,
-          error: 'Organization not enabled for WhatsApp notifications. Register an HR admin first.',
-          organizationId,
-        });
-      }
-
-      log(`✅ Org ${organizationId} verified - ${orgAdmins.length} HR admin(s) registered`);
+      // The HR-admin gate lives in resolveNotificationSender, which also
+      // accepts an external session addressed by userId. Duplicating the check
+      // here would reject those callers before the fallback can run.
 
       const normalizedPhone = normalizeNotificationPhone(phoneNumber);
 
@@ -5762,7 +5794,9 @@ export async function registerRoutes(app: Express): Promise<Server> {
     } catch (error) {
       const errorMessage = error instanceof Error ? error.message : 'Unknown error';
       log(`❌ Send notification error: ${errorMessage}`);
-      res.status(500).json({ success: false, error: errorMessage });
+      // resolveNotificationSender tags 403 (org not enabled) / 503 (no session);
+      // those used to be returned inline, so keep the same status on the wire.
+      res.status((error as any)?.status || 500).json({ success: false, error: errorMessage });
     }
   });
 
