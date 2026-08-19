@@ -1,4 +1,4 @@
-import type { Express, Request, Response } from "express";
+import type { Express, Request, Response, NextFunction } from "express";
 import { createServer, type Server } from "http";
 import { WebSocketServer } from "ws";
 import multer from "multer";
@@ -667,6 +667,24 @@ function buildVoiceSystemPrompt(basePrompt?: string | null, languageMode?: strin
     );
   }
   return parts.length ? parts.join("\n\n") : undefined;
+}
+
+// Accept either a bridge JWT or a machine-to-machine API key.
+//
+// Declared as a hoisted function so routes registered before the notification
+// key constants can still reference it. When the API key is used there is no
+// logged-in user, so req.auth stays undefined and the handler must take the
+// acting WhatsApp account from the request body instead.
+function requireAuthOrApiKey(req: Request, res: Response, next: NextFunction): void {
+  const provided = req.headers['x-api-key'] || req.headers['authorization']?.toString().replace('Bearer ', '');
+  const notificationKey = process.env.NOTIFICATION_API_KEY || 'whatsapp-notification-secret-key';
+  const externalKey = process.env.EXTERNAL_WA_API_KEY || 'whatsapp-lims-api-key-2024';
+  if (provided && (provided === notificationKey || provided === externalKey)) {
+    (req as any).isApiKeyAuth = true;
+    next();
+    return;
+  }
+  requireAuth(req, res, next);
 }
 
 export async function registerRoutes(app: Express): Promise<Server> {
@@ -5234,7 +5252,11 @@ export async function registerRoutes(app: Express): Promise<Server> {
   });
 
   // Register new HR admin (link WhatsApp number to Task Management user)
-  app.post('/api/hr-admins', requireAuth, async (req, res) => {
+  // Accepts a bridge JWT (browser) or the machine-to-machine API key, so an
+  // external app can finish onboarding right after a QR scan without a human
+  // logging in. Under API-key auth there is no session to infer the sending
+  // account from, so whatsappUserId must be supplied in the body.
+  app.post('/api/hr-admins', requireAuthOrApiKey, async (req, res) => {
     try {
       const validation = registerHRAdminSchema.safeParse(req.body);
 
@@ -5247,21 +5269,37 @@ export async function registerRoutes(app: Express): Promise<Server> {
 
       const { phoneNumber, name, organizationId, userId, organizationName } = validation.data;
 
+      // whatsappUserId owns the WhatsApp session that will send for this org.
+      // It is NOT userId, which is the Supabase user the admin record describes.
+      const bodyWhatsappUserId = String((req.body as any)?.whatsappUserId || '').trim();
+      const isApiKeyAuth = (req as any).isApiKeyAuth === true;
+      if (isApiKeyAuth && !bodyWhatsappUserId) {
+        return res.status(400).json({
+          success: false,
+          error: 'whatsappUserId is required when authenticating with an API key',
+        });
+      }
+      const whatsappUserId = isApiKeyAuth ? bodyWhatsappUserId : req.auth!.userId;
+
       // Create HR admin
       const hrAdmin = await withRetry(() => storage.createHRAdmin({
         phoneNumber,
         name,
         organizationId,
         userId,
-        whatsappUserId: req.auth!.userId,
+        whatsappUserId,
         organizationName,
       }));
 
-      // Optionally send welcome message
+      // Optionally send welcome message, from the account just bound above.
       try {
-        const waSession = await getUserWASession(req);
-        const hrChatbotService = new HRChatbotService(storage, waSession);
-        await hrChatbotService.sendWelcomeMessage(hrAdmin);
+        const waSession = await sessionManager.getFirstConnectedSession(whatsappUserId);
+        if (waSession) {
+          const hrChatbotService = new HRChatbotService(storage, waSession);
+          await hrChatbotService.sendWelcomeMessage(hrAdmin);
+        } else {
+          console.log(`⚠️ No connected session for ${whatsappUserId} — skipped HR admin welcome message`);
+        }
       } catch (welcomeError) {
         console.log(`⚠️ Failed to send welcome message to HR admin: ${welcomeError}`);
       }
@@ -5568,24 +5606,32 @@ export async function registerRoutes(app: Express): Promise<Server> {
 
   // Resolve which WhatsApp session sends a notification.
   //
-  // Preferred sender is an HR admin registered against the Task Management
-  // organization. External callers have no HR admin record, so a `userId`
-  // owning its own connected session is accepted as a fallback sender — that
-  // is what lets an externally-driven session send notifications. Orgs with
-  // neither an admin session nor a usable `userId` still get the 403/503 they
-  // got before, so existing callers see no behaviour change.
+  // The two id fields mean different things and are deliberately NOT
+  // interchangeable, matching the hr_admins contract:
+  //   userId         — Supabase user id. On a notification this is usually the
+  //                    recipient (the employee being notified), so it never
+  //                    owns a WhatsApp session. Used only to prefer a matching
+  //                    admin record.
+  //   whatsappUserId — WhatsApp backend user that owns the session to send from.
+  //
+  // Preferred sender is an HR admin registered against the organization. When
+  // no admin has a live session, an explicitly supplied whatsappUserId is used
+  // as the sender, which is what lets an externally-driven session send here.
+  // Orgs with neither still get the same 403/503 as before.
   const resolveNotificationSender = async (
     organizationId: string,
     preferredUserId?: string,
+    preferredWhatsappUserId?: string,
   ): Promise<{ admin: any; session: WAServiceInstance }> => {
     const orgAdmins = (await storage.getHRAdminsByOrganization(organizationId)) || [];
 
-    const orderedAdmins = preferredUserId
-      ? [
-          ...orgAdmins.filter(admin => admin.userId === preferredUserId),
-          ...orgAdmins.filter(admin => admin.userId !== preferredUserId),
-        ]
-      : orgAdmins;
+    // Session owner beats Supabase-user match, which beats everyone else.
+    const rank = (admin: any): number => {
+      if (preferredWhatsappUserId && admin.whatsappUserId === preferredWhatsappUserId) return 0;
+      if (preferredUserId && admin.userId === preferredUserId) return 1;
+      return 2;
+    };
+    const orderedAdmins = [...orgAdmins].sort((a, b) => rank(a) - rank(b));
 
     for (const admin of orderedAdmins) {
       const senderUserId = admin.whatsappUserId || admin.userId;
@@ -5595,20 +5641,22 @@ export async function registerRoutes(app: Express): Promise<Server> {
       }
     }
 
-    // No admin session available — fall back to the caller's own session.
-    if (preferredUserId) {
-      const session = await sessionManager.getFirstConnectedSession(preferredUserId);
+    // No admin session available — fall back to the named session owner.
+    // Only whatsappUserId is accepted: resolving a session from userId would
+    // look one up under the notification's recipient and always come up empty.
+    if (preferredWhatsappUserId) {
+      const session = await sessionManager.getFirstConnectedSession(preferredWhatsappUserId);
       if (session) {
-        log(`[Notify] Using external session for user ${preferredUserId} (org ${organizationId}, no HR admin session)`);
+        log(`[Notify] Using session owner ${preferredWhatsappUserId} (org ${organizationId}, no HR admin session)`);
         return {
-          admin: { userId: preferredUserId, whatsappUserId: preferredUserId, phoneNumber: null },
+          admin: { userId: preferredUserId || null, whatsappUserId: preferredWhatsappUserId, phoneNumber: null },
           session,
         };
       }
     }
 
     if (orgAdmins.length === 0) {
-      const error = new Error('Organization not enabled for WhatsApp notifications. Register an HR admin, or pass a userId that owns a connected session.');
+      const error = new Error('Organization not enabled for WhatsApp notifications. Register an HR admin, or pass a whatsappUserId that owns a connected session.');
       (error as any).status = 403;
       throw error;
     }
@@ -5634,6 +5682,55 @@ export async function registerRoutes(app: Express): Promise<Server> {
       });
     } catch (error) {
       const errorMessage = error instanceof Error ? error.message : 'Unknown error';
+      res.status(500).json({ success: false, error: errorMessage });
+    }
+  });
+
+  // Inspect the HR admin -> WhatsApp session mapping for one organization.
+  //
+  // Unlike /api/org-whatsapp-enabled, which only counts admin records, this
+  // resolves each admin's sending account the same way a real send does, so
+  // `canSend` answers "would a notification go out right now?" without having
+  // to send one. Note this shares the send path's behaviour of waking a
+  // session whose stored status is connected but which is not loaded yet.
+  app.get('/api/org-whatsapp-admins/:organizationId', async (req, res) => {
+    try {
+      if (!verifyNotificationApiKey(req, res)) return;
+
+      const { organizationId } = req.params;
+      const orgAdmins = (await storage.getHRAdminsByOrganization(organizationId)) || [];
+
+      const admins = [];
+      for (const admin of orgAdmins) {
+        const senderUserId = admin.whatsappUserId || admin.userId;
+        let connected = false;
+        try {
+          connected = Boolean(await sessionManager.getFirstConnectedSession(senderUserId));
+        } catch {
+          connected = false;
+        }
+        admins.push({
+          phoneNumber: admin.phoneNumber,
+          name: admin.name || null,
+          userId: admin.userId,
+          whatsappUserId: admin.whatsappUserId || null,
+          senderUserId,
+          organizationName: admin.organizationName || null,
+          chatbotActive: admin.chatbotActive,
+          connected,
+        });
+      }
+
+      res.json({
+        success: true,
+        organizationId,
+        adminCount: admins.length,
+        canSend: admins.some(a => a.connected),
+        admins,
+      });
+    } catch (error) {
+      const errorMessage = error instanceof Error ? error.message : 'Unknown error';
+      log(`Get org WhatsApp admins error: ${errorMessage}`);
       res.status(500).json({ success: false, error: errorMessage });
     }
   });
@@ -5748,7 +5845,7 @@ export async function registerRoutes(app: Express): Promise<Server> {
       // Verify API key
       if (!verifyNotificationApiKey(req, res)) return;
 
-      const { phoneNumber, message, notificationId, title, type, organizationId, userId } = req.body;
+      const { phoneNumber, message, notificationId, title, type, organizationId, userId, whatsappUserId } = req.body;
 
       if (!phoneNumber || !message) {
         return res.status(400).json({
@@ -5778,7 +5875,7 @@ export async function registerRoutes(app: Express): Promise<Server> {
         : message;
 
       // Send via the WhatsApp session linked to this Task Management organization.
-      const { admin, session: waSession } = await resolveNotificationSender(organizationId, userId);
+      const { admin, session: waSession } = await resolveNotificationSender(organizationId, userId, whatsappUserId);
       await waSession.sendTextMessage(normalizedPhone, formattedMessage);
 
       log(`✅ Notification sent successfully (id: ${notificationId || 'N/A'})`);
@@ -5825,7 +5922,7 @@ export async function registerRoutes(app: Express): Promise<Server> {
 
       for (const notification of notifications) {
         try {
-          const { phoneNumber, message, notificationId, title, organizationId, userId } = notification;
+          const { phoneNumber, message, notificationId, title, organizationId, userId, whatsappUserId } = notification;
 
           if (!phoneNumber || !message) {
             results.failed++;
@@ -5844,7 +5941,7 @@ export async function registerRoutes(app: Express): Promise<Server> {
             ? `*${title}*\n\n${message}`
             : message;
 
-          const { session: waSession } = await resolveNotificationSender(organizationId, userId);
+          const { session: waSession } = await resolveNotificationSender(organizationId, userId, whatsappUserId);
           await waSession.sendTextMessage(normalizedPhone, formattedMessage);
           results.sent++;
 
