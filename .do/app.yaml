@@ -70,6 +70,17 @@ services:
     scope: RUN_AND_BUILD_TIME
     value: ""
     
+  # Browser origins allowed to call this API. Full origins, comma separated,
+  # no trailing slash. Anything missing here fails CORS preflight.
+  - key: CORS_ORIGINS
+    scope: RUN_TIME
+    value: "https://www.dcptaskmanagmentapp.in,https://dcptaskmanagmentapp.in,https://whatsapp-automation.limsapp.in,https://anpro-whatsapp-bulk-chatbot-y5xix.ondigitalocean.app,https://localhost,http://localhost:5173"
+
+  # Public URL of this backend, used to build media links sent to WhatsApp.
+  - key: PUBLIC_BASE_URL
+    scope: RUN_TIME
+    value: "https://anpro-whatsapp-bulk-chatbot-y5xix.ondigitalocean.app"
+
   - key: PORT
     value: "3001"
     

@@ -1,0 +1,536 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>The Practice Line — Evaluation Brief</title>
+<style>
+/* ────────────────────────────────────────────────────────────────
+   Palette derived from the clinic: chart ink, bone paper, instrument
+   teal, one reserved stamp red used ONLY on the loss/risk beat.
+   ──────────────────────────────────────────────────────────────── */
+:root{
+  --ink:#12232E;
+  --paper:#F7F4EE;
+  --teal:#17706E;
+  --teal-deep:#0C4A48;
+  --slate:#5C6B73;
+  --stamp:#B3341E;      /* reserved: loss / risk only */
+  --rule:#DCD5C8;
+  --card:#FFFDF8;
+  --display:Georgia,"Iowan Old Style","Times New Roman",serif;
+  --body:-apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,"Helvetica Neue",Arial,sans-serif;
+  --spec:ui-monospace,"SF Mono",SFMono-Regular,Consolas,"Liberation Mono",monospace;
+}
+@media (prefers-color-scheme: dark){
+  :root:not([data-theme="light"]){
+    --ink:#ECE6DC; --paper:#0D1A22; --teal:#4FB3A9; --teal-deep:#7ECFC5;
+    --slate:#9BAAB2; --stamp:#E4674C; --rule:#22343E; --card:#132630;
+  }
+}
+:root[data-theme="dark"]{
+  --ink:#ECE6DC; --paper:#0D1A22; --teal:#4FB3A9; --teal-deep:#7ECFC5;
+  --slate:#9BAAB2; --stamp:#E4674C; --rule:#22343E; --card:#132630;
+}
+
+*{box-sizing:border-box}
+body{margin:0; background:var(--paper); color:var(--ink);
+     font-family:var(--body); font-size:10.4pt; line-height:1.5;
+     -webkit-font-smoothing:antialiased}
+.page{max-width:186mm; margin:0 auto; padding:14mm 12mm 18mm}
+h1,h2,h3,h4{margin:0; font-family:var(--display); font-weight:600; letter-spacing:-.2pt}
+p{margin:0}
+.blk{break-inside:avoid; page-break-inside:avoid}
+.pb{break-before:page; page-break-before:always}
+
+/* cover */
+.cover{border-bottom:3pt solid var(--teal); padding-bottom:7mm; margin-bottom:8mm}
+.cover .kicker{font-family:var(--spec); font-size:7.4pt; letter-spacing:.16em;
+               text-transform:uppercase; color:var(--teal)}
+.cover h1{font-size:34pt; line-height:1.02; margin:5mm 0 0; letter-spacing:-1pt}
+.cover .sub{font-size:12.5pt; color:var(--slate); margin-top:4mm; max-width:135mm; line-height:1.45}
+.cover .for{font-family:var(--spec); font-size:7.4pt; letter-spacing:.11em; text-transform:uppercase;
+            color:var(--slate); margin-top:7mm}
+
+/* section heads */
+.sec{font-family:var(--spec); font-size:7.4pt; letter-spacing:.16em; text-transform:uppercase;
+     color:var(--teal); border-top:1.2pt solid var(--teal); padding-top:2.5mm; margin:11mm 0 4mm}
+h2.big{font-size:19pt; line-height:1.14; margin-bottom:4mm; max-width:150mm}
+h3.mid{font-size:13pt; color:var(--teal-deep); margin:7mm 0 2.5mm}
+.lede{font-size:11.6pt; line-height:1.5; max-width:152mm}
+.lede b{color:var(--teal-deep)}
+
+/* three-box scope */
+.scope{display:grid; grid-template-columns:repeat(3,1fr); gap:4mm; margin-top:5mm}
+.scope div{background:var(--card); border:.7pt solid var(--rule); border-top:2.4pt solid var(--teal);
+           padding:4mm 4.2mm}
+.scope h4{font-size:11.5pt; color:var(--teal-deep); margin-bottom:2mm}
+.scope p{font-size:9.4pt; color:var(--slate); line-height:1.46}
+
+/* mechanism entries */
+.m{border-left:1.6pt solid var(--rule); padding:0 0 0 5mm; margin:6mm 0}
+.m h4{font-size:12pt; color:var(--teal-deep); margin-bottom:1.6mm}
+.m p{font-size:10.2pt; line-height:1.5}
+.m .det{font-family:var(--spec); font-size:8.6pt; line-height:1.55; color:var(--slate);
+        background:var(--card); border:.7pt solid var(--rule); padding:2.8mm 3.2mm; margin-top:2.8mm}
+.m .det b{color:var(--teal-deep); font-weight:600}
+.m .safe{font-size:9.6pt; color:var(--ink); margin-top:2.4mm; padding-left:4.6mm; position:relative}
+.m .safe:before{content:"◆"; position:absolute; left:0; color:var(--teal); font-size:7pt; top:.9mm}
+
+/* loss — only place --stamp is used */
+.loss{border:1pt solid var(--stamp); background:var(--card); padding:5mm 5.5mm; margin-top:5mm}
+.loss h2{font-size:16pt; color:var(--stamp); margin-bottom:3.5mm}
+.loss li{font-size:10.2pt; line-height:1.48; margin-bottom:3.2mm; padding-left:5.5mm;
+         position:relative; list-style:none; break-inside:avoid}
+.loss li:before{content:"—"; position:absolute; left:0; color:var(--stamp); font-weight:700}
+.loss ul{margin:0; padding:0}
+.loss .tail{font-size:9.6pt; color:var(--slate); border-top:.7pt solid var(--rule);
+            padding-top:3mm; margin-top:1mm; font-style:italic}
+
+/* enforcement table */
+table{border-collapse:collapse; width:100%; margin-top:4mm; font-size:9.6pt}
+th{font-family:var(--spec); font-size:7.4pt; letter-spacing:.11em; text-transform:uppercase;
+   color:var(--teal); text-align:left; border-bottom:1.2pt solid var(--teal);
+   padding:2.4mm 3mm 2.4mm 0; vertical-align:bottom}
+td{border-bottom:.7pt solid var(--rule); padding:3mm 3mm 3mm 0; vertical-align:top; line-height:1.45}
+tr{break-inside:avoid; page-break-inside:avoid}
+td.a{width:38%; color:var(--teal-deep); font-family:var(--display); font-size:10.6pt}
+td.c{font-family:var(--spec); font-size:8.4pt; color:var(--slate); width:26%}
+.wrap{overflow-x:auto}
+
+/* spec list */
+.spec{font-family:var(--spec); font-size:8.8pt; line-height:1.75; background:var(--card);
+      border:.7pt solid var(--rule); padding:4mm 4.5mm; margin-top:4mm; column-count:2; column-gap:8mm}
+.spec div{break-inside:avoid; margin-bottom:.6mm}
+.spec b{color:var(--teal-deep); font-weight:600}
+.spec .g{color:var(--slate)}
+
+/* roadmap */
+.road{margin-top:4mm}
+.road .r{border-left:1.6pt solid var(--teal); padding-left:5mm; margin-bottom:5.5mm; break-inside:avoid}
+.road h4{font-size:11.5pt; color:var(--teal-deep); margin-bottom:1.4mm}
+.road p{font-size:9.8pt; line-height:1.48}
+.road .state{font-family:var(--spec); font-size:7.6pt; letter-spacing:.09em; text-transform:uppercase;
+             color:var(--slate); margin-top:1.4mm}
+
+/* action */
+.act{margin-top:10mm; background:var(--teal-deep); color:#FFFDF8; padding:7mm 7.5mm}
+.act h2{font-size:19pt; color:#FFFDF8; line-height:1.15}
+.act p{font-size:10.4pt; color:#CFE6E2; margin-top:3.5mm; max-width:140mm; line-height:1.5}
+.act ol{margin:4.5mm 0 0; padding-left:5.5mm; color:#CFE6E2; font-size:10pt; line-height:1.62}
+.act li{margin-bottom:1.4mm}
+.act b{color:#FFFDF8}
+
+.foot{margin-top:9mm; padding-top:3mm; border-top:.7pt solid var(--rule);
+      font-family:var(--spec); font-size:7.4pt; letter-spacing:.09em; text-transform:uppercase;
+      color:var(--slate); display:flex; justify-content:space-between; gap:6mm}
+
+@media (max-width:640px){
+  .scope,.spec,.act ol{grid-template-columns:1fr; column-count:1}
+  .cover h1{font-size:26pt}
+  td.a{width:auto}
+}
+
+/* ── print ─────────────────────────────────────────────────────── */
+@page{ size:A4; margin:14mm; }
+@media print{
+  :root{
+    --ink:#12232E; --paper:#FFFFFF; --teal:#17706E; --teal-deep:#0C4A48;
+    --slate:#5C6B73; --stamp:#B3341E; --rule:#DCD5C8; --card:#FFFFFF;
+  }
+  body{background:#fff; font-size:9.8pt}
+  .page{max-width:none; padding:0}
+  .act{-webkit-print-color-adjust:exact; print-color-adjust:exact}
+  .blk,.m,.scope div,.loss,.loss li,.road .r,tr,.act{break-inside:avoid; page-break-inside:avoid}
+  h2,h3,h4{break-after:avoid; page-break-after:avoid}
+  a{text-decoration:none; color:inherit}
+}
+</style>
+</head>
+<body>
+<div class="page">
+
+  <!-- ── COVER ───────────────────────────────────────────────── -->
+  <div class="cover blk">
+    <div class="kicker">Evaluation brief · One WhatsApp number for the whole practice</div>
+    <h1>Stop retyping.<br>Start treating.</h1>
+    <p class="sub">Outreach, patient conversation and the clinical record — on the number your
+      patients already message you on, run by people who are not sitting in a spreadsheet at
+      nine o'clock at night.</p>
+    <div class="for">Prepared for the evaluation committee · Clinic owners, laboratory directors,
+      practice managers</div>
+  </div>
+
+  <p class="lede">Photograph the report and send it to your own number. It comes back
+    <b>filed under the patient's name</b>, dated, indexed and searchable — before you have put the
+    phone down. That is the whole promise, and everything in this document exists to make it safe
+    to say out loud.</p>
+
+  <!-- ── SCOPE ───────────────────────────────────────────────── -->
+  <div class="sec">1 · What it covers</div>
+  <h2 class="big">Three jobs, one number, one login.</h2>
+  <p style="font-size:10.4pt;max-width:152mm;color:var(--slate)">The question a committee actually
+    asks is not <i>what does it do</i> — it is <i>does this replace things, or is it a tenth login
+    nobody opens</i>. It replaces three.</p>
+
+  <div class="scope blk">
+    <div>
+      <h4>The outreach</h4>
+      <p>Camps, recalls, price lists, festival greetings, reactivation. Upload a list, send it one
+        patient at a time on a human interval, and stop it mid-run from the same screen. Every
+        recipient carries an outcome and, when it failed, the reason it failed.</p>
+    </div>
+    <div>
+      <h4>The conversation</h4>
+      <p>Enquiries answered out of your own uploaded documents, at your own pace, with follow-ups
+        scheduled days out. Any single chat can be handed back to a person with one switch, and the
+        automation stands down for that person only.</p>
+    </div>
+    <div>
+      <h4>The record</h4>
+      <p>Every photograph, PDF and lab sheet you forward to yourself is read, attached to the right
+        patient, added to a dated timeline, and grouped under a subject index so a whole category
+        can be pulled at once.</p>
+    </div>
+  </div>
+
+  <!-- ── MECHANISM ───────────────────────────────────────────── -->
+  <div class="sec">2 · How it works</div>
+  <h2 class="big">Plain mechanics, and the one detail behind each that only shows up in practice.</h2>
+
+  <div class="m blk">
+    <h4>It sends the way a person sends.</h4>
+    <p>One message, a pause, the next one. You set the pace before the run starts; you can pause,
+      resume or stop it while it is in flight, and it stops at the message it is on rather than
+      finishing the batch.</p>
+    <div class="det"><b>The detail:</b> the default gap is 25 seconds and is re-randomised for every
+      message. The randomiser is clamped so the gap can never fall below 30 seconds or 15% of your
+      chosen interval, whichever is larger — a jitter value entered wrongly cannot turn a campaign
+      into a burst. A send that fails waits 10 seconds and continues rather than aborting the run.</div>
+    <p class="safe">The stop flag is checked every second during the wait, so pressing stop takes
+      effect inside the current gap, not at the end of the list.</p>
+  </div>
+
+  <div class="m blk">
+    <h4>Every message is drafted before it is sent — and chosen by you.</h4>
+    <p>Sending four hundred people one identical block of text is what gets a number reported. The
+      assistant drafts a pool of rewordings of your message; the run rotates through the pool and
+      substitutes each patient's name and fields.</p>
+    <div class="det"><b>The detail:</b> the pool is refreshed every 100 contacts on long lists so the
+      back half of a list is not a repeat of the front. If drafting fails, the run falls back to your
+      original message — never to a blank, never to silence.</div>
+    <p class="safe">Nothing is scheduled or sent until a human selects a wording. The schedule screen
+      refuses to proceed with no wording chosen.</p>
+  </div>
+
+  <div class="m blk">
+    <h4>The number stays linked through restarts and updates.</h4>
+    <p>The pairing that links your WhatsApp number to the system lives in your database, not in a
+      folder on a server that a deployment wipes. Software updates do not cost you a QR scan or a
+      Monday morning of dead automations.</p>
+    <div class="det"><b>The detail:</b> each kind of disconnection gets its own retry ladder rather
+      than one blanket delay — around half a second for a routine restart, widening geometrically to
+      a ten-minute ceiling for a hard logout — with up to 3 seconds of random jitter added so a fleet
+      of numbers never reconnects in lockstep.</div>
+    <p class="safe">A pairing that keeps failing is retried twice before the system gives up and asks
+      for a fresh scan, rather than looping on a broken session indefinitely.</p>
+  </div>
+
+  <div class="m blk">
+    <h4>A patient who types four lines gets one answer.</h4>
+    <p>People message the way they talk — three fragments in ten seconds. Answering each one
+      separately is the single clearest tell that a business is running a machine.</p>
+    <div class="det"><b>The detail:</b> a 5-second settle window joins consecutive messages into one
+      question. Photographs queue behind one another per contact, so a caption or a closing word sent
+      while four images are still uploading is still applied to the right case rather than racing it.</div>
+    <p class="safe">Each incoming message is written to your record the moment it arrives, before any
+      of this joining happens — nothing is lost if the reply path fails.</p>
+  </div>
+
+  <div class="m blk">
+    <h4>Documents are filed, not dumped.</h4>
+    <p>Open a case with the patient's name, send the images and PDFs as they come out of the machine,
+      close it with one word. The set is read together as one visit rather than as six unrelated
+      files, and the patient identity you declared is the one that wins.</p>
+    <div class="det"><b>The detail:</b> a file is archived to storage <i>before</i> it is read, and the
+      archived copy is deleted again if the record fails to write. The same forwarded file sent twice
+      is recognised and answered with the item number it already has. There is no half-saved case and
+      no silent duplicate.</div>
+    <p class="safe">If the batch was already closed when a late attachment lands, the attachment is
+      rejected and removed rather than appended to a finished case.</p>
+  </div>
+
+  <div class="m blk">
+    <h4>Retrieval by category, not by scrolling.</h4>
+    <p>The reader assigns each document a three-level subject index — region, procedure, stage —
+      plus the kind of study it is, so you can ask for a whole group at once instead of remembering
+      one patient's name.</p>
+    <div class="det"><b>The detail:</b> the moment you correct an index by hand it is stamped as yours,
+      and later re-index passes will not overwrite it. The machine's guesses are improvable; your
+      corrections are permanent.</div>
+    <p class="safe">Every stored document carries the confidence of its own reading, so a poor
+      photograph is visible as a poor reading rather than passing as fact.</p>
+  </div>
+
+  <div class="m blk">
+    <h4>It answers from your documents, not from the air.</h4>
+    <p>Upload your price list, your preparation instructions, your package sheets. Questions are
+      answered from passages retrieved out of those files, with the source material carried into
+      the answer.</p>
+    <div class="det"><b>The detail:</b> documents are split into roughly 500-word passages that overlap
+      by 50 words, so a sentence that straddles a page break is still findable. Retrieval is scoped to
+      your account at the query itself — not filtered afterwards.</div>
+    <p class="safe">Passages below a relevance floor are discarded rather than padded into the answer,
+      so an unanswerable question is visibly unanswered.</p>
+  </div>
+
+  <div class="m blk">
+    <h4>Follow-ups happen days later, without a person remembering.</h4>
+    <p>Write the sequence in plain language once — day one this, day three that. New enquiries are
+      scheduled onto it automatically, and the queue is drained continuously.</p>
+    <div class="det"><b>The detail:</b> the same message to the same person inside a 24-hour window is
+      cancelled as a duplicate rather than sent twice a second apart — which is what happens when a
+      drip and a bot follow-up both come due on the same tick.</div>
+    <p class="safe">If the chat was handed back to a person, every queued follow-up for that person is
+      cancelled, not merely delayed.</p>
+  </div>
+
+  <!-- ── LOSS ────────────────────────────────────────────────── -->
+  <div class="sec pb">3 · The present arrangement</div>
+  <div class="loss blk">
+    <h2>What you are losing today</h2>
+    <ul>
+      <li>The knee film you sent yourself at eleven at night — now four hundred photographs down your
+        own gallery, somewhere between a screenshot and a picture of lunch. You know it exists. That
+        is not the same as having it.</li>
+      <li>The Sunday enquiry about a package price, answered on Tuesday, by which time they had
+        already booked down the road and never told you why.</li>
+      <li>The Friday evening a member of staff spent pasting the same paragraph into a hundred and
+        eighty chats, changing one name at a time, and got two of them wrong.</li>
+      <li>The patient who wrote STOP three campaigns ago and is still receiving them, because the
+        list lives in a spreadsheet that never heard him — and because nobody wants to be the person
+        who edits the master sheet.</li>
+      <li>The Monday you discovered the number had been logged out since Friday afternoon, and no one
+        could say which messages had gone and which had not.</li>
+    </ul>
+    <p class="tail">None of these are efficiency problems. Each one is a specific patient, on a
+      specific day, who had a worse experience than the one you intended to give them.</p>
+  </div>
+
+  <!-- ── AUTHORITY ───────────────────────────────────────────── -->
+  <div class="sec">4 · What it enforces</div>
+  <h2 class="big">Anybody can show you a dashboard. This is the list of things the system will not
+    let happen.</h2>
+  <p style="font-size:10.4pt;max-width:152mm;color:var(--slate)">These are refusals, not warnings.
+    They do not depend on anyone reading a report afterwards.</p>
+
+  <div class="wrap">
+  <table>
+    <thead><tr><th>It refuses to</th><th>What that means in the room</th><th>Enforced at</th></tr></thead>
+    <tbody>
+      <tr>
+        <td class="a">Message anyone who typed STOP</td>
+        <td>The word is recognised on arrival, the number is added to the block list, and an
+          unsubscribe confirmation goes back automatically. Every later run checks the list before
+          each send and records the skip with its reason.</td>
+        <td class="c">On receipt, and again before every single send</td>
+      </tr>
+      <tr>
+        <td class="a">Read clinical documents from a stranger</td>
+        <td>Only messages from the connected account's own number are accepted into the record. If
+          the system cannot positively confirm the sender's identity, it denies — it does not fall
+          back to accepting everyone.</td>
+        <td class="c">Before the document is opened</td>
+      </tr>
+      <tr>
+        <td class="a">Send a campaign with a missing file</td>
+        <td>Attachments are checked against storage when the campaign is listed. A missing file is
+          named on screen before you press send, rather than discovered at contact forty.</td>
+        <td class="c">On the campaign screen, pre-send</td>
+      </tr>
+      <tr>
+        <td class="a">Repeat a follow-up</td>
+        <td>Identical text to the same person inside 24 hours is cancelled and logged as a duplicate
+          of the message that already went.</td>
+        <td class="c">At the moment of dispatch</td>
+      </tr>
+      <tr>
+        <td class="a">Send anything a human has not chosen</td>
+        <td>Drafted wordings are proposals. Scheduling and bulk send are both blocked until a person
+          selects one.</td>
+        <td class="c">Before scheduling is accepted</td>
+      </tr>
+      <tr>
+        <td class="a">Exceed the pace you set</td>
+        <td>The randomiser that varies the gap between messages cannot pull it below the floor, no
+          matter what jitter value is entered.</td>
+        <td class="c">Inside the send loop</td>
+      </tr>
+      <tr>
+        <td class="a">Burn a message on a dead line</td>
+        <td>A message that cannot be delivered because the number is disconnected is held and retried,
+          not consumed. After three days it is marked failed with the reason, and the held count is
+          reported while it waits.</td>
+        <td class="c">Every 30 seconds, for three days</td>
+      </tr>
+      <tr>
+        <td class="a">Leave a half-written record</td>
+        <td>If a document's record fails to write, the archived file is deleted and the case counter
+          is rolled back. There is no orphan.</td>
+        <td class="c">On write failure</td>
+      </tr>
+      <tr>
+        <td class="a">Show one account another's data</td>
+        <td>Every stored row carries its owning organisation and user, and every query is filtered on
+          both. Administrative screens require an explicitly elevated role.</td>
+        <td class="c">In the query itself</td>
+      </tr>
+    </tbody>
+  </table>
+  </div>
+
+  <!-- ── SPEC ────────────────────────────────────────────────── -->
+  <div class="sec pb">5 · Operating figures</div>
+  <h2 class="big">The defaults, stated plainly.</h2>
+  <p style="font-size:10.4pt;max-width:152mm;color:var(--slate)">Every figure below is a configured
+    default in the running system, not a projection. Most are adjustable per account.</p>
+
+  <div class="spec blk">
+    <div><b>25 s</b> <span class="g">default gap between campaign messages</span></div>
+    <div><b>30 s / 15%</b> <span class="g">hard floor on that gap, whichever is larger</span></div>
+    <div><b>10 s</b> <span class="g">pause after a failed send before continuing</span></div>
+    <div><b>1 s</b> <span class="g">how often stop and pause are checked mid-run</span></div>
+    <div><b>100</b> <span class="g">contacts between wording-pool refreshes</span></div>
+    <div><b>15 s</b> <span class="g">scheduled-campaign check interval</span></div>
+    <div><b>30 s</b> <span class="g">follow-up queue drain interval</span></div>
+    <div><b>24 h</b> <span class="g">window in which a repeat follow-up is cancelled</span></div>
+    <div><b>3 days</b> <span class="g">how long an undeliverable follow-up is held before failing</span></div>
+    <div><b>60 s</b> <span class="g">send timeout, so one stuck message cannot wedge the queue</span></div>
+    <div><b>5 s</b> <span class="g">settle window joining a patient's rapid messages</span></div>
+    <div><b>8 s</b> <span class="g">minimum spacing between automated replies to one person</span></div>
+    <div><b>2 s</b> <span class="g">composing pause before an automated reply appears</span></div>
+    <div><b>5</b> <span class="g">prior messages carried as conversation context</span></div>
+    <div><b>~500 / 50</b> <span class="g">words per document passage, and their overlap</span></div>
+    <div><b>3 levels</b> <span class="g">of clinical subject index, plus study type</span></div>
+    <div><b>10,000</b> <span class="g">recent sent messages retained to answer re-delivery requests</span></div>
+    <div><b>0.5 s → 10 min</b> <span class="g">reconnect ladder, by disconnection reason</span></div>
+    <div><b>3 s</b> <span class="g">maximum random jitter added to any reconnect</span></div>
+    <div><b>2</b> <span class="g">failed pairings before a fresh scan is requested</span></div>
+  </div>
+
+  <!-- ── EVALUATION NOTES ────────────────────────────────────── -->
+  <div class="sec">6 · Notes for the committee</div>
+
+  <h3 class="mid">Separation between accounts</h3>
+  <p style="font-size:10.4pt;max-width:152mm">Each account has its own connected number, its own
+    documents, its own contacts and its own automation settings. Ownership is carried on every stored
+    row and applied inside every query rather than as a display filter. Capabilities — clinical
+    records, hospital assistant, staff assistant, voice — are switched on per account, so a practice
+    that only wants outreach sees only outreach.</p>
+
+  <h3 class="mid">Where the data lives</h3>
+  <p style="font-size:10.4pt;max-width:152mm">The record — patients, documents, conversations,
+    campaigns, outcomes — lives in a database you control, on infrastructure of your choosing.
+    Uploaded clinical files are archived to storage under your own account, addressed by
+    organisation and patient. Nothing about the design requires the record to sit with the vendor.</p>
+
+  <h3 class="mid">What a running instance needs</h3>
+  <p style="font-size:10.4pt;max-width:152mm">A single application instance with roughly a gigabyte
+    of memory, a managed database, and one storage bucket. The instance is health-checked
+    continuously and the connected numbers survive its restarts, because the pairing is in the
+    database rather than on the instance's disk.</p>
+
+  <h3 class="mid">Integration with what you already run</h3>
+  <p style="font-size:10.4pt;max-width:152mm">A token-authenticated interface lets an existing
+    laboratory or hospital system hand over report deliveries, bulk sends and status checks without a
+    person opening this application at all — including asking, mid-run, how far a batch has got and
+    stopping it. Enquiries can be pushed in from a spreadsheet or a web form through a per-source
+    secret that can be rotated without touching the source.</p>
+
+  <!-- ── ROADMAP ─────────────────────────────────────────────── -->
+  <div class="sec">7 · On the roadmap</div>
+  <h2 class="big">What is not finished, stated before you find it.</h2>
+  <p style="font-size:10.4pt;max-width:152mm;color:var(--slate)">A brochure that only lists strengths
+    is a brochure you have to verify line by line. These are the parts we would rather you hear from
+    us.</p>
+
+  <div class="road">
+    <div class="r blk">
+      <h4>Voice calling</h4>
+      <p>The control side is complete and in the product: call agents, conversation flows with
+        draft-and-publish, calling campaigns with their own contact lists and pause control, per-call
+        logs, usage accounting, and enrolment of desk or handset devices that lease calls from a
+        queue. What it is not yet is a single-switch install — it runs as a separate service alongside
+        the main application and needs a desk gateway or a paired handset to place the calls.</p>
+      <p class="state">Status: control plane built · separate deployment required · not part of the
+        standard install</p>
+    </div>
+
+    <div class="r blk">
+      <h4>Tappable buttons in outgoing messages</h4>
+      <p>Choices, links and call-back numbers are appended to a message as clearly marked lines — a
+        link line, a call line, a choice line — and replies are read as text. This is deliberate for
+        now because it behaves identically on every handset. Native tappable buttons are not sent.
+        The unsubscribe path is a typed <span style="font-family:var(--spec)">STOP</span>, which is
+        recognised exactly and acted on automatically.</p>
+      <p class="state">Status: works everywhere · not yet native</p>
+    </div>
+
+    <div class="r blk">
+      <h4>Live progress across a restart</h4>
+      <p>Every recipient's outcome — sent, failed, and why — is written to the database as the run
+        proceeds and survives anything. The live counter on screen is held in the running instance,
+        so a restart mid-campaign loses the on-screen tally even though the record and the resume
+        point are intact.</p>
+      <p class="state">Status: outcomes durable · live counter in memory</p>
+    </div>
+
+    <div class="r blk">
+      <h4>Per-account live event channels</h4>
+      <p>The dashboard's live feed — pairing codes, connection state, message activity — is currently
+        published on a single channel to connected dashboard sessions rather than partitioned per
+        account. Stored data is fully separated; this is the live stream only. Scoped channels are
+        the next item on this list.</p>
+      <p class="state">Status: queued · recommended before multi-tenant rollout</p>
+    </div>
+
+    <div class="r blk">
+      <h4>Hospital and staff assistants</h4>
+      <p>Both ship behind per-account switches and are configured at enablement by us rather than
+        self-serve in the interface. Their conversation views, administrator lists and per-person
+        pause controls are complete; the setup is not yet something a practice manager does alone.</p>
+      <p class="state">Status: functional · assisted setup</p>
+    </div>
+
+    <div class="r blk">
+      <h4>Housekeeping</h4>
+      <p>Two superseded service files remain in the codebase alongside their replacements. They are
+        not on any live path and are scheduled for removal at the next consolidation.</p>
+      <p class="state">Status: inert · removal scheduled</p>
+    </div>
+  </div>
+
+  <!-- ── ACTION ──────────────────────────────────────────────── -->
+  <div class="act blk">
+    <h2>Twenty minutes, your number, your list.</h2>
+    <p>Not a demonstration account with invented patients. Bring one real export and one real report,
+      and watch the two things you would actually have to trust it with.</p>
+    <ol>
+      <li><b>Scan the code</b> with the practice's own number. It links in seconds and stays linked.</li>
+      <li><b>Upload fifty of your own contacts</b>, write one message, and read the wordings it drafts
+        before you choose one.</li>
+      <li><b>Press send</b> and watch the counter move one patient at a time — then press stop halfway
+        and see it halt inside the current gap, with every recipient's outcome already recorded.</li>
+      <li><b>Photograph one report</b>, send it to yourself, and ask the line whose it is. Then correct
+        the index it chose, and watch the correction stick.</li>
+    </ol>
+  </div>
+
+  <div class="foot">
+    <span>The Practice Line · Evaluation brief</span>
+    <span>Every figure herein is a configured default in the running system</span>
+  </div>
+
+</div>
+</body>
+</html>

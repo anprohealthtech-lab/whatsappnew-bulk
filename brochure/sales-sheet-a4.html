@@ -1,0 +1,245 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>The Practice Line</title>
+<style>
+/* ────────────────────────────────────────────────────────────────
+   Palette derived from the clinic itself: chart ink, bone paper,
+   instrument teal, and one reserved stamp red used ONLY for loss.
+   ──────────────────────────────────────────────────────────────── */
+:root{
+  --ink:#12232E;
+  --paper:#F7F4EE;
+  --teal:#17706E;
+  --teal-deep:#0C4A48;
+  --slate:#5C6B73;
+  --stamp:#B3341E;      /* reserved: loss beat only */
+  --rule:#DCD5C8;
+  --card:#FFFDF8;
+  --display:Georgia,"Iowan Old Style","Times New Roman",serif;
+  --body:-apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,"Helvetica Neue",Arial,sans-serif;
+  --spec:ui-monospace,"SF Mono",SFMono-Regular,Consolas,"Liberation Mono",monospace;
+}
+:root:not([data-theme="light"]){}
+@media (prefers-color-scheme: dark){
+  :root:not([data-theme="light"]){
+    --ink:#ECE6DC; --paper:#0D1A22; --teal:#4FB3A9; --teal-deep:#7ECFC5;
+    --slate:#9BAAB2; --stamp:#E4674C; --rule:#22343E; --card:#132630;
+  }
+}
+:root[data-theme="dark"]{
+  --ink:#ECE6DC; --paper:#0D1A22; --teal:#4FB3A9; --teal-deep:#7ECFC5;
+  --slate:#9BAAB2; --stamp:#E4674C; --rule:#22343E; --card:#132630;
+}
+
+*{box-sizing:border-box}
+body{
+  margin:0; background:var(--paper); color:var(--ink);
+  font-family:var(--body); font-size:9.2pt; line-height:1.38;
+  -webkit-font-smoothing:antialiased;
+}
+.sheet{max-width:200mm; margin:0 auto; padding:10mm 9mm}
+h1,h2,h3{margin:0; font-family:var(--display); font-weight:600}
+p{margin:0}
+.blk{break-inside:avoid; page-break-inside:avoid}
+
+/* masthead */
+.mast{display:flex; align-items:baseline; justify-content:space-between;
+      border-bottom:2.5pt solid var(--teal); padding-bottom:2.5mm; gap:6mm}
+.mast .name{font-family:var(--display); font-size:15pt; letter-spacing:-.2pt; color:var(--teal-deep)}
+.mast .kicker{font-family:var(--spec); font-size:6.6pt; letter-spacing:.09em;
+              text-transform:uppercase; color:var(--slate); text-align:right; line-height:1.5}
+
+/* hook */
+.hook{margin:5mm 0 0}
+.hook h1{font-size:26pt; line-height:1.03; letter-spacing:-.7pt}
+.hook .rule{width:22mm; height:2pt; background:var(--stamp); margin:3mm 0 0; opacity:0}
+.promise{margin-top:3mm; font-size:10.4pt; line-height:1.45; max-width:150mm; color:var(--ink)}
+.promise b{color:var(--teal-deep)}
+
+/* section label */
+.lab{font-family:var(--spec); font-size:6.6pt; letter-spacing:.13em; text-transform:uppercase;
+     color:var(--teal); border-top:.6pt solid var(--rule); padding-top:1.6mm; margin:5mm 0 2.5mm}
+
+/* scope */
+.scope{display:grid; grid-template-columns:repeat(3,1fr); gap:3mm}
+.scope div{background:var(--card); border:.6pt solid var(--rule);
+           border-top:2pt solid var(--teal); padding:3mm 3.2mm}
+.scope h3{font-size:10pt; color:var(--teal-deep); margin-bottom:1.4mm}
+.scope p{font-size:8.4pt; color:var(--slate); line-height:1.4}
+
+/* mechanism */
+.mech{display:grid; grid-template-columns:1fr 1fr; gap:2.2mm 5mm}
+.mech .row{display:block}
+.mech b{font-size:8.8pt; color:var(--teal-deep); font-family:var(--display)}
+.mech p{font-size:8.3pt; color:var(--ink)}
+.mech .det{font-family:var(--spec); font-size:7.4pt; color:var(--slate);
+           border-left:1.6pt solid var(--teal); padding-left:2.2mm; margin-top:1mm; line-height:1.4}
+
+/* loss — the only place --stamp appears */
+.loss{border:.8pt solid var(--stamp); background:var(--card); padding:3.4mm 4mm}
+.loss h2{font-size:11pt; color:var(--stamp); margin-bottom:2mm; letter-spacing:-.1pt}
+.loss ul{margin:0; padding:0; list-style:none; columns:2; column-gap:6mm}
+.loss li{font-size:8.3pt; line-height:1.42; margin-bottom:2mm; padding-left:4.2mm;
+         position:relative; break-inside:avoid; color:var(--ink)}
+.loss li:before{content:"—"; position:absolute; left:0; color:var(--stamp); font-weight:700}
+
+/* authority */
+.auth{display:grid; grid-template-columns:1fr 1fr; gap:1.6mm 5mm}
+.auth p{font-size:8.3pt; padding-left:4.6mm; position:relative; line-height:1.4}
+.auth p:before{content:"✕"; position:absolute; left:0; top:.1mm;
+               font-family:var(--spec); font-size:7pt; color:var(--teal); font-weight:700}
+.auth b{color:var(--teal-deep)}
+
+/* action */
+.act{margin-top:5mm; background:var(--teal-deep); color:#FFFDF8;
+     padding:4mm 4.5mm; display:flex; justify-content:space-between; align-items:center; gap:6mm}
+.act h2{font-size:12.5pt; color:#FFFDF8; line-height:1.2}
+.act p{font-size:8.4pt; color:#CFE6E2; margin-top:1.4mm; max-width:118mm}
+.act .stamp{font-family:var(--spec); font-size:7pt; letter-spacing:.1em; text-transform:uppercase;
+            border:1pt solid #6FB3AC; color:#CFE6E2; padding:2mm 3mm; text-align:center;
+            line-height:1.6; white-space:nowrap}
+
+/* ── print ─────────────────────────────────────────────────────── */
+@page{ size:A4; margin:11mm; }
+@media print{
+  :root{
+    --ink:#12232E; --paper:#FFFFFF; --teal:#17706E; --teal-deep:#0C4A48;
+    --slate:#5C6B73; --stamp:#B3341E; --rule:#DCD5C8; --card:#FFFFFF;
+  }
+  body{background:#fff; font-size:8.7pt}
+  .sheet{max-width:none; padding:0}
+  .act{-webkit-print-color-adjust:exact; print-color-adjust:exact}
+  .scope div,.loss,.act,.mech .row,.auth p,.hook,.promise{break-inside:avoid; page-break-inside:avoid}
+  a{text-decoration:none; color:inherit}
+}
+</style>
+</head>
+<body>
+<div class="sheet">
+
+  <div class="mast blk">
+    <div class="name">The Practice Line</div>
+    <div class="kicker">One WhatsApp number<br>Outreach · Replies · Records</div>
+  </div>
+
+  <div class="hook blk">
+    <h1>Stop retyping.<br>Start treating.</h1>
+    <p class="promise">Photograph the report and send it to your own number.
+      It comes back <b>filed under the patient's name</b>, dated, indexed and searchable —
+      before you have put the phone down.</p>
+  </div>
+
+  <div class="lab">What it covers</div>
+  <div class="scope blk">
+    <div>
+      <h3>The outreach</h3>
+      <p>Camps, recalls, price lists, festival greetings. Upload a list, send it one patient at a
+        time on a human interval, and stop it mid-run from the same screen.</p>
+    </div>
+    <div>
+      <h3>The conversation</h3>
+      <p>Enquiries answered from your own documents, at your own pace, with a follow-up scheduled
+        days out — and a switch that hands any single chat back to a person.</p>
+    </div>
+    <div>
+      <h3>The record</h3>
+      <p>Every photo, PDF and lab sheet you send yourself is read, attached to the right patient,
+        and grouped so you can pull a whole category at once.</p>
+    </div>
+  </div>
+
+  <div class="lab">How it works — and what holds it back</div>
+  <div class="mech blk">
+    <div class="row">
+      <b>It sends the way a person sends.</b>
+      <p>One message, a pause, the next. You set the pace; you can pause, resume or stop the run
+        while it is in flight.</p>
+      <div class="det">Default gap 25 s, randomised each time. The randomiser can never pull the gap
+        below 30 s or 15% of your setting — whichever is larger. A mis-set jitter cannot become a burst.</div>
+    </div>
+    <div class="row">
+      <b>Every message is written before it is sent.</b>
+      <p>The assistant drafts a pool of rewordings so 400 people do not receive one identical block
+        of text. Nothing leaves until you pick the wording.</p>
+      <div class="det">The pool refreshes every 100 contacts. If drafting fails, it falls back to your
+        original message — never to silence, never to a blank.</div>
+    </div>
+    <div class="row">
+      <b>The number stays linked.</b>
+      <p>Pairing lives in your database, not in a folder on a server. Updates, restarts and moves do
+        not cost you a QR scan.</p>
+      <div class="det">Each disconnect reason has its own retry ladder — 500 ms for a routine restart,
+        widening to 10 minutes for a hard logout — with up to 3 s of random jitter so a fleet of
+        numbers never reconnects in lockstep.</div>
+    </div>
+    <div class="row">
+      <b>Nobody gets asked the same thing twice.</b>
+      <p>Three quick lines from a patient are read as one question and answered once, not three times.</p>
+      <div class="det">A 5-second settle window joins them. Photos queue behind each other per contact,
+        so a caption sent after four images is still applied to the right case.</div>
+    </div>
+    <div class="row">
+      <b>Documents are filed, not dumped.</b>
+      <p>Send several images for one patient as a single case, close it with one word, and the whole
+        set is read together as one visit.</p>
+      <div class="det">Each file is stored before it is read, and the stored copy is deleted again if the
+        record fails to write. There is no half-saved case.</div>
+    </div>
+    <div class="row">
+      <b>Retrieval by category, not by scrolling.</b>
+      <p>The reader assigns a three-level subject index — region, procedure, stage — so you can ask for
+        a whole group at once.</p>
+      <div class="det">The moment you correct an index it is marked as yours and re-runs will not
+        overwrite it.</div>
+    </div>
+  </div>
+
+  <div class="lab">Today's position</div>
+  <div class="loss blk">
+    <h2>What you are losing today</h2>
+    <ul>
+      <li>The knee film you sent yourself at 11 p.m. — now four hundred photographs down your gallery,
+        somewhere between a screenshot and a lunch.</li>
+      <li>The Sunday enquiry about a package price, answered Tuesday, by which time they had already
+        booked down the road.</li>
+      <li>The Friday evening a staff member spent pasting the same paragraph into a hundred and eighty
+        chats, changing one name at a time.</li>
+      <li>The patient who wrote STOP three campaigns ago and is still on the list, because the list
+        lives in a spreadsheet that never heard them.</li>
+      <li>The Monday morning you discovered the number had been logged out since Friday, and nobody
+        knew which messages never went.</li>
+    </ul>
+  </div>
+
+  <div class="lab">What the system refuses to do</div>
+  <div class="auth blk">
+    <p><b>It will not message anyone who typed STOP.</b> They are added to the block list and confirmed
+      automatically; every later run records them as skipped, with the reason.</p>
+    <p><b>It will not read clinical documents from a stranger.</b> Only the connected number's own
+      messages are accepted — and if it cannot confirm the sender, it refuses rather than guesses.</p>
+    <p><b>It will not send a campaign with a missing attachment.</b> The missing filename is shown on
+      the campaign before you press send, not discovered on contact forty.</p>
+    <p><b>It will not repeat a follow-up.</b> The same text to the same person inside 24 hours is
+      cancelled and logged as a duplicate.</p>
+    <p><b>It will not fire a bot-written line you have not chosen.</b> Scheduling is blocked until a
+      wording is selected.</p>
+    <p><b>It will not burn a message on a dead line.</b> It holds, retries, and after three days tells
+      you plainly that it gave up.</p>
+  </div>
+
+  <div class="act blk">
+    <div>
+      <h2>Twenty minutes, your number, your list.</h2>
+      <p>Scan the code, upload fifty of your own contacts, press send — and watch the counter move one
+        patient at a time while your thumb rests on stop. Then photograph one report and ask the line
+        who it belongs to.</p>
+    </div>
+    <div class="stamp">Bring<br>a real list<br>and a real file</div>
+  </div>
+
+</div>
+</body>
+</html>
