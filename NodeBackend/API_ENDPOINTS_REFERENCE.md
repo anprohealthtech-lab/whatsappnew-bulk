@@ -195,6 +195,8 @@ POST /api/external/users/sync-admins
 - Only `admin`, `superadmin`, `super_admin`, and `owner` roles are synced.
 - The external app must use the task-manager `public.users.id` as `id`; this becomes the WhatsApp backend `users.id`.
 - Synced users are upserted with disabled random passwords; they are machine-to-machine session owners, not password-login accounts.
+- `email` and `username` are unique in this backend. If an admin's email already belongs to a different user (for example a regular login account), the external user is still created, but **without** the email, and the response entry carries `emailConflictWith: "<that user's id>"`. The username falls back to `external_<id>` on a clash.
+- Response: `{ organizationId, received, synced, users: [{ id, username, role, email, emailConflictWith? }] }`.
 
 ### Bulk send
 ```json

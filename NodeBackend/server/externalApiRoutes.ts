@@ -74,12 +74,32 @@ function toExternalUsername(user: any): string {
   return `external_${slug || id}`;
 }
 
+interface SyncedExternalUser {
+  id: string;
+  username: string;
+  role: string;
+  email: string | null;
+  /** Set when another user already owns the requested email; that id may be the account to send from. */
+  emailConflictWith?: string;
+}
+
+/** Return the id of a different user that already holds this unique column value, if any. */
+async function findOtherUserBy(column: 'email' | 'username', value: string, excludeId: string): Promise<string | null> {
+  const result = await db.execute(
+    column === 'email'
+      ? sql`SELECT id FROM users WHERE lower(email) = lower(${value}) AND id <> ${excludeId} LIMIT 1`
+      : sql`SELECT id FROM users WHERE username = ${value} AND id <> ${excludeId} LIMIT 1`,
+  ) as any;
+  const rows = Array.isArray(result) ? result : result?.rows || [];
+  return rows[0]?.id ? String(rows[0].id) : null;
+}
+
 async function syncExternalAdminUsers(
   organizationId: string,
   admins: any[],
-): Promise<Array<{ id: string; username: string; role: string }>> {
+): Promise<SyncedExternalUser[]> {
   const passwordHash = await bcrypt.hash(`external-sync-disabled-${Date.now()}-${randomUUID()}`, 12);
-  const synced: Array<{ id: string; username: string; role: string }> = [];
+  const synced: SyncedExternalUser[] = [];
 
   for (const admin of admins) {
     const id = String(admin?.id || '').trim();
@@ -88,9 +108,18 @@ async function syncExternalAdminUsers(
       continue;
     }
 
-    const username = toExternalUsername(admin);
-    const email = String(admin?.email || '').trim() || null;
+    const requestedEmail = String(admin?.email || '').trim() || null;
     const role = normalizeExternalRole(roleInput);
+
+    // users.email and users.username are unique, and ON CONFLICT (id) cannot
+    // also arbitrate those. A task-manager admin often shares an email with a
+    // regular login account here (a different id), so store the external row
+    // without the clashing email/username instead of failing the whole batch.
+    const emailOwner = requestedEmail ? await findOtherUserBy('email', requestedEmail, id) : null;
+    const email = emailOwner ? null : requestedEmail;
+    const preferredUsername = toExternalUsername(admin);
+    const usernameOwner = await findOtherUserBy('username', preferredUsername, id);
+    const username = usernameOwner ? `external_${id}` : preferredUsername;
 
     await db.execute(sql`
       INSERT INTO users (id, username, password, email, organization_id, role, created_at, updated_at)
@@ -103,7 +132,12 @@ async function syncExternalAdminUsers(
         updated_at = now()
     `);
 
-    synced.push({ id, username, role });
+    const entry: SyncedExternalUser = { id, username, role, email };
+    if (emailOwner) {
+      entry.emailConflictWith = emailOwner;
+      log(`[ExtAPI] sync-admins: email ${requestedEmail} already belongs to user ${emailOwner}; stored ${id} without email`);
+    }
+    synced.push(entry);
   }
 
   return synced;
