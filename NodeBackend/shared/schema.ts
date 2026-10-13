@@ -24,6 +24,11 @@ export const whatsappSessions = pgTable("whatsapp_sessions", {
   phoneNumber: text("phone_number"), // linked WhatsApp number once authenticated
   sessionName: text("session_name").default("default").notNull(),
   status: text("status").default("disconnected").notNull(), // 'disconnected' | 'connecting' | 'qr_pending' | 'connected'
+  // Transport: 'baileys' (QR-linked, default) or 'cloud_api' (Meta WhatsApp Cloud API)
+  provider: text("provider").default("baileys").notNull(),
+  cloudPhoneNumberId: text("cloud_phone_number_id"), // Meta phone number id (cloud_api only)
+  cloudWabaId: text("cloud_waba_id"),                 // WhatsApp Business Account id (cloud_api only)
+  cloudAccessToken: text("cloud_access_token"),       // falls back to env META_WA_ACCESS_TOKEN when null
   lastConnectedAt: timestamp("last_connected_at"),
   createdAt: timestamp("created_at").defaultNow(),
   updatedAt: timestamp("updated_at").defaultNow(),

@@ -33,6 +33,7 @@ import { randomUUID } from "crypto";
 import { users, messages as messagesTable, chatbotConfigs, contacts as contactsTable, campaigns as campaignsTable, dataPatients, dataCaseBatches, dataDocuments, dataGeneralRecords, dataPatientEvents, voiceAgents, leadFollowups } from "@shared/schema";
 import { sendNotificationForEvent } from "./services/UserNotificationService";
 import { registerExternalApiRoutes } from "./externalApiRoutes";
+import { registerCloudApiRoutes } from "./cloudApiRoutes";
 
 // Configure CORS
 // Browsers send Origin as `scheme://host[:port]` with no trailing slash, and the cors
@@ -694,6 +695,9 @@ export async function registerRoutes(app: Express): Promise<Server> {
 
   // External machine-to-machine API (x-api-key, acts on behalf of registered users)
   registerExternalApiRoutes(app);
+
+  // Meta WhatsApp Cloud API channel (webhook + template/admin routes)
+  registerCloudApiRoutes(app);
 
   // ============================================================
   // AUTH ROUTES (public — no middleware)

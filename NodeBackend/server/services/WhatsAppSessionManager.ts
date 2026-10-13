@@ -16,6 +16,7 @@ import { eq, and, desc } from 'drizzle-orm';
 import { log } from '../utils';
 import type { WhatsAppSession } from '@shared/schema';
 import { ExternalWhatsAppProxy } from './ExternalWhatsAppProxy';
+import { CloudApiSession } from './CloudApiSession';
 import { clearDbAuthState, useDbAuthState, getDbAuthDiagnostics, countDbAuthKeys } from './useDbAuthState';
 import { getDbHealth } from '../db';
 
@@ -1606,14 +1607,28 @@ export class WhatsAppSessionManager {
 
     const sessionDir = this.buildSessionDir(userId, sessionName);
     const authPath = this.buildAuthPath(userId, sessionName);
-    const externalBaseUrl = await this.resolveExternalBaseUrl();
-    const service: WAServiceInstance = externalBaseUrl
-      ? new ExternalWhatsAppProxy(sessionDir, userId, externalBaseUrl)
-      : new ManagedBaileysSession(userId, sessionName, authPath);
-
-    if (externalBaseUrl) {
+    const cloudRow = await this.findCloudSessionRowByKey(userId, sessionName);
+    const externalBaseUrl = cloudRow ? null : await this.resolveExternalBaseUrl();
+    let service: WAServiceInstance;
+    if (cloudRow) {
+      const accessToken = cloudRow.cloudAccessToken || process.env.META_WA_ACCESS_TOKEN || '';
+      if (!accessToken) {
+        throw new Error(`Cloud API session ${userId}/${sessionName} has no access token (set cloud_access_token or META_WA_ACCESS_TOKEN)`);
+      }
+      service = new CloudApiSession({
+        userId,
+        sessionName,
+        phoneNumberId: cloudRow.cloudPhoneNumberId!,
+        wabaId: cloudRow.cloudWabaId,
+        accessToken,
+        phoneNumber: cloudRow.phoneNumber,
+      });
+      log(`[WA] Using Meta Cloud API session for ${userId}/${sessionName} (phone_number_id ${cloudRow.cloudPhoneNumberId})`);
+    } else if (externalBaseUrl) {
+      service = new ExternalWhatsAppProxy(sessionDir, userId, externalBaseUrl);
       log(`[WA] Using working-app proxy for ${userId}/${sessionName} via ${externalBaseUrl}`);
     } else {
+      service = new ManagedBaileysSession(userId, sessionName, authPath);
       log(`[WA] Using local Baileys session for ${userId}/${sessionName}`);
     }
 
@@ -1704,6 +1719,15 @@ export class WhatsAppSessionManager {
     return db.select().from(whatsappSessions).where(eq(whatsappSessions.userId, userId));
   }
 
+  /** Drop a session from memory without touching its DB row (used to reload cloud_api config). */
+  async unloadSession(userId: string, sessionName = 'default'): Promise<void> {
+    const k = this.key(userId, sessionName);
+    const service = this.sessions.get(k);
+    if (!service) return;
+    try { await service.cleanup(); } catch {}
+    this.sessions.delete(k);
+  }
+
   async removeSession(userId: string, sessionName = 'default'): Promise<void> {
     const k = this.key(userId, sessionName);
     const service = this.sessions.get(k);
@@ -1769,6 +1793,31 @@ export class WhatsAppSessionManager {
     }
     this.resolvedExternalBaseUrl = null;
     return null;
+  }
+
+  /** DB row for a cloud_api session, or null when the session is Baileys/proxy. */
+  private async findCloudSessionRowByKey(userId: string, sessionName: string) {
+    try {
+      const rows = await db.select().from(whatsappSessions)
+        .where(and(
+          eq(whatsappSessions.userId, userId),
+          eq(whatsappSessions.sessionName, sessionName),
+        )).limit(1);
+      const row = rows[0];
+      return row && row.provider === 'cloud_api' && row.cloudPhoneNumberId ? row : null;
+    } catch {
+      return null;
+    }
+  }
+
+  /** Find the cloud_api session row that owns a Meta phone_number_id (used by the webhook). */
+  async findCloudSessionRow(phoneNumberId: string) {
+    const rows = await db.select().from(whatsappSessions)
+      .where(and(
+        eq(whatsappSessions.provider, 'cloud_api'),
+        eq(whatsappSessions.cloudPhoneNumberId, phoneNumberId),
+      )).limit(1);
+    return rows[0] || null;
   }
 
   private async ensureSessionRecord(userId: string, sessionName: string): Promise<void> {

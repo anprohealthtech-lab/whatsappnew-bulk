@@ -253,6 +253,13 @@ export async function runMigrations(): Promise<void> {
 
       -- Existing databases may have pre-tenant tables. Add these before any
       -- tenant indexes are created so the whole migration batch can continue.
+      -- Cloud API transport columns (Meta WhatsApp Cloud API sessions)
+      ALTER TABLE "whatsapp_sessions" ADD COLUMN IF NOT EXISTS "provider" text DEFAULT 'baileys' NOT NULL;
+      ALTER TABLE "whatsapp_sessions" ADD COLUMN IF NOT EXISTS "cloud_phone_number_id" text;
+      ALTER TABLE "whatsapp_sessions" ADD COLUMN IF NOT EXISTS "cloud_waba_id" text;
+      ALTER TABLE "whatsapp_sessions" ADD COLUMN IF NOT EXISTS "cloud_access_token" text;
+      CREATE INDEX IF NOT EXISTS idx_whatsapp_sessions_cloud_phone ON whatsapp_sessions(cloud_phone_number_id);
+
       ALTER TABLE "campaigns" ADD COLUMN IF NOT EXISTS "organization_id" text DEFAULT 'default_org' NOT NULL;
       ALTER TABLE "campaigns" ADD COLUMN IF NOT EXISTS "user_id" text DEFAULT 'default_user' NOT NULL;
       ALTER TABLE "campaign_schedules" ADD COLUMN IF NOT EXISTS "organization_id" text DEFAULT 'default_org' NOT NULL;

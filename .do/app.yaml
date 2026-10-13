@@ -42,6 +42,17 @@ services:
     scope: RUN_TIME
     type: SECRET
 
+  # Meta WhatsApp Cloud API channel (values set in the DO dashboard)
+  - key: META_APP_SECRET
+    scope: RUN_TIME
+    type: SECRET
+  - key: META_WEBHOOK_VERIFY_TOKEN
+    scope: RUN_TIME
+    type: SECRET
+  - key: META_WA_ACCESS_TOKEN
+    scope: RUN_TIME
+    type: SECRET
+
   - key: SUPABASE_SERVICE_ROLE_KEY
     scope: RUN_TIME
     type: SECRET

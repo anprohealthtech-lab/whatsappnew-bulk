@@ -12,7 +12,10 @@ import { seedSuperAdmin } from "./seedSuperAdmin";
 import { persistentFileService } from "./services/PersistentFileService";
 
 const app = express();
-app.use(express.json());
+app.use(express.json({
+  // Keep the raw bytes so signed webhooks (Meta X-Hub-Signature-256) can be verified.
+  verify: (req, _res, buf) => { (req as any).rawBody = buf; },
+}));
 app.use(express.urlencoded({ extended: false }));
 
 const uploadsDir = persistentFileService.getUploadDirectory();
