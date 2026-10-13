@@ -24,7 +24,7 @@ import { sql as drizzleSql, eq, and, desc, like } from "drizzle-orm";
 import { withRetry } from "./dbRetry";
 import { z } from "zod";
 import * as XLSX from 'xlsx';
-import { authService } from "./services/AuthService";
+import { authService, type AuthPayload } from "./services/AuthService";
 import { requireAuth, optionalAuth, getTenant, requireSuperAdmin } from "./authMiddleware";
 import { sessionManager } from "./services/WhatsAppSessionManager";
 import { normalizeExternalPhone } from "./services/ExternalBulkSendService";
@@ -1755,12 +1755,41 @@ export async function registerRoutes(app: Express): Promise<Server> {
   // Create HTTP server
   const httpServer = createServer(app);
 
-  // Setup WebSocket server for real-time communication
-  const wss = new WebSocketServer({ server: httpServer, path: '/ws' });
+  // Setup WebSocket server for real-time communication.
+  // Every connection must present a valid JWT (same token as the REST API), either as
+  // `?token=` on the upgrade URL (browsers) or an `Authorization: Bearer` header.
+  const authenticateUpgrade = (req: import('http').IncomingMessage): AuthPayload | null => {
+    try {
+      const url = new URL(req.url || '/', 'http://localhost');
+      const header = String(req.headers.authorization || '');
+      const token = url.searchParams.get('token') || (header.startsWith('Bearer ') ? header.slice(7) : '');
+      if (!token) return null;
+      return authService.verifyToken(token);
+    } catch {
+      return null;
+    }
+  };
+
+  const wss = new WebSocketServer({
+    server: httpServer,
+    path: '/ws',
+    verifyClient: (info, done) => {
+      const auth = authenticateUpgrade(info.req);
+      if (!auth) {
+        log('WebSocket upgrade rejected: missing or invalid token');
+        return done(false, 401, 'Unauthorized');
+      }
+      (info.req as any).auth = auth;
+      done(true);
+    },
+  });
+
+  type AuthedSocket = import('ws').WebSocket & { auth?: AuthPayload };
 
   // WebSocket connection handling
-  wss.on('connection', (ws) => {
-    log('WebSocket client connected');
+  wss.on('connection', (ws: AuthedSocket, req) => {
+    ws.auth = (req as any).auth as AuthPayload | undefined;
+    log(`WebSocket client connected (user ${ws.auth?.userId ?? 'unknown'}, org ${ws.auth?.organizationId ?? 'unknown'})`);
 
     // Note: WhatsApp status is now per-user — clients should use /api/whatsapp/sessions
     // WebSocket is still used for real-time event broadcasts (QR codes, incoming messages, etc.)
@@ -1774,15 +1803,71 @@ export async function registerRoutes(app: Express): Promise<Server> {
     });
   });
 
-  // Broadcast function for WebSocket messages
-  const broadcast = (type: string, data: any) => {
-    const message = JSON.stringify({ type, data });
-    console.log(`Broadcasting ${type} to ${wss.clients.size} clients:`, data);
-    wss.clients.forEach((client) => {
-      if (client.readyState === client.OPEN) {
+  // Organization of each session-owning user, cached so broadcasts stay cheap.
+  const ownerOrgCache = new Map<string, string>();
+  const resolveOwnerOrg = async (ownerUserId: string): Promise<string | undefined> => {
+    const cached = ownerOrgCache.get(ownerUserId);
+    if (cached) return cached;
+    try {
+      const tenant = await resolveTenantForUserId(ownerUserId);
+      ownerOrgCache.set(ownerUserId, tenant.organizationId);
+      return tenant.organizationId;
+    } catch {
+      return undefined;
+    }
+  };
+
+  // Binary/base64 media never needs to reach the dashboard; it would also bloat every frame.
+  const BROADCAST_STRIP_KEYS = ['mediaData', 'mediaBuffer', 'audioData', 'audioBuffer', 'rawMessage'];
+  const toBroadcastPayload = (data: any) => {
+    if (!data || typeof data !== 'object' || Array.isArray(data)) return data;
+    const out: Record<string, any> = {};
+    for (const [key, value] of Object.entries(data)) {
+      if (BROADCAST_STRIP_KEYS.includes(key) || key.startsWith('_')) continue;
+      if (Buffer.isBuffer(value)) continue;
+      out[key] = value;
+    }
+    return out;
+  };
+
+  /**
+   * Send an event to the sockets that are allowed to see it.
+   * The owner is the user whose WhatsApp session produced the event, taken from
+   * `ownerUserId`, or from `data.userId` / `data._userId` when not given. Super admins
+   * receive everything; other sockets only receive events for their own user or
+   * organization. Events with no identifiable owner go to super admins only.
+   */
+  const broadcast = (type: string, data: any, ownerUserId?: string) => {
+    const owner: string | undefined = ownerUserId || data?.userId || data?._userId || undefined;
+    const message = JSON.stringify({ type, data: toBroadcastPayload(data) });
+
+    const deliver = (ownerOrg?: string) => {
+      let sent = 0;
+      wss.clients.forEach((client: AuthedSocket) => {
+        if (client.readyState !== client.OPEN) return;
+        const auth = client.auth;
+        if (!auth) return;
+        const allowed =
+          auth.role === 'super_admin' ||
+          (!!owner && auth.userId === owner) ||
+          (!!ownerOrg && auth.organizationId === ownerOrg);
+        if (!allowed) return;
         client.send(message);
-      }
-    });
+        sent += 1;
+      });
+      console.log(`Broadcasting ${type} (owner ${owner ?? 'none'}) to ${sent}/${wss.clients.size} clients`);
+    };
+
+    if (!owner) {
+      deliver(undefined);
+      return;
+    }
+    const cachedOrg = ownerOrgCache.get(owner);
+    if (cachedOrg) {
+      deliver(cachedOrg);
+    } else {
+      void resolveOwnerOrg(owner).then(deliver);
+    }
   };
 
   // Setup per-session WhatsApp event listeners via sessionManager
@@ -1810,13 +1895,13 @@ export async function registerRoutes(app: Express): Promise<Server> {
   });
 
   sessionManager.onSessionEvent('message-sent', (userId, sessionName, data) => {
-    broadcast('message-sent', data);
+    broadcast('message-sent', data, userId);
   });
 
   sessionManager.onSessionEvent('message-update', async (userId, sessionName, data) => {
     // Update message delivery status
     await messageService.updateMessageDeliveryStatus(data.messageId, data.ack === 3 ? 'delivered' : 'failed');
-    broadcast('message-update', data);
+    broadcast('message-update', data, userId);
   });
 
   sessionManager.onSessionEvent('button-clicked', async (userId, sessionName, data) => {
@@ -1842,7 +1927,7 @@ export async function registerRoutes(app: Express): Promise<Server> {
       }
     }
 
-    broadcast('button-clicked', data);
+    broadcast('button-clicked', data, userId);
   });
 
   // Message debouncing: concatenate rapid messages instead of discarding
@@ -2023,7 +2108,7 @@ export async function registerRoutes(app: Express): Promise<Server> {
         console.log(`Data management agent handling ${data.messageType || 'text'} from ${data.phoneNumber}`);
         const reply = await dataAgentService.handleIncomingMessage(scopedTenant, data);
         await waSession.sendTextMessage(data.replyTo || data.from || data.phoneNumber, reply);
-        broadcast('data-management-response-sent', { phoneNumber: data.phoneNumber, messageType: data.messageType || 'text' });
+        broadcast('data-management-response-sent', { phoneNumber: data.phoneNumber, messageType: data.messageType || 'text' }, ownerUserId);
         broadcast('incoming-message', data);
         return;
       }
@@ -2083,7 +2168,7 @@ export async function registerRoutes(app: Express): Promise<Server> {
             };
             const replyTo = data.replyTo || data.from || data.phoneNumber;
             await hrChatbotService.processHRMessage(data.phoneNumber, '[Voice Note]', audioPayload, replyTo);
-            broadcast('hr-chatbot-response-sent', { phoneNumber: data.phoneNumber, type: 'voice_processed' });
+            broadcast('hr-chatbot-response-sent', { phoneNumber: data.phoneNumber, type: 'voice_processed' }, ownerUserId);
             broadcast('incoming-message', data);
             return;
           } else {
@@ -2093,7 +2178,7 @@ export async function registerRoutes(app: Express): Promise<Server> {
               data.replyTo || data.from || data.phoneNumber,
               "🎤 I received your voice note but couldn't process it. Please try again or type your message."
             );
-            broadcast('hr-chatbot-response-sent', { phoneNumber: data.phoneNumber, type: 'voice_failed' });
+            broadcast('hr-chatbot-response-sent', { phoneNumber: data.phoneNumber, type: 'voice_failed' }, ownerUserId);
             broadcast('incoming-message', data);
             return;
           }
@@ -2106,7 +2191,7 @@ export async function registerRoutes(app: Express): Promise<Server> {
             data.replyTo || data.from || data.phoneNumber,
             `📎 I received your ${messageType}! However, I can only process text messages at the moment.\n\nPlease type your request and I'll be happy to help.`
           );
-          broadcast('hr-chatbot-response-sent', { phoneNumber: data.phoneNumber, type: 'media_acknowledgment' });
+          broadcast('hr-chatbot-response-sent', { phoneNumber: data.phoneNumber, type: 'media_acknowledgment' }, ownerUserId);
           broadcast('incoming-message', data);
           return;
         }
@@ -2115,7 +2200,7 @@ export async function registerRoutes(app: Express): Promise<Server> {
         console.log(`🤖 Processing HR message from ${data.phoneNumber} (org: ${hrAdmin?.organizationName || hrAdmin?.organizationId})`);
         const replyTo = data.replyTo || data.from || data.phoneNumber;
         await hrChatbotService.processHRMessage(data.phoneNumber, data.content, undefined, replyTo);
-        broadcast('hr-chatbot-response-sent', { phoneNumber: data.phoneNumber });
+        broadcast('hr-chatbot-response-sent', { phoneNumber: data.phoneNumber }, ownerUserId);
         broadcast('incoming-message', data);
         return;
       }
@@ -2171,7 +2256,7 @@ export async function registerRoutes(app: Express): Promise<Server> {
             const audioPayload = { base64: data.audioData, mimetype: data.mediaInfo?.mimetype || 'audio/ogg' };
             const replyTo = data.replyTo || data.from || data.phoneNumber;
             await himsChatbotService.processHIMSMessage(data.phoneNumber, '[Voice Note]', audioPayload, replyTo, ownerUserId, ownerOrganizationId);
-            broadcast('hims-chatbot-response-sent', { phoneNumber: data.phoneNumber, type: 'voice_processed' });
+            broadcast('hims-chatbot-response-sent', { phoneNumber: data.phoneNumber, type: 'voice_processed' }, ownerUserId);
             broadcast('incoming-message', data);
             return;
           } else {
@@ -2180,7 +2265,7 @@ export async function registerRoutes(app: Express): Promise<Server> {
               data.replyTo || data.from || data.phoneNumber,
               "🎤 I received your voice note but couldn't process it. Please try again or type your message."
             );
-            broadcast('hims-chatbot-response-sent', { phoneNumber: data.phoneNumber, type: 'voice_failed' });
+            broadcast('hims-chatbot-response-sent', { phoneNumber: data.phoneNumber, type: 'voice_failed' }, ownerUserId);
             broadcast('incoming-message', data);
             return;
           }
@@ -2192,7 +2277,7 @@ export async function registerRoutes(app: Express): Promise<Server> {
             data.replyTo || data.from || data.phoneNumber,
             `📎 I received your ${messageType}! I can only process text messages at the moment.\n\nPlease type your request and I'll be happy to help. 🏥`
           );
-          broadcast('hims-chatbot-response-sent', { phoneNumber: data.phoneNumber, type: 'media_acknowledgment' });
+          broadcast('hims-chatbot-response-sent', { phoneNumber: data.phoneNumber, type: 'media_acknowledgment' }, ownerUserId);
           broadcast('incoming-message', data);
           return;
         }
@@ -2201,7 +2286,7 @@ export async function registerRoutes(app: Express): Promise<Server> {
         console.log(`🏥 Processing HIMS message from ${data.phoneNumber} (org: ${himsPatient?.organizationId})`);
         const replyTo = data.replyTo || data.from || data.phoneNumber;
         await himsChatbotService.processHIMSMessage(data.phoneNumber, data.content, undefined, replyTo, ownerUserId, ownerOrganizationId);
-        broadcast('hims-chatbot-response-sent', { phoneNumber: data.phoneNumber });
+        broadcast('hims-chatbot-response-sent', { phoneNumber: data.phoneNumber }, ownerUserId);
         broadcast('incoming-message', data);
         return;
       }
@@ -2258,7 +2343,7 @@ export async function registerRoutes(app: Express): Promise<Server> {
               // Process the original message through HIMS bot
               const replyTo = data.replyTo || data.from || data.phoneNumber;
               await himsChatbotService.processHIMSMessage(data.phoneNumber, data.content, undefined, replyTo, ownerUserId, ownerOrganizationId);
-              broadcast('hims-chatbot-response-sent', { phoneNumber: data.phoneNumber });
+              broadcast('hims-chatbot-response-sent', { phoneNumber: data.phoneNumber }, ownerUserId);
               broadcast('incoming-message', data);
               return;
             }
@@ -2346,7 +2431,7 @@ export async function registerRoutes(app: Express): Promise<Server> {
           console.log(`🤖 Processing lead message from ${data.phoneNumber}`);
           await chatbotService.processLeadMessage(data.phoneNumber, data.content, data.replyTo || data.from);
         }
-        broadcast('chatbot-response-sent', { phoneNumber: data.phoneNumber });
+        broadcast('chatbot-response-sent', { phoneNumber: data.phoneNumber }, ownerUserId);
       } else {
         // ========================================
         // PRIORITY 3: Check auto-responses for non-leads

@@ -145,3 +145,19 @@ to them, but connected to this app and this webhook. Needed:
    and account id. The backend exchanges the code for a permanent token and
    stores it on that tenant's `whatsapp_sessions` row (the same columns added
    here). Configured under Facebook Login for Business in the app dashboard.
+
+## Live event feed (/ws) is now authenticated (2026-10-13)
+
+Before this change the WebSocket at `/ws` accepted anyone and broadcast every
+tenant's events, including incoming message text, media and pairing QR codes.
+Now:
+
+- The upgrade must carry the same JWT as the REST API, as `?token=` on the URL
+  (what the dashboard does) or an `Authorization: Bearer` header. Otherwise the
+  server answers 401 and closes.
+- Each event is delivered only to sockets of the session owner, users in the
+  same organization, and super admins. Events with no identifiable owner go to
+  super admins only.
+- Media buffers and base64 fields are stripped from broadcast payloads.
+
+Any external tool that used to read `/ws` anonymously must now pass a token.

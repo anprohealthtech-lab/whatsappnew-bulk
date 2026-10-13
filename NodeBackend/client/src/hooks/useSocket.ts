@@ -1,5 +1,6 @@
 import { useEffect, useRef, useState } from 'react';
 import { useToast } from '@/hooks/use-toast';
+import { getAuthToken } from '@/lib/AuthContext';
 
 interface SocketMessage {
   type: string;
@@ -18,9 +19,17 @@ export function useSocket() {
   const { toast } = useToast();
 
   const connect = () => {
+    // The server only accepts sockets that carry the same JWT as the REST API.
+    // Without a token (logged out) there is nothing to subscribe to, so try again later.
+    const token = getAuthToken();
+    if (!token) {
+      setTimeout(connect, 3000);
+      return;
+    }
+
     const protocol = window.location.protocol === "https:" ? "wss:" : "ws:";
-    const wsUrl = `${protocol}//${window.location.host}/ws`;
-    
+    const wsUrl = `${protocol}//${window.location.host}/ws?token=${encodeURIComponent(token)}`;
+
     socketRef.current = new WebSocket(wsUrl);
 
     socketRef.current.onopen = () => {
