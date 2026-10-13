@@ -1,20 +1,21 @@
 /**
  * Routes for the Meta WhatsApp Cloud API channel.
  *
- *  GET  /api/webhooks/meta            Meta's one-time webhook verification
- *  POST /api/webhooks/meta            Inbound messages + delivery statuses (signed)
- *  GET  /api/admin/cloud-sessions     List Cloud API sessions (super admin)
- *  POST /api/admin/cloud-sessions     Create/update a Cloud API session for a user (super admin)
- *  GET  /api/cloud/templates          List the WABA's templates (auth)
- *  POST /api/cloud/send-template      Send an approved template (auth)
- *  GET  /api/cloud/window/:phone      Is the 24 h free-form window open for this number? (auth)
+ *  GET  /api/webhooks/meta              Meta's one-time webhook verification
+ *  POST /api/webhooks/meta              Inbound messages + delivery statuses (signed)
+ *  GET  /api/admin/cloud-sessions       List Cloud API sessions (super admin)
+ *  POST /api/admin/cloud-sessions       Create/update a Cloud API session for any user (super admin)
+ *  GET  /api/cloud/signup-config        App id + Embedded Signup config id for the dashboard button (auth)
+ *  POST /api/cloud/onboard              Finish Embedded Signup: exchange code, subscribe, register, create session (auth)
+ *  GET  /api/cloud/session              The tenant's own Cloud API session, if any (auth)
+ *  POST /api/cloud/session/disconnect   Unload the tenant's Cloud API session (auth)
+ *  GET  /api/cloud/templates            List the WABA's templates (auth)
+ *  POST /api/cloud/send-template        Send an approved template (auth)
+ *  GET  /api/cloud/window/:phone        Is the 24 h free-form window open for this number? (auth)
  *
- * Env: META_APP_SECRET (signature check), META_WEBHOOK_VERIFY_TOKEN,
+ * Env: META_APP_ID, META_APP_SECRET (signature check + code exchange),
+ *      META_WEBHOOK_VERIFY_TOKEN, META_ES_CONFIG_ID (Embedded Signup configuration),
  *      META_WA_ACCESS_TOKEN (fallback token when a session row has none).
- *
- * Subscribing the Meta app to a WhatsApp Business Account's webhooks is a
- * one-time step done outside this server (App Dashboard, or
- * POST /{waba_id}/subscribed_apps with the business token).
  */
 import type { Express, Request, Response } from 'express';
 import { createHmac, timingSafeEqual } from 'crypto';
@@ -23,8 +24,12 @@ import { db } from './db';
 import { whatsappSessions, users } from '@shared/schema';
 import { log } from './utils';
 import { sessionManager } from './services/WhatsAppSessionManager';
-import { CloudApiSession } from './services/CloudApiSession';
+import { CloudApiSession, GraphApiError } from './services/CloudApiSession';
 import { requireAuth, requireSuperAdmin, getTenant } from './authMiddleware';
+
+const GRAPH_VERSION = process.env.META_GRAPH_VERSION || 'v25.0';
+const GRAPH_BASE = `https://graph.facebook.com/${GRAPH_VERSION}`;
+const DEFAULT_CLOUD_SESSION_NAME = 'cloud';
 
 function verifySignature(req: Request): boolean {
   const secret = process.env.META_APP_SECRET;
@@ -55,6 +60,128 @@ async function loadCloudSession(phoneNumberId: string): Promise<CloudApiSession 
 
 function errorMessage(error: unknown): string {
   return error instanceof Error ? error.message : 'Unknown error';
+}
+
+/** Plain Graph call with a bearer token; throws GraphApiError on failure. */
+async function graph(method: 'GET' | 'POST', pathname: string, token: string, query?: Record<string, string>, body?: any): Promise<any> {
+  const url = new URL(`${GRAPH_BASE}${pathname}`);
+  for (const [k, v] of Object.entries(query || {})) url.searchParams.set(k, v);
+  const headers: Record<string, string> = { Authorization: `Bearer ${token}` };
+  const init: RequestInit = { method, headers };
+  if (body !== undefined) {
+    headers['Content-Type'] = 'application/json';
+    init.body = JSON.stringify(body);
+  }
+  const response = await fetch(url, init);
+  const json: any = await response.json().catch(() => ({}));
+  if (!response.ok || json?.error) {
+    const e = json?.error || {};
+    const detail = e.error_data?.details ? ` - ${e.error_data.details}` : '';
+    throw new GraphApiError(`${e.message || `HTTP ${response.status}`}${detail}`, e.code, e.error_subcode, response.status);
+  }
+  return json;
+}
+
+/**
+ * Two-step-verification PIN used when registering a number for the Cloud API.
+ * Derived from the app secret so it can be regenerated later without storing it.
+ */
+function registrationPin(phoneNumberId: string): string {
+  const secret = process.env.META_APP_SECRET || 'no-secret';
+  const digest = createHmac('sha256', secret).update(`register:${phoneNumberId}`).digest('hex');
+  return String(parseInt(digest.slice(0, 8), 16) % 1000000).padStart(6, '0');
+}
+
+interface UpsertCloudSessionInput {
+  userId: string;
+  sessionName: string;
+  phoneNumberId: string;
+  wabaId?: string | null;
+  accessToken?: string | null;
+  phoneNumber?: string | null;
+}
+
+/**
+ * Create or update a cloud_api row for a user, (re)load it and verify the
+ * token against Meta. Shared by the admin route and Embedded Signup.
+ */
+async function upsertCloudSession(input: UpsertCloudSessionInput): Promise<CloudApiSession> {
+  const { userId, sessionName, phoneNumberId } = input;
+
+  const [user] = await db.select({ organizationId: users.organizationId })
+    .from(users).where(eq(users.id, userId)).limit(1);
+  if (!user) throw new Error(`User ${userId} not found`);
+
+  const existing = await db.select().from(whatsappSessions)
+    .where(and(eq(whatsappSessions.userId, userId), eq(whatsappSessions.sessionName, sessionName)))
+    .limit(1);
+
+  if (existing.length && existing[0].provider !== 'cloud_api' && existing[0].status === 'connected') {
+    throw new Error(`Session "${sessionName}" is a connected ${existing[0].provider} session; choose another sessionName`);
+  }
+
+  // A phone number id can belong to exactly one session.
+  const owner = await sessionManager.findCloudSessionRow(phoneNumberId);
+  if (owner && (owner.userId !== userId || owner.sessionName !== sessionName)) {
+    throw new Error(`Phone number id ${phoneNumberId} is already linked to another session`);
+  }
+
+  const token = input.accessToken || existing[0]?.cloudAccessToken || process.env.META_WA_ACCESS_TOKEN;
+  if (!token) throw new Error('accessToken is required (or set META_WA_ACCESS_TOKEN)');
+
+  const values = {
+    organizationId: user.organizationId,
+    provider: 'cloud_api',
+    cloudPhoneNumberId: phoneNumberId,
+    cloudWabaId: input.wabaId ? String(input.wabaId) : existing[0]?.cloudWabaId || null,
+    cloudAccessToken: input.accessToken ? String(input.accessToken) : existing[0]?.cloudAccessToken || null,
+    phoneNumber: input.phoneNumber ? CloudApiSession.digits(String(input.phoneNumber)) : existing[0]?.phoneNumber || null,
+    status: 'connected',
+    updatedAt: new Date(),
+  };
+
+  if (existing.length) {
+    await db.update(whatsappSessions).set(values).where(eq(whatsappSessions.id, existing[0].id));
+  } else {
+    await db.insert(whatsappSessions).values({ userId, sessionName, ...values });
+  }
+
+  await sessionManager.unloadSession(userId, sessionName);
+  const service = await sessionManager.getSession(userId, sessionName);
+  if (!(service instanceof CloudApiSession)) {
+    throw new Error('Session did not load as a Cloud API session');
+  }
+  try {
+    await service.initialize();
+  } catch (error) {
+    // Token or number is bad: do not leave a "connected" row behind.
+    await db.update(whatsappSessions).set({ status: 'disconnected', updatedAt: new Date() })
+      .where(and(eq(whatsappSessions.userId, userId), eq(whatsappSessions.sessionName, sessionName)));
+    await sessionManager.unloadSession(userId, sessionName);
+    throw error;
+  }
+  return service;
+}
+
+function publicSessionRow(r: typeof whatsappSessions.$inferSelect) {
+  const loaded = sessionManager.getLoadedSession(r.userId, r.sessionName);
+  const status = loaded?.getStatus();
+  return {
+    id: r.id,
+    userId: r.userId,
+    sessionName: r.sessionName,
+    provider: r.provider,
+    phoneNumber: r.phoneNumber,
+    cloudPhoneNumberId: r.cloudPhoneNumberId,
+    cloudWabaId: r.cloudWabaId,
+    hasToken: !!(r.cloudAccessToken || process.env.META_WA_ACCESS_TOKEN),
+    status: r.status,
+    lastConnectedAt: r.lastConnectedAt,
+    loaded: !!loaded,
+    connected: status?.isConnected ?? false,
+    verifiedName: status?.sessionInfo?.name ?? null,
+    qualityRating: status?.sessionInfo?.qualityRating ?? null,
+  };
 }
 
 export function registerCloudApiRoutes(app: Express) {
@@ -117,18 +244,7 @@ export function registerCloudApiRoutes(app: Express) {
   app.get('/api/admin/cloud-sessions', requireSuperAdmin, async (_req: Request, res: Response) => {
     try {
       const rows = await db.select().from(whatsappSessions).where(eq(whatsappSessions.provider, 'cloud_api'));
-      res.json({
-        success: true,
-        sessions: rows.map((r) => {
-          const loaded = sessionManager.getLoadedSession(r.userId, r.sessionName);
-          return {
-            ...r,
-            cloudAccessToken: r.cloudAccessToken ? `...${r.cloudAccessToken.slice(-6)}` : null,
-            loaded: !!loaded,
-            connected: loaded?.getStatus().isConnected ?? false,
-          };
-        }),
-      });
+      res.json({ success: true, sessions: rows.map(publicSessionRow) });
     } catch (error) {
       res.status(500).json({ success: false, error: errorMessage(error) });
     }
@@ -136,69 +252,157 @@ export function registerCloudApiRoutes(app: Express) {
 
   app.post('/api/admin/cloud-sessions', requireSuperAdmin, async (req: Request, res: Response) => {
     try {
-      const {
-        userId,
-        sessionName = 'cloud',
-        phoneNumberId,
-        wabaId,
-        accessToken,
-        phoneNumber,
-      } = req.body || {};
-
+      const { userId, sessionName = DEFAULT_CLOUD_SESSION_NAME, phoneNumberId, wabaId, accessToken, phoneNumber } = req.body || {};
       if (!userId || !phoneNumberId) {
         return res.status(400).json({ success: false, error: 'userId and phoneNumberId are required' });
       }
-
-      const [user] = await db.select({ organizationId: users.organizationId })
-        .from(users).where(eq(users.id, String(userId))).limit(1);
-      if (!user) {
-        return res.status(404).json({ success: false, error: `User ${userId} not found` });
-      }
-
-      const existing = await db.select().from(whatsappSessions)
-        .where(and(eq(whatsappSessions.userId, String(userId)), eq(whatsappSessions.sessionName, String(sessionName))))
-        .limit(1);
-
-      if (existing.length && existing[0].provider !== 'cloud_api' && existing[0].status === 'connected') {
-        return res.status(409).json({
-          success: false,
-          error: `Session "${sessionName}" is a connected ${existing[0].provider} session; choose another sessionName`,
-        });
-      }
-
-      const token = accessToken || existing[0]?.cloudAccessToken || process.env.META_WA_ACCESS_TOKEN;
-      if (!token) {
-        return res.status(400).json({ success: false, error: 'accessToken is required (or set META_WA_ACCESS_TOKEN)' });
-      }
-
-      const values = {
-        organizationId: user.organizationId,
-        provider: 'cloud_api',
-        cloudPhoneNumberId: String(phoneNumberId),
-        cloudWabaId: wabaId ? String(wabaId) : existing[0]?.cloudWabaId || null,
-        cloudAccessToken: accessToken ? String(accessToken) : existing[0]?.cloudAccessToken || null,
-        phoneNumber: phoneNumber ? CloudApiSession.digits(String(phoneNumber)) : existing[0]?.phoneNumber || null,
-        status: 'connected',
-        updatedAt: new Date(),
-      };
-
-      if (existing.length) {
-        await db.update(whatsappSessions).set(values).where(eq(whatsappSessions.id, existing[0].id));
-      } else {
-        await db.insert(whatsappSessions).values({ userId: String(userId), sessionName: String(sessionName), ...values });
-      }
-
-      // (Re)load the session with the new config and verify the token against Meta.
-      await sessionManager.unloadSession(String(userId), String(sessionName));
-      const service = await sessionManager.getSession(String(userId), String(sessionName));
-      if (!(service instanceof CloudApiSession)) {
-        return res.status(500).json({ success: false, error: 'Session did not load as a Cloud API session' });
-      }
-      await service.initialize();
-
+      const service = await upsertCloudSession({
+        userId: String(userId),
+        sessionName: String(sessionName),
+        phoneNumberId: String(phoneNumberId),
+        wabaId,
+        accessToken,
+        phoneNumber,
+      });
       res.json({ success: true, status: service.getStatus() });
     } catch (error) {
       log(`[CloudAPI] cloud-sessions create failed: ${errorMessage(error)}`);
+      res.status(500).json({ success: false, error: errorMessage(error) });
+    }
+  });
+
+  // ---- Tenant: Embedded Signup onboarding ---------------------------------
+
+  app.get('/api/cloud/signup-config', requireAuth, (_req: Request, res: Response) => {
+    const appId = process.env.META_APP_ID || '';
+    const configId = process.env.META_ES_CONFIG_ID || '';
+    res.json({
+      success: true,
+      enabled: !!(appId && configId && process.env.META_APP_SECRET),
+      appId,
+      configId,
+      graphVersion: GRAPH_VERSION,
+    });
+  });
+
+  /**
+   * Body: { code, phoneNumberId, wabaId, sessionName? }
+   *  - code: from FB.login() callback (response.authResponse.code)
+   *  - phoneNumberId / wabaId: from the WA_EMBEDDED_SIGNUP "FINISH" message event
+   */
+  app.post('/api/cloud/onboard', requireAuth, async (req: Request, res: Response) => {
+    const tenant = getTenant(req);
+    const { code, phoneNumberId, wabaId, sessionName = DEFAULT_CLOUD_SESSION_NAME } = req.body || {};
+    const appId = process.env.META_APP_ID;
+    const appSecret = process.env.META_APP_SECRET;
+
+    if (!appId || !appSecret) {
+      return res.status(503).json({ success: false, error: 'META_APP_ID / META_APP_SECRET not configured on the server' });
+    }
+    if (!code || !phoneNumberId || !wabaId) {
+      return res.status(400).json({
+        success: false,
+        error: 'code, phoneNumberId and wabaId are required. Finish the WhatsApp signup popup including adding a phone number.',
+      });
+    }
+
+    const steps: Record<string, string> = {};
+    try {
+      // 1. Exchange the one-time code for a business token (does not expire).
+      const tokenUrl = new URL(`${GRAPH_BASE}/oauth/access_token`);
+      tokenUrl.searchParams.set('client_id', appId);
+      tokenUrl.searchParams.set('client_secret', appSecret);
+      tokenUrl.searchParams.set('code', String(code));
+      const tokenResp = await fetch(tokenUrl);
+      const tokenJson: any = await tokenResp.json().catch(() => ({}));
+      const accessToken: string | undefined = tokenJson?.access_token;
+      if (!tokenResp.ok || !accessToken) {
+        const msg = tokenJson?.error?.message || `HTTP ${tokenResp.status}`;
+        return res.status(400).json({ success: false, error: `Code exchange failed: ${msg}` });
+      }
+      steps.tokenExchange = 'ok';
+
+      // 2. Confirm the token actually covers the account and number the popup reported.
+      const waba = await graph('GET', `/${wabaId}`, accessToken, { fields: 'id,name,account_review_status,business_verification_status' });
+      const phone = await graph('GET', `/${phoneNumberId}`, accessToken, { fields: 'display_phone_number,verified_name,platform_type,status,code_verification_status' });
+      steps.verify = `ok (${waba.name}, +${CloudApiSession.digits(phone.display_phone_number)})`;
+
+      // 3. Subscribe our app to the client's account so webhooks arrive.
+      try {
+        await graph('POST', `/${wabaId}/subscribed_apps`, accessToken);
+        steps.subscribe = 'ok';
+      } catch (error) {
+        steps.subscribe = `failed: ${errorMessage(error)}`;
+        log(`[CloudAPI] subscribed_apps failed for WABA ${wabaId}: ${errorMessage(error)}`);
+      }
+
+      // 4. Register the number for Cloud API messaging (no-op if already registered).
+      try {
+        await graph('POST', `/${phoneNumberId}/register`, accessToken, undefined, {
+          messaging_product: 'whatsapp',
+          pin: registrationPin(String(phoneNumberId)),
+        });
+        steps.register = 'ok';
+      } catch (error) {
+        const msg = errorMessage(error);
+        // Already registered numbers (e.g. coexistence) return an error we can ignore.
+        if (/already|registered/i.test(msg)) {
+          steps.register = 'already registered';
+        } else {
+          steps.register = `failed: ${msg}`;
+          log(`[CloudAPI] register failed for ${phoneNumberId}: ${msg}`);
+        }
+      }
+
+      // 5. Store + load the session for this tenant.
+      const service = await upsertCloudSession({
+        userId: tenant.userId,
+        sessionName: String(sessionName),
+        phoneNumberId: String(phoneNumberId),
+        wabaId: String(wabaId),
+        accessToken,
+        phoneNumber: phone.display_phone_number,
+      });
+      steps.session = 'ok';
+
+      log(`[CloudAPI] Embedded Signup completed for user ${tenant.userId}: WABA ${wabaId} (${waba.name}), phone ${phoneNumberId}`);
+      res.json({
+        success: true,
+        steps,
+        account: { id: waba.id, name: waba.name, reviewStatus: waba.account_review_status, businessVerification: waba.business_verification_status },
+        phone: { id: phoneNumberId, number: phone.display_phone_number, verifiedName: phone.verified_name, platform: phone.platform_type },
+        status: service.getStatus(),
+      });
+    } catch (error) {
+      log(`[CloudAPI] onboard failed for user ${tenant.userId}: ${errorMessage(error)} steps=${JSON.stringify(steps)}`);
+      res.status(500).json({ success: false, error: errorMessage(error), steps });
+    }
+  });
+
+  app.get('/api/cloud/session', requireAuth, async (req: Request, res: Response) => {
+    try {
+      const tenant = getTenant(req);
+      const rows = await db.select().from(whatsappSessions)
+        .where(and(eq(whatsappSessions.userId, tenant.userId), eq(whatsappSessions.provider, 'cloud_api')))
+        .limit(1);
+      res.json({ success: true, session: rows.length ? publicSessionRow(rows[0]) : null });
+    } catch (error) {
+      res.status(500).json({ success: false, error: errorMessage(error) });
+    }
+  });
+
+  app.post('/api/cloud/session/disconnect', requireAuth, async (req: Request, res: Response) => {
+    try {
+      const tenant = getTenant(req);
+      const rows = await db.select().from(whatsappSessions)
+        .where(and(eq(whatsappSessions.userId, tenant.userId), eq(whatsappSessions.provider, 'cloud_api')))
+        .limit(1);
+      if (!rows.length) return res.status(404).json({ success: false, error: 'No Cloud API session for this user' });
+      await sessionManager.unloadSession(rows[0].userId, rows[0].sessionName);
+      await db.update(whatsappSessions).set({ status: 'disconnected', updatedAt: new Date() })
+        .where(eq(whatsappSessions.id, rows[0].id));
+      res.json({ success: true });
+    } catch (error) {
       res.status(500).json({ success: false, error: errorMessage(error) });
     }
   });

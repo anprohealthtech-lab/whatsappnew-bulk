@@ -85,3 +85,51 @@ first, so give a cloud-only tenant no connected Baileys session.
   list endpoint only shows its last 6 characters.
 - **Rate/quality.** New numbers start at 250 business-initiated conversations
   per 24 h; the tier rises automatically with volume and quality.
+
+## Letting external clients link their own number (Embedded Signup)
+
+Added 2026-10-13. A tenant that is *not* part of our Meta business can connect
+their own WhatsApp Business number from the dashboard (Sessions section ->
+"WhatsApp Business Platform (official API)" card) instead of a super admin
+creating the row by hand.
+
+Flow:
+
+1. `GET /api/cloud/signup-config` tells the browser the app id and the
+   Embedded Signup configuration id (`enabled` is false until the env is set,
+   and the card then shows a notice instead of the button).
+2. `client/src/components/dashboard/CloudApiConnectPanel.tsx` loads Meta's JS
+   SDK and calls `FB.login()` with `config_id`, `response_type: "code"`,
+   `override_default_response_type: true`, `extras.sessionInfoVersion: "3"`.
+   The popup sends a `WA_EMBEDDED_SIGNUP` `postMessage` (`FINISH` event with
+   `phone_number_id` + `waba_id`); the login callback returns a one-time
+   `code`.
+3. `POST /api/cloud/onboard { code, phoneNumberId, wabaId }` (tenant auth):
+   exchanges the code at `/oauth/access_token` for a permanent business
+   token, verifies the token can read the WABA and number, `POST
+   /{waba}/subscribed_apps` (webhooks), `POST /{phone}/register` with a PIN
+   derived from the app secret (ignored when already registered, e.g.
+   coexistence numbers), then upserts the tenant's `cloud_api` session row
+   and loads it. The response lists each step's outcome.
+4. `GET /api/cloud/session` / `POST /api/cloud/session/disconnect` drive the
+   card's status and the Disconnect button.
+
+Server env (also in `.do/app.yaml`): `META_APP_ID=2160928754484741`,
+`META_ES_CONFIG_ID=<configuration id>`, plus the existing `META_APP_SECRET`.
+
+Meta App Dashboard prerequisites (one-time, app "AnPro Healthtech"):
+
+- Add the product **Facebook Login for Business**; Settings -> "Login with the
+  JavaScript SDK" = Yes, "Allowed Domains for the JavaScript SDK" =
+  `https://whatsapp-automation.limsapp.in`.
+- Facebook Login for Business -> **Configurations -> Create** -> login
+  variation "WhatsApp Embedded Signup", assets WhatsApp accounts + phone
+  numbers, permissions `whatsapp_business_management` +
+  `whatsapp_business_messaging`. Copy the configuration id into
+  `META_ES_CONFIG_ID`.
+- Until **App Review** grants Advanced Access on those two permissions, only
+  people with a role on the app (admin/developer/tester) can complete the
+  popup. External clients need the review to pass (needs privacy policy URL,
+  app icon, screencast of the signup flow) and Tech Provider status.
+- Each client pays Meta for their own messages (their WABA, their payment
+  method); a Tech-Provider credit line is a separate application.

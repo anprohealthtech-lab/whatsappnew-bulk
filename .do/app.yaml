@@ -52,6 +52,10 @@ services:
   - key: META_WA_ACCESS_TOKEN
     scope: RUN_TIME
     type: SECRET
+  - key: META_APP_ID
+    scope: RUN_TIME
+  - key: META_ES_CONFIG_ID
+    scope: RUN_TIME
 
   - key: SUPABASE_SERVICE_ROLE_KEY
     scope: RUN_TIME

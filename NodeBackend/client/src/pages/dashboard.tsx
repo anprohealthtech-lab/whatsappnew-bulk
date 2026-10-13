@@ -26,6 +26,7 @@ import { MessageHistory } from "@/components/dashboard/MessageHistory";
 import { AutoResponsePanel } from "@/components/dashboard/AutoResponsePanel";
 import { LeadsPanel } from "@/components/dashboard/LeadsPanel";
 import { WhatsAppSessionPanel } from "@/components/dashboard/WhatsAppSessionPanel";
+import { CloudApiConnectPanel } from "@/components/dashboard/CloudApiConnectPanel";
 import { CampaignTemplatesPanel } from "@/components/dashboard/CampaignTemplatesPanel";
 import { ScheduleCampaignPanel } from "@/components/dashboard/ScheduleCampaignPanel";
 import { GroupScraperPanel } from "@/components/dashboard/GroupScraperPanel";
@@ -491,7 +492,12 @@ export default function Dashboard() {
           {activeSection === "leads" && <LeadsPanel />}
 
           {/* WhatsApp Sessions Section */}
-          {activeSection === "sessions" && <WhatsAppSessionPanel />}
+          {activeSection === "sessions" && (
+            <div className="space-y-6">
+              <WhatsAppSessionPanel />
+              <CloudApiConnectPanel />
+            </div>
+          )}
 
           {/* Session Connection History */}
           {activeSection === "session-history" && <SessionHistoryPanel />}
