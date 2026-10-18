@@ -175,6 +175,36 @@ export const leadFollowups = pgTable("lead_followups", {
   updatedAt: timestamp("updated_at").defaultNow(),
 });
 
+// Queue of Facebook/Instagram posts the server publishes at their due time, so a
+// post no longer depends on anyone's PC being awake. Instagram has no scheduling
+// API, so publishing there is a two-step dance (create a container, wait for Meta
+// to transcode it, then publish) and the row carries the container id between ticks.
+export const socialPosts = pgTable("social_posts", {
+  id: varchar("id").primaryKey().default(sql`gen_random_uuid()`),
+  organizationId: text("organization_id").default("default_org").notNull(),
+  userId: text("user_id").default("default_user").notNull(),
+  name: text("name").notNull(), // human label, e.g. the reel name "G5_perimenopause-signs"
+  mediaType: text("media_type").default("reel").notNull(), // reel | video | photo
+  // Publicly fetchable URLs — Meta downloads the asset itself, so the bytes never
+  // pass through this server. Put there by the enqueue route via ImageKit.
+  mediaUrl: text("media_url").notNull(),
+  coverUrl: text("cover_url"),
+  caption: text("caption").notNull(),
+  platforms: text("platforms").default("both").notNull(), // fb | ig | both
+  publishAt: timestamp("publish_at").notNull(),
+  status: text("status").default("pending").notNull(), // pending | claimed | processing | posted | partial | failed | cancelled
+  attempts: integer("attempts").default(0).notNull(),
+  igContainerId: text("ig_container_id"), // container awaiting transcode, carried between ticks
+  fbVideoId: text("fb_video_id"),
+  fbPostedAt: timestamp("fb_posted_at"),
+  igMediaId: text("ig_media_id"),
+  igPermalink: text("ig_permalink"),
+  igPostedAt: timestamp("ig_posted_at"),
+  errorReason: text("error_reason"),
+  createdAt: timestamp("created_at").defaultNow(),
+  updatedAt: timestamp("updated_at").defaultNow(),
+});
+
 export const userNotificationRecipients = pgTable("user_notification_recipients", {
   id: varchar("id").primaryKey().default(sql`gen_random_uuid()`),
   organizationId: text("organization_id").notNull(),
@@ -671,6 +701,7 @@ export type DemoSchedule = typeof demoSchedules.$inferSelect;
 export type UserRagAgent = typeof userRagAgents.$inferSelect;
 export type LeadPipeline = typeof leadPipelines.$inferSelect;
 export type LeadFollowup = typeof leadFollowups.$inferSelect;
+export type SocialPost = typeof socialPosts.$inferSelect;
 export type UserNotificationRecipient = typeof userNotificationRecipients.$inferSelect;
 export type WhatsAppSession = typeof whatsappSessions.$inferSelect;
 export type SessionConnectionHistory = typeof sessionConnectionHistory.$inferSelect;

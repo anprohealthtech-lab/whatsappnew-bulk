@@ -909,6 +909,35 @@ export async function runMigrations(): Promise<void> {
       CREATE INDEX IF NOT EXISTS "idx_lead_followups_tenant"
         ON "lead_followups" ("organization_id", "user_id", "phone_number");
 
+      -- 0016: Scheduled Facebook/Instagram posts, published by SocialPostService
+      CREATE TABLE IF NOT EXISTS "social_posts" (
+        "id" varchar PRIMARY KEY DEFAULT gen_random_uuid() NOT NULL,
+        "organization_id" text DEFAULT 'default_org' NOT NULL,
+        "user_id" text DEFAULT 'default_user' NOT NULL,
+        "name" text NOT NULL,
+        "media_type" text DEFAULT 'reel' NOT NULL,
+        "media_url" text NOT NULL,
+        "cover_url" text,
+        "caption" text NOT NULL,
+        "platforms" text DEFAULT 'both' NOT NULL,
+        "publish_at" timestamp NOT NULL,
+        "status" text DEFAULT 'pending' NOT NULL,
+        "attempts" integer DEFAULT 0 NOT NULL,
+        "ig_container_id" text,
+        "fb_video_id" text,
+        "fb_posted_at" timestamp,
+        "ig_media_id" text,
+        "ig_permalink" text,
+        "ig_posted_at" timestamp,
+        "error_reason" text,
+        "created_at" timestamp DEFAULT now(),
+        "updated_at" timestamp DEFAULT now()
+      );
+      CREATE INDEX IF NOT EXISTS "idx_social_posts_due"
+        ON "social_posts" ("status", "publish_at");
+      CREATE INDEX IF NOT EXISTS "idx_social_posts_ig_pacing"
+        ON "social_posts" ("ig_posted_at");
+
       -- 0015: Named lead pipelines (Google Sheet -> Apps Script webhook ingest)
       CREATE TABLE IF NOT EXISTS "lead_pipelines" (
         "id" varchar PRIMARY KEY DEFAULT gen_random_uuid() NOT NULL,

@@ -7,6 +7,7 @@ import { serveStatic, log } from "./utils";
 import { runMigrations } from "./migrate";
 import { campaignService } from "./services/CampaignService";
 import { leadFollowupService } from "./services/LeadFollowupService";
+import { socialPostService } from "./services/SocialPostService";
 import { sessionManager } from "./services/WhatsAppSessionManager";
 import { seedSuperAdmin } from "./seedSuperAdmin";
 import { persistentFileService } from "./services/PersistentFileService";
@@ -64,6 +65,7 @@ app.use((req, res, next) => {
 
     campaignService.startScheduler();
     leadFollowupService.startScheduler();
+    socialPostService.startScheduler();
 
     // Restore any previously connected WhatsApp sessions
     await sessionManager.restoreConnectedSessions();

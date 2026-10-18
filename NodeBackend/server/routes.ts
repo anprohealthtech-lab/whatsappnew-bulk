@@ -34,6 +34,7 @@ import { users, messages as messagesTable, chatbotConfigs, contacts as contactsT
 import { sendNotificationForEvent } from "./services/UserNotificationService";
 import { registerExternalApiRoutes } from "./externalApiRoutes";
 import { registerCloudApiRoutes } from "./cloudApiRoutes";
+import { registerSocialPostRoutes } from "./socialPostRoutes";
 
 // Configure CORS
 // Browsers send Origin as `scheme://host[:port]` with no trailing slash, and the cors
@@ -698,6 +699,9 @@ export async function registerRoutes(app: Express): Promise<Server> {
 
   // Meta WhatsApp Cloud API channel (webhook + template/admin routes)
   registerCloudApiRoutes(app);
+
+  // Scheduled Facebook/Instagram posting queue
+  registerSocialPostRoutes(app);
 
   // ============================================================
   // AUTH ROUTES (public — no middleware)
