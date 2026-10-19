@@ -140,7 +140,15 @@ export class SocialPostService {
         try {
           await this.resumeInstagram(row);
         } catch (error) {
-          await this.fail(row, `instagram publish: ${errorMessage(error)}`);
+          // Keep the row in `processing` with its container: a transient Graph
+          // error must not throw away a container that is still perfectly good.
+          // Only a genuinely stuck row (staleness) is given up on.
+          const age = Date.now() - new Date(row.updatedAt || row.createdAt || Date.now()).getTime();
+          if (age > CONTAINER_STALE_MS) {
+            await this.fail(row, `instagram publish: ${errorMessage(error)}`);
+          } else {
+            log(`[Social] ${row.name}: container check failed, retrying next tick — ${errorMessage(error)}`);
+          }
         }
       }
 
@@ -207,6 +215,17 @@ export class SocialPostService {
         })
         .where(eq(socialPosts.id, row.id));
       log(`[Social] ${row.name}: holding Instagram — ${hold}`);
+      return;
+    }
+
+    // Belt and braces: never build a second container for a row that still has
+    // one. Two containers for one row means one of them is published and the
+    // other silently expires — or, worse, both are.
+    if (row.igContainerId) {
+      await db.update(socialPosts)
+        .set({ status: 'processing', errorReason: null, updatedAt: new Date() })
+        .where(eq(socialPosts.id, row.id));
+      log(`[Social] ${row.name}: container ${row.igContainerId} already exists, waiting on it`);
       return;
     }
 
@@ -373,15 +392,18 @@ export class SocialPostService {
     });
     const code = String(status.status_code || '');
 
-    if (code === 'IN_PROGRESS') {
-      const age = Date.now() - new Date(row.updatedAt || row.createdAt || Date.now()).getTime();
-      if (age > CONTAINER_STALE_MS) {
-        await this.fail(row, `Instagram container stuck in IN_PROGRESS for ${Math.round(age / 60000)} min`);
-      }
-      return;
-    }
+    // Only an outright rejection is fatal. Anything else means "keep waiting":
+    // a container seconds old can report no status_code at all, and treating
+    // that as a failure sent the row back to `pending`, which then built a
+    // SECOND container and orphaned the first (seen 2026-10-19).
     if (code !== 'FINISHED') {
-      await this.fail(row, `Instagram container ${code || 'unknown'}: ${status.status || ''}`.trim());
+      const fatal = code === 'ERROR' || code === 'EXPIRED';
+      const age = Date.now() - new Date(row.updatedAt || row.createdAt || Date.now()).getTime();
+      if (fatal) {
+        await this.fail(row, `Instagram container ${code}: ${status.status || ''}`.trim());
+      } else if (age > CONTAINER_STALE_MS) {
+        await this.fail(row, `Instagram container stuck in ${code || 'unknown'} for ${Math.round(age / 60000)} min`);
+      }
       return;
     }
 

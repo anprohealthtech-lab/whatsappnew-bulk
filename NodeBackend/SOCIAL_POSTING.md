@@ -100,6 +100,39 @@ Four things worth knowing before changing this:
   the row parks as `processing` and the next tick checks it, so one slow video
   cannot block the queue.
 
+## What the first live run broke (2026-10-19)
+
+First real post: P2_cradle-cap to Instagram, media `18054181304589570`. Two
+defects showed up, both fixed, both worth understanding before touching this.
+
+1. **A bare `Date` in a `sql`` ` fragment killed every Instagram publish.** The
+   pacing query compared `ig_posted_at` against `sql`…>= ${since}``. An untyped
+   parameter carries no column type, so postgres-js throws
+   `ERR_INVALID_ARG_TYPE: Received an instance of Date`. Because the pacing check
+   runs *before* every IG publish, it failed 100% of them, not some. Use the
+   typed helpers (`gte`, `lte`, `eq`) for values; keep `sql`` ` for column
+   references and SQL expressions only.
+
+2. **A soft error threw away a good container.** `resumeInstagram` treated any
+   `status_code` other than `IN_PROGRESS`/`FINISHED` as fatal, and the loop's
+   `catch` called `fail()`. `fail()` sends a not-yet-exhausted row to `pending`
+   and nulls `ig_container_id`; the due loop then claimed it and built a *second*
+   container, leaving the first orphaned at `FINISHED`. Two containers for one
+   row is one unpublished leak at best and a duplicate post at worst. Now only
+   `ERROR`/`EXPIRED` are fatal, a transient check failure leaves the row in
+   `processing` with its container, and `publish()` refuses to build a container
+   for a row that already has one.
+
+Also worth knowing: **`POST /api/social/run` is a no-op while a tick is already
+running** (`if (this.running) return`) and still answers `{"ok":true}`. If a
+forced tick appears to do nothing, a scheduled tick probably holds the lock —
+re-read the row before concluding anything is wrong.
+
+And the **pacing guard only sees posts this queue made**. It reads `ig_posted_at`
+from `social_posts`, so a reel posted from `fb_post.py` or the phone is invisible
+to it. Reading the account's latest media timestamp from the Graph API instead
+would make the ban protection cover every route. Not done yet.
+
 ## Known gaps
 
 - Instagram rejects *Facebook CDN* video URLs (error 2207076), which is why the
