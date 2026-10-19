@@ -22,7 +22,7 @@
  *      IG_MAX_POSTS_PER_DAY (default 3), IG_MIN_GAP_MINUTES (default 180).
  */
 
-import { and, desc, eq, isNotNull, lte, sql } from 'drizzle-orm';
+import { and, desc, eq, gte, isNotNull, lte, sql } from 'drizzle-orm';
 import { db } from '../db';
 import { socialPosts } from '@shared/schema';
 import type { SocialPost } from '@shared/schema';
@@ -317,7 +317,10 @@ export class SocialPostService {
     const [{ count } = { count: 0 }] = await db
       .select({ count: sql<number>`count(*)::int` })
       .from(socialPosts)
-      .where(and(isNotNull(socialPosts.igPostedAt), sql`${socialPosts.igPostedAt} >= ${since}`));
+      // gte(), not a sql`` fragment: a bare Date interpolated into sql`` carries no
+      // column type, and postgres-js then refuses to serialise it ("Received an
+      // instance of Date"). That failed every Instagram publish on 2026-10-19.
+      .where(and(isNotNull(socialPosts.igPostedAt), gte(socialPosts.igPostedAt, since)));
     if (count >= maxPerDay) {
       return `Instagram daily cap reached (${count}/${maxPerDay} in the last 24 h)`;
     }
