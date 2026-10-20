@@ -1,3 +1,4 @@
+import { registerSuiteConnector } from './suiteConnector';
 import 'dotenv/config';
 import express, { type Request, Response, NextFunction } from "express";
 import fs from "fs";
@@ -18,6 +19,7 @@ app.use(express.json({
   verify: (req, _res, buf) => { (req as any).rawBody = buf; },
 }));
 app.use(express.urlencoded({ extended: false }));
+registerSuiteConnector(app);
 
 const uploadsDir = persistentFileService.getUploadDirectory();
 if (fs.existsSync(uploadsDir)) {

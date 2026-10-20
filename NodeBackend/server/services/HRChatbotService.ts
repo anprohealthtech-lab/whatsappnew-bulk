@@ -1,3 +1,4 @@
+import { AccessError } from '../suiteAccessCore';
 /**
  * HRChatbotService - Personal WhatsApp Assistant with Anthropic Claude
  * 
@@ -21,6 +22,7 @@
  * Personality: Warm, helpful, brief—like a smart friend who never forgets
  */
 
+import { requireWorkforceAccess, workforceToolScope } from '../suiteRuntimeAccess';
 import Anthropic from "@anthropic-ai/sdk";
 import type { IStorage } from "../storage";
 import type { HRAdmin, HRChatbotConfig, Message } from "@shared/schema";
@@ -544,10 +546,11 @@ export class HRChatbotService {
     log(`   Input: ${JSON.stringify(toolInput)}`);
 
     // Merge toolInput with defaults from hrAdmin
-    const userId = toolInput.userId || hrAdmin.userId;
-    const organizationId = toolInput.organizationId || hrAdmin.organizationId;
+    const { userId, organizationId } = workforceToolScope(toolInput, hrAdmin);
+
 
     try {
+      await requireWorkforceAccess(hrAdmin.organizationId);
       switch (toolName) {
         case "create_task": {
           const result = await this.callDOFunction("create-task", {
@@ -948,6 +951,8 @@ IMPORTANT: Always use userId="${hrAdmin.userId}" and organizationId="${hrAdmin.o
         return;
       }
 
+      await requireWorkforceAccess(hrAdmin.organizationId);
+
       // Check if chatbot is active for this admin
       if (hrAdmin.chatbotActive !== "true") {
         log(`⏸️ HR Chatbot paused for ${phoneNumber}`);
@@ -980,6 +985,7 @@ IMPORTANT: Always use userId="${hrAdmin.userId}" and organizationId="${hrAdmin.o
       log(`📤 Sending response to ${sendTo}`);
 
       // Send reply via WhatsApp
+      await requireWorkforceAccess(hrAdmin.organizationId);
       await this.whatsappService.sendTextMessage(sendTo, botResponse);
 
       // Store outgoing message
@@ -1015,8 +1021,13 @@ IMPORTANT: Always use userId="${hrAdmin.userId}" and organizationId="${hrAdmin.o
         },
       });
 
+      if (error instanceof AccessError) return;
+
       // Send fallback message
       try {
+        const registered = await this.storage.getHRAdmin(phoneNumber);
+        if (!registered) return;
+        await requireWorkforceAccess(registered.organizationId);
         await this.whatsappService.sendTextMessage(
           phoneNumber,
           "Oops, something went wrong on my end 😅\n\nMind trying that again?"
@@ -1061,6 +1072,7 @@ Just talk to me naturally—I'll handle the rest! 🚀
 
 What can I help you with?`;
 
+      await requireWorkforceAccess(hrAdmin.organizationId);
       await this.whatsappService.sendTextMessage(hrAdmin.phoneNumber, welcomeMessage);
 
       // Store welcome message

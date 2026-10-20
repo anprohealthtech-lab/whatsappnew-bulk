@@ -1,3 +1,4 @@
+import { registerWorkforceBridge } from './workforceBridge';
 import type { Express, Request, Response, NextFunction } from "express";
 import { createServer, type Server } from "http";
 import { WebSocketServer } from "ws";
@@ -695,6 +696,7 @@ export async function registerRoutes(app: Express): Promise<Server> {
   app.use(cors(corsOptions));
 
   // External machine-to-machine API (x-api-key, acts on behalf of registered users)
+  registerWorkforceBridge(app);
   registerExternalApiRoutes(app);
 
   // Meta WhatsApp Cloud API channel (webhook + template/admin routes)

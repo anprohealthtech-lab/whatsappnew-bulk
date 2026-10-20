@@ -1,3 +1,4 @@
+import { getWorkforceScope } from './workforceBridge';
 /**
  * External machine-to-machine WhatsApp API (x-api-key).
  *
@@ -53,6 +54,7 @@ function sendError(res: Response, error: unknown): void {
 }
 
 function verifyExternalApiKey(req: Request, res: Response, next: NextFunction): void {
+  if (getWorkforceScope(req)) { next(); return; }
   const apiKey = req.headers['x-api-key'] || req.headers['authorization']?.replace('Bearer ', '');
   if (apiKey !== EXTERNAL_API_KEY) {
     res.status(401).json({ success: false, error: 'Invalid API key' });
@@ -167,6 +169,11 @@ async function resolveExternalUser(req: Request, res: Response, next: NextFuncti
     const user = rows[0];
     if (!user) {
       res.status(404).json({ success: false, error: `User ${userId} not registered` });
+      return;
+    }
+    const workforce = getWorkforceScope(req);
+    if (workforce && (user.organization_id !== workforce.organizationId || !workforce.admins.some(admin => admin.id === String(user.id)))) {
+      res.status(403).json({ success: false, error: 'Sender is outside the Workforce organisation scope.' });
       return;
     }
     req.auth = {
