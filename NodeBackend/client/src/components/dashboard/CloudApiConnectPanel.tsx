@@ -7,6 +7,7 @@ import { Badge } from "@/components/ui/badge";
 import { Alert, AlertDescription } from "@/components/ui/alert";
 import { useToast } from "@/hooks/use-toast";
 import { Cloud, Loader2, CheckCircle2, Unplug, ShieldCheck } from "lucide-react";
+import { parseMetaSignupMessage } from "@shared/metaSignup";
 
 /**
  * "Connect WhatsApp Business (official API)" card.
@@ -90,19 +91,13 @@ export function CloudApiConnectPanel() {
   // Meta's popup reports the created assets through window.postMessage.
   useEffect(() => {
     const onMessage = (event: MessageEvent) => {
-      if (!/facebook\.com$/.test(new URL(event.origin).hostname)) return;
-      let payload: any;
-      try {
-        payload = typeof event.data === "string" ? JSON.parse(event.data) : event.data;
-      } catch {
-        return;
-      }
-      if (payload?.type !== "WA_EMBEDDED_SIGNUP") return;
+      const payload = parseMetaSignupMessage(event.origin, event.data);
+      if (!payload) return;
       if (payload.event === "FINISH" || payload.event === "FINISH_ONLY_WABA" || payload.event === "FINISH_WHATSAPP_BUSINESS_APP_ONBOARDING") {
         signupResult.current = {
           event: payload.event,
-          phoneNumberId: payload.data?.phone_number_id,
-          wabaId: payload.data?.waba_id,
+          phoneNumberId: payload.data?.phone_number_id || signupResult.current.phoneNumberId,
+          wabaId: payload.data?.waba_id || signupResult.current.wabaId,
         };
         setProgress("Signup finished, linking the number...");
       } else if (payload.event === "CANCEL") {
@@ -117,7 +112,7 @@ export function CloudApiConnectPanel() {
   }, []);
 
   const onboard = useMutation({
-    mutationFn: async (body: { code: string; phoneNumberId: string; wabaId: string }) => {
+    mutationFn: async (body: { code: string; phoneNumberId?: string; wabaId: string }) => {
       const res = await apiRequest("POST", "/api/cloud/onboard", body);
       return res.json();
     },
@@ -171,17 +166,29 @@ export function CloudApiConnectPanel() {
         }
         // The FINISH message usually lands before this callback; give it a moment if not.
         const finish = (attempt: number) => {
+          if (signupResult.current.event === "CANCEL" || signupResult.current.event === "ERROR") {
+            setBusy(false);
+            setProgress(null);
+            if (signupResult.current.event === "ERROR") {
+              toast({ title: "Meta signup failed", description: signupResult.current.errorMessage || "Meta reported an error completing signup.", variant: "destructive" });
+            }
+            return;
+          }
           const { phoneNumberId, wabaId } = signupResult.current;
           if (phoneNumberId && wabaId) {
             onboard.mutate({ code, phoneNumberId, wabaId });
-          } else if (attempt < 20) {
+          } else if (attempt < 60) {
             setTimeout(() => finish(attempt + 1), 250);
+          } else if (wabaId) {
+            // Some completed flows return the account without a phone ID.
+            // The server may resolve it only when that account has one phone.
+            onboard.mutate({ code, wabaId });
           } else {
             setBusy(false);
             setProgress(null);
             toast({
-              title: "No phone number was added",
-              description: "The signup finished without a WhatsApp number. Run it again and complete the phone number step.",
+              title: "Meta signup details were not received",
+              description: `Facebook authorized the login, but the WhatsApp account details did not reach this page (event: ${signupResult.current.event || "none"}). Your phone verification may have succeeded. Check the Embedded Signup configuration and popup completion before retrying.`,
               variant: "destructive",
             });
           }

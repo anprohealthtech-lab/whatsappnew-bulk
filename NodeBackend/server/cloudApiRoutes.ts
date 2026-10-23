@@ -26,6 +26,7 @@ import { log } from './utils';
 import { sessionManager } from './services/WhatsAppSessionManager';
 import { CloudApiSession, GraphApiError } from './services/CloudApiSession';
 import { requireAuth, requireSuperAdmin, getTenant } from './authMiddleware';
+import { selectSignupPhone } from '@shared/metaSignup';
 
 const GRAPH_VERSION = process.env.META_GRAPH_VERSION || 'v25.0';
 const GRAPH_BASE = `https://graph.facebook.com/${GRAPH_VERSION}`;
@@ -292,17 +293,18 @@ export function registerCloudApiRoutes(app: Express) {
    */
   app.post('/api/cloud/onboard', requireAuth, async (req: Request, res: Response) => {
     const tenant = getTenant(req);
-    const { code, phoneNumberId, wabaId, sessionName = DEFAULT_CLOUD_SESSION_NAME } = req.body || {};
+    const { code, wabaId, sessionName = DEFAULT_CLOUD_SESSION_NAME } = req.body || {};
+    let phoneNumberId = req.body?.phoneNumberId ? String(req.body.phoneNumberId) : undefined;
     const appId = process.env.META_APP_ID;
     const appSecret = process.env.META_APP_SECRET;
 
     if (!appId || !appSecret) {
       return res.status(503).json({ success: false, error: 'META_APP_ID / META_APP_SECRET not configured on the server' });
     }
-    if (!code || !phoneNumberId || !wabaId) {
+    if (!code || !wabaId) {
       return res.status(400).json({
         success: false,
-        error: 'code, phoneNumberId and wabaId are required. Finish the WhatsApp signup popup including adding a phone number.',
+        error: 'code and wabaId are required. Meta must return the selected WhatsApp account from Embedded Signup.',
       });
     }
 
@@ -324,6 +326,8 @@ export function registerCloudApiRoutes(app: Express) {
 
       // 2. Confirm the token actually covers the account and number the popup reported.
       const waba = await graph('GET', `/${wabaId}`, accessToken, { fields: 'id,name,account_review_status,business_verification_status' });
+      const phones = await graph('GET', `/${wabaId}/phone_numbers`, accessToken, { fields: 'id', limit: '100' });
+      phoneNumberId = selectSignupPhone(phones, phoneNumberId);
       const phone = await graph('GET', `/${phoneNumberId}`, accessToken, { fields: 'display_phone_number,verified_name,platform_type,status,code_verification_status' });
       steps.verify = `ok (${waba.name}, +${CloudApiSession.digits(phone.display_phone_number)})`;
 
@@ -334,6 +338,7 @@ export function registerCloudApiRoutes(app: Express) {
       } catch (error) {
         steps.subscribe = `failed: ${errorMessage(error)}`;
         log(`[CloudAPI] subscribed_apps failed for WABA ${wabaId}: ${errorMessage(error)}`);
+        throw error;
       }
 
       // 4. Register the number for Cloud API messaging (no-op if already registered).
@@ -351,7 +356,13 @@ export function registerCloudApiRoutes(app: Express) {
         } else {
           steps.register = `failed: ${msg}`;
           log(`[CloudAPI] register failed for ${phoneNumberId}: ${msg}`);
+          throw error;
         }
+      }
+
+      const registeredPhone = await graph('GET', `/${phoneNumberId}`, accessToken, { fields: 'platform_type,status' });
+      if (registeredPhone.platform_type !== 'CLOUD_API' || registeredPhone.status !== 'CONNECTED') {
+        throw new Error(`Meta has not completed Cloud API registration (platform ${registeredPhone.platform_type || 'unknown'}, status ${registeredPhone.status || 'unknown'}). The app session was not linked. Complete the appropriate onboarding/migration flow and retry.`);
       }
 
       // 5. Store + load the session for this tenant.
@@ -370,7 +381,7 @@ export function registerCloudApiRoutes(app: Express) {
         success: true,
         steps,
         account: { id: waba.id, name: waba.name, reviewStatus: waba.account_review_status, businessVerification: waba.business_verification_status },
-        phone: { id: phoneNumberId, number: phone.display_phone_number, verifiedName: phone.verified_name, platform: phone.platform_type },
+        phone: { id: phoneNumberId, number: phone.display_phone_number, verifiedName: phone.verified_name, platform: registeredPhone.platform_type },
         status: service.getStatus(),
       });
     } catch (error) {
