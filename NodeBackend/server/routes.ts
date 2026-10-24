@@ -16,6 +16,7 @@ import { AutoResponseService } from "./services/AutoResponseService";
 import { ChatbotService } from "./services/ChatbotService";
 import { HRChatbotService } from "./services/HRChatbotService";
 import { HIMSChatbotService } from "./services/HIMSChatbotService";
+import { requestHIMSBotConfiguration, resolveHIMSBotSettings } from "./services/HIMSOpdSettingsService";
 import { DataManagementAgentService } from "./services/DataManagementAgentService";
 import { voiceTenantService } from "./services/VoiceTenantService";
 import { sendMessageSchema, sendReportSchema, createCampaignSchema, bulkSendSchema, chatbotConfigSchema, flagLeadSchema, registerHRAdminSchema, hrChatbotConfigSchema, demoSchedules, scheduleCampaignSchema, userRagAgentSchema, userRagAgents, userNotificationRecipientSchema, userNotificationRecipients, registerSchema, loginSchema, registerHIMSPatientSchema, leadPipelineSchema, leadPipelines } from "@shared/schema";
@@ -2328,14 +2329,11 @@ export async function registerRoutes(app: Express): Promise<Server> {
                 broadcast('incoming-message', data);
                 return;
               }
-              const greetingMsg = ownerFeatures.himsGreetingMessage || undefined;
-
               // Auto-register as HIMS patient
               await withRetry(() => storage.createHIMSPatient({
                 phoneNumber: data.phoneNumber,
                 name: undefined,
                 organizationId: clinicId,
-                greetingMessage: greetingMsg,
               }));
 
               console.log(`✅ HIMS patient auto-registered: ${data.phoneNumber} → clinic ${clinicId}`);
@@ -2343,7 +2341,7 @@ export async function registerRoutes(app: Express): Promise<Server> {
               // Send greeting
               const newPatient = await withRetry(() => storage.getHIMSPatient(data.phoneNumber));
               if (newPatient) {
-                await himsChatbotService.sendWelcomeMessage(newPatient);
+                await himsChatbotService.sendWelcomeMessage(newPatient, ownerUserId, data.replyTo || data.from || data.phoneNumber);
               }
 
               // Process the original message through HIMS bot
@@ -5487,15 +5485,37 @@ export async function registerRoutes(app: Express): Promise<Server> {
       const user = await authService.getUser(req.auth!.userId);
       if (!user) return res.status(404).json({ message: 'User not found' });
       const features = (user.enabledFeatures as any) || {};
+      let shared;
+      let syncError: string | undefined;
+      if (features.himsChatbot === true && isUuid(features.himsClinicId)) {
+        try { shared = await requestHIMSBotConfiguration(features.himsClinicId, 'get', undefined, true); }
+        catch { syncError = 'Could not load shared HIMS settings. Retry before editing.'; }
+      }
+      const effective = shared ? resolveHIMSBotSettings(features, shared) : null;
       res.json({
         himsTriggerKeywords: features.himsTriggerKeywords || ['appointment', 'book', 'doctor', 'slot', 'opd'],
-        himsGreetingMessage: features.himsGreetingMessage || '',
-        himsSystemPrompt: features.himsSystemPrompt || '',
-        himsContactNumber: features.himsContactNumber || '',
-        himsAllowedLanguages: normalizeHimsAllowedLanguages(features.himsAllowedLanguages),
+        himsGreetingMessage: effective?.greetingMessage ?? features.himsGreetingMessage ?? '',
+        himsSystemPrompt: effective?.systemPrompt ?? features.himsSystemPrompt ?? '',
+        himsContactNumber: effective?.contactNumber ?? features.himsContactNumber ?? '',
+        himsAllowedLanguages: normalizeHimsAllowedLanguages(effective?.allowedLanguages ?? features.himsAllowedLanguages),
+        clinicContext: shared?.context,
+        syncError,
       });
     } catch (error: any) {
       res.status(500).json({ message: error.message });
+    }
+  });
+
+  app.post('/api/opd-settings/tune', requireAuth, async (req, res) => {
+    try {
+      const user = await authService.getUser(req.auth!.userId);
+      const features = (user?.enabledFeatures as any) || {};
+      if (!user || features.himsChatbot !== true || !isUuid(features.himsClinicId)) return res.status(403).json({ message: 'Enable OPD Bot and configure its HIMS Clinic UUID first' });
+      // Never accept a clinic ID from the browser: use the account's saved mapping.
+      const config = await requestHIMSBotConfiguration(features.himsClinicId, 'tune');
+      res.json({ ...config.draft, clinicContext: config.context, fetchedAt: config.fetchedAt });
+    } catch {
+      res.status(502).json({ message: 'Could not fetch clinic details from HIMS. Check the HIMS connection and retry.' });
     }
   });
 
@@ -5507,6 +5527,7 @@ export async function registerRoutes(app: Express): Promise<Server> {
 
       const { himsTriggerKeywords, himsGreetingMessage, himsSystemPrompt, himsContactNumber, himsAllowedLanguages } = req.body;
       const current = (user.enabledFeatures as any) || {};
+      if (current.himsChatbot !== true || !isUuid(current.himsClinicId)) return res.status(403).json({ message: 'Enable OPD Bot and configure its HIMS Clinic UUID first' });
       const updated = { ...current };
 
       if (himsTriggerKeywords !== undefined) updated.himsTriggerKeywords = himsTriggerKeywords;
@@ -5524,6 +5545,15 @@ export async function registerRoutes(app: Express): Promise<Server> {
         updated.himsAllowedLanguages = normalizedLanguages;
       }
 
+      // Shared settings are the source of truth for both HIMS and WhatsApp.
+      const shared = await requestHIMSBotConfiguration(current.himsClinicId, 'get', undefined, true);
+      const effective = resolveHIMSBotSettings(current, shared);
+      await requestHIMSBotConfiguration(current.himsClinicId, 'save', {
+        greetingMessage: himsGreetingMessage ?? effective.greetingMessage,
+        systemPrompt: himsSystemPrompt ?? effective.systemPrompt,
+        contactNumber: himsContactNumber ?? effective.contactNumber,
+        allowedLanguages: himsAllowedLanguages ?? effective.allowedLanguages,
+      });
       await db.update(users).set({ enabledFeatures: updated }).where(eq(users.id, req.auth!.userId));
 
       res.json({ success: true, message: 'OPD settings updated' });
@@ -5573,7 +5603,7 @@ export async function registerRoutes(app: Express): Promise<Server> {
       try {
         const waSession = await getUserWASession(req);
         const himsChatbotService = new HIMSChatbotService(storage, waSession);
-        await himsChatbotService.sendWelcomeMessage(patient);
+        await himsChatbotService.sendWelcomeMessage(patient, req.auth!.userId);
       } catch (welcomeError) {
         console.log(`⚠️ Failed to send HIMS welcome message: ${welcomeError}`);
       }

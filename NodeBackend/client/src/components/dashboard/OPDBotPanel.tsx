@@ -21,7 +21,7 @@ import {
   AlertDialogTitle,
 } from "@/components/ui/alert-dialog";
 import { Skeleton } from "@/components/ui/skeleton";
-import { UserPlus, Pause, Play, Trash2, Stethoscope, MessageSquare, Settings, Save } from "lucide-react";
+import { UserPlus, Pause, Play, Trash2, Stethoscope, MessageSquare, Settings, Save, RefreshCw } from "lucide-react";
 import { useToast } from "@/hooks/use-toast";
 import { useAuth } from "@/lib/AuthContext";
 import { Textarea } from "@/components/ui/textarea";
@@ -54,6 +54,7 @@ export function OPDBotPanel() {
   const [deleteTarget, setDeleteTarget] = useState<string | null>(null);
   const [conversationPhone, setConversationPhone] = useState<string | null>(null);
   const [showSettings, setShowSettings] = useState(false);
+  const [clinicSummary, setClinicSummary] = useState<{ name: string; doctors: number; specialties: string[] } | null>(null);
   const [settingsForm, setSettingsForm] = useState({
     himsTriggerKeywords: "",
     himsGreetingMessage: "",
@@ -193,6 +194,8 @@ export function OPDBotPanel() {
     himsSystemPrompt: string;
     himsContactNumber: string;
     himsAllowedLanguages: string[];
+    syncError?: string;
+    clinicContext?: { clinic: { name: string }; doctors: unknown[]; specialties: string[] };
   }>({
     queryKey: ["/api/opd-settings"],
     queryFn: async () => {
@@ -214,7 +217,7 @@ export function OPDBotPanel() {
         },
         body: JSON.stringify(data),
       });
-      if (!res.ok) throw new Error("Failed to save");
+      if (!res.ok) { const error = await res.json(); throw new Error(error.message || "Failed to save"); }
       return res.json();
     },
     onSuccess: () => {
@@ -225,6 +228,21 @@ export function OPDBotPanel() {
     onError: (err: Error) => {
       toast({ title: "Failed to save settings", description: err.message, variant: "destructive" });
     },
+  });
+
+  const tuneMutation = useMutation({
+    mutationFn: async () => {
+      const res = await fetch('/api/opd-settings/tune', { method: 'POST', headers: { Authorization: `Bearer ${localStorage.getItem('wa_auth_token')}` } });
+      const data = await res.json();
+      if (!res.ok) throw new Error(data.message || 'Could not fetch HIMS details');
+      return data;
+    },
+    onSuccess: (data) => {
+      setSettingsForm(current => ({ ...current, himsGreetingMessage: data.greetingMessage, himsSystemPrompt: data.systemPrompt, himsContactNumber: data.contactNumber }));
+      setClinicSummary({ name: data.clinicContext.clinic.name, doctors: data.clinicContext.doctors.length, specialties: data.clinicContext.specialties });
+      toast({ title: 'Clinic details loaded', description: 'Review the greeting and instructions, then save to apply them in both apps.' });
+    },
+    onError: (error: Error) => toast({ title: 'Could not tune OPD Bot', description: error.message, variant: 'destructive' }),
   });
 
   return (
@@ -243,6 +261,9 @@ export function OPDBotPanel() {
           <Button variant="outline" onClick={() => {
             setShowSettings(!showSettings);
             if (!showSettings && opdSettings) {
+              tuneMutation.reset();
+              const context = opdSettings.clinicContext;
+              setClinicSummary(context ? { name: context.clinic.name, doctors: context.doctors.length, specialties: context.specialties } : null);
               setSettingsForm({
                 himsTriggerKeywords: (opdSettings.himsTriggerKeywords || []).join(", "),
                 himsGreetingMessage: opdSettings.himsGreetingMessage || "",
@@ -307,6 +328,22 @@ export function OPDBotPanel() {
             <CardDescription>Configure trigger keywords, greeting message, and optional system prompt</CardDescription>
           </CardHeader>
           <CardContent className="space-y-4">
+            <div className="flex flex-wrap items-center justify-between gap-3 rounded-lg border p-3">
+              <div className="text-sm">
+                <p className="font-medium">Personalize from your HIMS clinic</p>
+                <p className="text-muted-foreground">Fetch clinic details, all consultation doctors and specialties to prepare a greeting and system instructions.</p>
+              </div>
+              <Button variant="outline" onClick={() => tuneMutation.mutate()} disabled={!clinicId || tuneMutation.isPending || saveSettingsMutation.isPending}>
+                <RefreshCw className={`w-4 h-4 mr-2 ${tuneMutation.isPending ? 'animate-spin' : ''}`} />
+                {tuneMutation.isPending ? 'Fetching clinic…' : 'Tune from HIMS'}
+              </Button>
+            </div>
+            {opdSettings?.syncError && !tuneMutation.isSuccess && <p role="alert" className="text-sm text-destructive">{opdSettings.syncError} Use Tune from HIMS to retry.</p>}
+            {clinicSummary && <div className="rounded-lg bg-muted p-3 text-sm">
+              <p className="font-medium">{clinicSummary.name} · {clinicSummary.doctors} doctors open for consultation</p>
+              <p>{clinicSummary.specialties.join(', ') || 'No specialties listed'}</p>
+              <p className="text-muted-foreground">Slots are checked live. Review the draft below and save to apply it in both apps.</p>
+            </div>}
             <div>
               <Label>Supported Languages</Label>
               <div className="grid grid-cols-2 md:grid-cols-5 gap-2 mt-2">
@@ -392,13 +429,13 @@ export function OPDBotPanel() {
                   .filter(Boolean);
                 saveSettingsMutation.mutate({
                   himsTriggerKeywords: keywords.length > 0 ? keywords : undefined,
-                  himsGreetingMessage: settingsForm.himsGreetingMessage || undefined,
-                  himsSystemPrompt: settingsForm.himsSystemPrompt || undefined,
+                  himsGreetingMessage: settingsForm.himsGreetingMessage,
+                  himsSystemPrompt: settingsForm.himsSystemPrompt,
                   himsContactNumber: settingsForm.himsContactNumber,
                   himsAllowedLanguages: settingsForm.himsAllowedLanguages,
                 });
               }}
-              disabled={saveSettingsMutation.isPending}
+              disabled={saveSettingsMutation.isPending || tuneMutation.isPending || (!!opdSettings?.syncError && !tuneMutation.isSuccess)}
             >
               <Save className="w-4 h-4 mr-2" />
               {saveSettingsMutation.isPending ? "Saving..." : "Save Settings"}
