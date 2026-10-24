@@ -12,8 +12,12 @@ import { socialPostService } from "./services/SocialPostService";
 import { sessionManager } from "./services/WhatsAppSessionManager";
 import { seedSuperAdmin } from "./seedSuperAdmin";
 import { persistentFileService } from "./services/PersistentFileService";
+import { registerCloudCampaignRoutes } from './cloud/routes';
+import { startCloudCampaignScheduler, stopCloudCampaignScheduler } from './cloud/runtime';
 
 const app = express();
+// Recipient imports use a bounded larger body only on the new official campaign routes.
+app.use('/api/cloud/campaigns', express.json({ limit: '1mb' }));
 app.use(express.json({
   // Keep the raw bytes so signed webhooks (Meta X-Hub-Signature-256) can be verified.
   verify: (req, _res, buf) => { (req as any).rawBody = buf; },
@@ -73,6 +77,8 @@ app.use((req, res, next) => {
     await sessionManager.restoreConnectedSessions();
 
     const server = await registerRoutes(app);
+    registerCloudCampaignRoutes(app);
+    startCloudCampaignScheduler();
 
     app.use((err: any, _req: Request, res: Response, _next: NextFunction) => {
       const status = err.status || err.statusCode || 500;
@@ -127,6 +133,7 @@ app.use((req, res, next) => {
     const shutdown = async () => {
       log('🛑 Graceful shutdown initiated...');
       campaignService.stopScheduler();
+      stopCloudCampaignScheduler();
       leadFollowupService.stopScheduler();
       await sessionManager.shutdownAll();
       server.close(() => process.exit(0));

@@ -289,6 +289,44 @@ export class CloudApiSession extends EventEmitter implements WAServiceInstance {
     return result?.data || [];
   }
 
+  /** Isolated official campaign methods; existing Baileys and ad-hoc send methods are unchanged. */
+  async listCampaignTemplates(): Promise<any[]> {
+    if (!this.wabaId) throw new Error('Sender has no WABA');
+    const templates: any[] = [];
+    let after: string | undefined;
+    for (let page=0;page<20;page++) {
+      const result=await this.graph('GET',`/${this.wabaId}/message_templates`,{
+        fields:'id,name,status,category,language,components,parameter_format',limit:'100',...(after ? {after} : {}),
+      },undefined,30000);
+      templates.push(...(result.data || []));
+      if (!result.paging?.next) return templates;
+      after=result.paging?.cursors?.after;
+      if (!after) throw new Error('Could not read the complete template list');
+    }
+    throw new Error('Template list is too large; narrow the sender account');
+  }
+
+  async getCampaignTemplate(name: string, language: string): Promise<any> {
+    if (!this.wabaId) throw new Error('Sender has no WABA');
+    const result = await this.graph('GET', `/${this.wabaId}/message_templates`, {
+      name, fields: 'id,name,status,category,language,components,parameter_format', limit: '100',
+    }, undefined, 30000);
+    const template = result?.data?.find((t: any) => t.name === name && t.language === language);
+    if (!template) throw new Error('Template not found for this sender and language');
+    return template;
+  }
+
+  async sendCampaignTemplate(to: string, template: any, attemptId: string): Promise<string> {
+    const result = await this.graph('POST', `/${this.phoneNumberId}/messages`, undefined, {
+      messaging_product: 'whatsapp', recipient_type: 'individual', to, type: 'template', template,
+      biz_opaque_callback_data: attemptId,
+    }, 30000);
+    const id = result?.messages?.[0]?.id;
+    if (typeof id !== 'string' || !id) throw new Error('Meta response had no message id; delivery is uncertain');
+    this.status.lastSeen = new Date();
+    return id;
+  }
+
   /** True when the user has messaged us within the last 24 h (free-form replies allowed). */
   isWithinServiceWindow(phoneNumber: string): boolean {
     const last = this.lastInboundAt.get(this.resolveRecipient(phoneNumber));
@@ -491,11 +529,11 @@ export class CloudApiSession extends EventEmitter implements WAServiceInstance {
 
   // ------------------------------------------------------------ helpers
 
-  private async graph(method: 'GET' | 'POST' | 'DELETE', pathname: string, query?: Record<string, string>, body?: any): Promise<any> {
+  private async graph(method: 'GET' | 'POST' | 'DELETE', pathname: string, query?: Record<string, string>, body?: any, timeoutMs?: number): Promise<any> {
     const url = new URL(`${GRAPH_BASE}${pathname}`);
     for (const [k, v] of Object.entries(query || {})) url.searchParams.set(k, v);
     const headers: Record<string, string> = { Authorization: `Bearer ${this.accessToken}` };
-    const init: RequestInit = { method, headers };
+    const init: RequestInit = { method, headers, ...(timeoutMs ? { signal: AbortSignal.timeout(timeoutMs) } : {}) };
     if (body !== undefined) {
       headers['Content-Type'] = 'application/json';
       init.body = JSON.stringify(body);

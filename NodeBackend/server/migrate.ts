@@ -1,5 +1,6 @@
 import postgres from 'postgres';
 import { log } from './utils';
+import { cloudSchemaSql } from './cloud/schema';
 
 /**
  * Runs full schema migration on startup.
@@ -967,6 +968,8 @@ export async function runMigrations(): Promise<void> {
       ALTER TABLE "user_rag_agents" ADD COLUMN IF NOT EXISTS "sequence_template" jsonb;
     `);
 
+    // Only new cloud_* tables; no changes to the existing Baileys schema.
+    await sql.begin(async tx => { await tx.unsafe(cloudSchemaSql); });
     log('✅ Database migrations completed — all tables ready');
 
     // Seed essential data if tables are empty

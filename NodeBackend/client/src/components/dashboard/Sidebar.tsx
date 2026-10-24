@@ -40,6 +40,7 @@ export function Sidebar({ activeSection, setActiveSection, setLocation }: Sideba
         { id: "sessions", label: "WhatsApp Sessions", icon: Smartphone, action: () => setActiveSection("sessions") },
         { id: "session-history", label: "Session History", icon: Activity, action: () => setActiveSection("session-history") },
         { id: "campaigns", label: "Campaigns", icon: Megaphone, action: () => setLocation("/campaigns") },
+        { id: "cloud-campaigns", label: "Official WhatsApp", icon: ShieldCheck, action: () => setLocation("/cloud-campaigns") },
         { id: "templates", label: "Templates", icon: FileText, action: () => setActiveSection("templates") },
         { id: "schedules", label: "Schedules", icon: Clock, action: () => setActiveSection("schedules") },
         { id: "groups", label: "Group Scraper", icon: Users, action: () => setActiveSection("groups") },

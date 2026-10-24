@@ -18,7 +18,7 @@ try {
 }
 
 // Standard postgres-js driver — works perfectly with DO Managed PostgreSQL (same network)
-const queryClient = postgres(process.env.DATABASE_URL, {
+export const queryClient = postgres(process.env.DATABASE_URL, {
   max: 10,                    // Connection pool size (increased for concurrent key ops)
   idle_timeout: 30,           // Release idle connections after 30s
   connect_timeout: 30,        // 30s connection timeout

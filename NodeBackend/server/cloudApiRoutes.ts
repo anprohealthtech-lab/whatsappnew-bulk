@@ -27,6 +27,7 @@ import { sessionManager } from './services/WhatsAppSessionManager';
 import { CloudApiSession, GraphApiError } from './services/CloudApiSession';
 import { requireAuth, requireSuperAdmin, getTenant } from './authMiddleware';
 import { selectSignupPhone } from '@shared/metaSignup';
+import { cloudStore } from './cloud/runtime';
 
 const GRAPH_VERSION = process.env.META_GRAPH_VERSION || 'v25.0';
 const GRAPH_BASE = `https://graph.facebook.com/${GRAPH_VERSION}`;
@@ -210,7 +211,14 @@ export function registerCloudApiRoutes(app: Express) {
       return res.status(401).json({ error: 'Invalid signature' });
     }
 
-    // Acknowledge first; Meta retries (and eventually disables) slow webhooks.
+    // Durably save receipts and STOP suppression before acknowledging. On DB failure
+    // Meta can retry; the new ledger deduplicates receipts. Existing inbound handling follows.
+    try {
+      await cloudStore.persistWebhook(req.body || {});
+    } catch {
+      log('[CloudAPI] Could not persist webhook receipts; requesting retry');
+      return res.status(503).json({ error: 'Receipt storage unavailable' });
+    }
     res.status(200).json({ received: true });
 
     const body = req.body || {};
