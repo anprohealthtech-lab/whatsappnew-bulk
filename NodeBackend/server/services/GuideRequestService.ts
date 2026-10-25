@@ -230,15 +230,25 @@ export class GuideRequestService {
     const target = replyTo || phoneNumber;
     const sender = this.session as unknown as DocumentSender;
     try {
+      let how = 'link';
       if (sendAsDocument() && typeof sender.sendDocumentByLink === 'function') {
-        // The attachment itself; a link is the fallback, not the first choice.
-        await sender.sendDocumentByLink(target, guideUrl(), documentFileName(), documentCaption());
-        log(`[GuideRequest] Sent ${guide} to ${phoneNumber} as ${documentFileName()}`);
+        // The attachment is the first choice. If Meta will not fetch the URL,
+        // the link still answers the person — silence would be the worst
+        // outcome, because this handler has already taken the message away
+        // from the bot that would otherwise have replied.
+        try {
+          await sender.sendDocumentByLink(target, guideUrl(), documentFileName(), documentCaption());
+          how = `attachment ${documentFileName()}`;
+        } catch (docError) {
+          const why = docError instanceof Error ? docError.message : String(docError);
+          log(`[GuideRequest] Attachment send failed (${why}); falling back to the link`);
+          await this.session.sendTextMessage(target, body);
+        }
       } else {
         await this.session.sendTextMessage(target, body);
-        log(`[GuideRequest] Sent ${guide} to ${phoneNumber} as a link`);
       }
       await db.update(guideRequests).set({ status: 'sent', sentAt: new Date() }).where(eq(guideRequests.id, row.id));
+      log(`[GuideRequest] Sent ${guide} to ${phoneNumber} as ${how}`);
     } catch (error) {
       const reason = error instanceof Error ? error.message : String(error);
       await db.update(guideRequests).set({ status: 'failed', errorReason: reason.slice(0, 500) })
