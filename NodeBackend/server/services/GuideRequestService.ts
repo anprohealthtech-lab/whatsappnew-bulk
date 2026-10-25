@@ -17,7 +17,11 @@
  *                                   request and let the existing bot answer as
  *                                   it does today (manual fulfilment); send =
  *                                   reply with the guide and stop there
- *   GUIDE_REPLY_ORG=<organization_id>   required; the only tenant it acts for
+ *   GUIDE_REPLY_ORG=<organization_id>   the only tenant it acts for
+ *   GUIDE_REPLY_USER=<user_id>          or scope by the session owner instead,
+ *                                       which is the id the runtime logs print
+ *                                       as "Incoming text for <user>/<session>".
+ *                                       At least one of the two is required
  *   GUIDE_REPLY_KEYWORDS=PDF,पीडीएफ     optional, comma separated
  *   GUIDE_REPLY_NAME=bp_home_checklist  optional label stored on the row
  *   GUIDE_REPLY_URL=https://...         the approved, publicly downloadable file
@@ -63,9 +67,17 @@ function cooldownMs(): number {
   return (Number.isFinite(hours) && hours > 0 ? hours : 24) * 60 * 60 * 1000;
 }
 
-/** The whole feature is off unless a mode and a tenant are both configured. */
+function scopeOrg(): string {
+  return (process.env.GUIDE_REPLY_ORG || '').trim();
+}
+
+function scopeUser(): string {
+  return (process.env.GUIDE_REPLY_USER || '').trim();
+}
+
+/** The whole feature is off unless a mode and a scope are both configured. */
 export function guideRepliesConfigured(): boolean {
-  return mode() !== 'off' && !!(process.env.GUIDE_REPLY_ORG || '').trim();
+  return mode() !== 'off' && (!!scopeOrg() || !!scopeUser());
 }
 
 // A patient writing "send my report pdf" wants their own lab report, not a
@@ -161,7 +173,9 @@ export class GuideRequestService {
    */
   async handle(phoneNumber: string, text: string, replyTo?: string): Promise<boolean> {
     if (!guideRepliesConfigured()) return false;
-    if (this.tenant.organizationId !== (process.env.GUIDE_REPLY_ORG || '').trim()) return false;
+    // Whichever scope is configured must match. Both set means both must match.
+    if (scopeOrg() && this.tenant.organizationId !== scopeOrg()) return false;
+    if (scopeUser() && this.tenant.userId !== scopeUser()) return false;
 
     const keyword = matchedKeyword(text);
     if (!keyword) return false;
