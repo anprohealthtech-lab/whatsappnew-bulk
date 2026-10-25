@@ -966,6 +966,25 @@ export async function runMigrations(): Promise<void> {
       -- 0017: Lead bot generates its own sequence from its system prompt
       ALTER TABLE "user_rag_agents" ADD COLUMN IF NOT EXISTS "auto_sequence_enabled" text DEFAULT 'false' NOT NULL;
       ALTER TABLE "user_rag_agents" ADD COLUMN IF NOT EXISTS "sequence_template" jsonb;
+
+      -- 0018: WhatsApp guide requests ("comment PDF" / "WhatsApp PDF" offers)
+      CREATE TABLE IF NOT EXISTS "guide_requests" (
+        "id" varchar PRIMARY KEY DEFAULT gen_random_uuid() NOT NULL,
+        "organization_id" text DEFAULT 'default_org' NOT NULL,
+        "user_id" text DEFAULT 'default_user' NOT NULL,
+        "phone_number" text NOT NULL,
+        "guide" text NOT NULL,
+        "keyword" text NOT NULL,
+        "channel" text DEFAULT 'whatsapp' NOT NULL,
+        "status" text DEFAULT 'received' NOT NULL,
+        "error_reason" text,
+        "requested_at" timestamp DEFAULT now() NOT NULL,
+        "sent_at" timestamp
+      );
+      CREATE INDEX IF NOT EXISTS "idx_guide_requests_recent"
+        ON "guide_requests" ("guide", "phone_number", "requested_at");
+      CREATE INDEX IF NOT EXISTS "idx_guide_requests_tenant"
+        ON "guide_requests" ("organization_id", "user_id", "requested_at");
     `);
 
     // Only new cloud_* tables; no changes to the existing Baileys schema.

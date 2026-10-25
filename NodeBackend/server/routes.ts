@@ -18,6 +18,7 @@ import { HRChatbotService } from "./services/HRChatbotService";
 import { HIMSChatbotService } from "./services/HIMSChatbotService";
 import { requestHIMSBotConfiguration, resolveHIMSBotSettings } from "./services/HIMSOpdSettingsService";
 import { DataManagementAgentService } from "./services/DataManagementAgentService";
+import { GuideRequestService, guideRepliesConfigured } from "./services/GuideRequestService";
 import { voiceTenantService } from "./services/VoiceTenantService";
 import { sendMessageSchema, sendReportSchema, createCampaignSchema, bulkSendSchema, chatbotConfigSchema, flagLeadSchema, registerHRAdminSchema, hrChatbotConfigSchema, demoSchedules, scheduleCampaignSchema, userRagAgentSchema, userRagAgents, userNotificationRecipientSchema, userNotificationRecipients, registerSchema, loginSchema, registerHIMSPatientSchema, leadPipelineSchema, leadPipelines } from "@shared/schema";
 import { log } from "./utils";
@@ -2118,6 +2119,27 @@ export async function registerRoutes(app: Express): Promise<Server> {
         broadcast('data-management-response-sent', { phoneNumber: data.phoneNumber, messageType: data.messageType || 'text' }, ownerUserId);
         broadcast('incoming-message', data);
         return;
+      }
+
+      // ========================================
+      // PRIORITY 0.9: An explicit guide request ("PDF") from a campaign link
+      // Ahead of the HIMS/OPD and lead bots on purpose: someone who asked for
+      // the BP checklist wants the checklist, not an OPD menu. Behind the data
+      // agent above, so a doctor's or admin's own paperwork keeps priority.
+      // Inert unless GUIDE_REPLY_MODE and GUIDE_REPLY_ORG are both set, and in
+      // `log` mode it records the request and still falls through to the bots,
+      // so nobody is left without a reply while fulfilment is manual.
+      // ========================================
+      if (guideRepliesConfigured()) {
+        const guideRequestService = new GuideRequestService(scopedTenant, waSession);
+        if (await withRetry(() => guideRequestService.handle(
+          data.phoneNumber,
+          data.content,
+          data.replyTo || data.from,
+        ))) {
+          broadcast('incoming-message', data);
+          return;
+        }
       }
 
       // Load the session owner's account once. Every service below must be

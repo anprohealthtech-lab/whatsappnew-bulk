@@ -19,7 +19,7 @@ import multer from 'multer';
 import { and, desc, eq, inArray } from 'drizzle-orm';
 import { z } from 'zod';
 import { db } from './db';
-import { socialPosts } from '@shared/schema';
+import { guideRequests, socialPosts } from '@shared/schema';
 import { log } from './utils';
 import { requireSuperAdmin, getTenant } from './authMiddleware';
 import { imageKitConfigured, uploadToImageKit } from './services/ImageKitService';
@@ -155,6 +155,29 @@ export function registerSocialPostRoutes(app: Express) {
       return res.status(409).json({ error: 'Only failed or cancelled posts can be retried' });
     }
     return res.json(row);
+  });
+
+  // How the "comment/WhatsApp PDF" offer is actually performing: one row per
+  // request, written by GuideRequestService. No message text is stored.
+  app.get('/api/social/guide-requests', requireSuperAdmin, async (req: Request, res: Response) => {
+    const limit = Math.min(parseInt(String(req.query.limit || '100')) || 100, 500);
+    const guide = req.query.guide ? String(req.query.guide) : null;
+
+    const rows = await db.select().from(guideRequests)
+      .where(guide ? eq(guideRequests.guide, guide) : undefined)
+      .orderBy(desc(guideRequests.requestedAt))
+      .limit(limit);
+
+    const counts: Record<string, number> = {};
+    for (const row of rows) counts[row.status] = (counts[row.status] || 0) + 1;
+
+    return res.json({
+      mode: process.env.GUIDE_REPLY_MODE || 'off',
+      guide: process.env.GUIDE_REPLY_NAME || 'bp_home_checklist',
+      deliveryUrlConfigured: !!(process.env.GUIDE_REPLY_URL || process.env.GUIDE_REPLY_TEXT),
+      counts,
+      requests: rows,
+    });
   });
 
   app.post('/api/social/run', requireSuperAdmin, async (_req: Request, res: Response) => {

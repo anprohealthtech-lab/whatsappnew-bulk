@@ -206,6 +206,25 @@ export const socialPosts = pgTable("social_posts", {
   updatedAt: timestamp("updated_at").defaultNow(),
 });
 
+// A viewer who asked for a downloadable guide by WhatsApp keyword ("PDF" on the
+// BP awareness reels). One row per request so the counts in the campaign record
+// — requests, fulfilled, response time — come from data and not from guesswork.
+// The commenter's own words are deliberately NOT stored: these are health posts
+// and the matched keyword is all the fulfilment needs.
+export const guideRequests = pgTable("guide_requests", {
+  id: varchar("id").primaryKey().default(sql`gen_random_uuid()`),
+  organizationId: text("organization_id").default("default_org").notNull(),
+  userId: text("user_id").default("default_user").notNull(),
+  phoneNumber: text("phone_number").notNull(),
+  guide: text("guide").notNull(),            // which guide was asked for, e.g. "bp_home_checklist"
+  keyword: text("keyword").notNull(),        // the keyword that matched, e.g. "PDF"
+  channel: text("channel").default("whatsapp").notNull(),
+  status: text("status").default("received").notNull(), // received | sent | logged | failed
+  errorReason: text("error_reason"),
+  requestedAt: timestamp("requested_at").defaultNow().notNull(),
+  sentAt: timestamp("sent_at"),
+});
+
 export const userNotificationRecipients = pgTable("user_notification_recipients", {
   id: varchar("id").primaryKey().default(sql`gen_random_uuid()`),
   organizationId: text("organization_id").notNull(),
@@ -703,6 +722,7 @@ export type UserRagAgent = typeof userRagAgents.$inferSelect;
 export type LeadPipeline = typeof leadPipelines.$inferSelect;
 export type LeadFollowup = typeof leadFollowups.$inferSelect;
 export type SocialPost = typeof socialPosts.$inferSelect;
+export type GuideRequest = typeof guideRequests.$inferSelect;
 export type UserNotificationRecipient = typeof userNotificationRecipients.$inferSelect;
 export type WhatsAppSession = typeof whatsappSessions.$inferSelect;
 export type SessionConnectionHistory = typeof sessionConnectionHistory.$inferSelect;

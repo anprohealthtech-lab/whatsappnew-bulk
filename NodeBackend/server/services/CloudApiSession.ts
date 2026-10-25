@@ -192,6 +192,31 @@ export class CloudApiSession extends EventEmitter implements WAServiceInstance {
     return { id, to, body: message, timestamp: Date.now() };
   }
 
+  /**
+   * Send a document Meta fetches itself, by URL, with no local file involved.
+   *
+   * `sendMediaMessage` uploads bytes from disk, and this server holds none for
+   * assets that live on a CDN (the patient guides on ImageKit, for one).
+   * WhatsApp downloads the link itself, so the recipient gets a real attachment
+   * they can open and keep instead of a link to tap.
+   */
+  async sendDocumentByLink(phoneNumber: string, link: string, fileName: string, caption?: string): Promise<any> {
+    const to = this.resolveRecipient(phoneNumber);
+    this.warnIfOutsideWindow(to);
+    const document: Record<string, any> = { link, filename: fileName };
+    if (caption) document.caption = caption;
+    const result = await this.graph('POST', `/${this.phoneNumberId}/messages`, undefined, {
+      messaging_product: 'whatsapp',
+      recipient_type: 'individual',
+      to,
+      type: 'document',
+      document,
+    });
+    const id = result?.messages?.[0]?.id;
+    this.status.lastSeen = new Date();
+    return { id, to, link, fileName, timestamp: Date.now() };
+  }
+
   async sendMediaMessage(phoneNumber: string, filePath: string, caption?: string, fileName?: string): Promise<any> {
     const to = this.resolveRecipient(phoneNumber);
     this.warnIfOutsideWindow(to);
