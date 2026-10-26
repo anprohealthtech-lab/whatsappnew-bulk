@@ -101,7 +101,10 @@ function matchedKeyword(text: string): string | null {
   // tsconfig targets ES5.
   const edges = /^[^0-9A-Zऀ-ॿ]+|[^0-9A-Zऀ-ॿ]+$/g;
   const tokens = body.toUpperCase().split(/\s+/).map((t) => t.replace(edges, '')).filter(Boolean);
-  if (tokens.length > 4) return null;
+  // Six, not four: the ad's pre-filled text is "Send Blood pressure info PDF"
+  // (five words), because "BP" reads as slang to some people and they would not
+  // press send. Any limit here has to clear the longest pre-fill in use.
+  if (tokens.length > 6) return null;
   if (tokens.some((t) => NOT_A_GUIDE_REQUEST.indexOf(t) !== -1)) return null;
   for (const keyword of keywords()) {
     if (tokens.includes(keyword.toUpperCase())) return keyword.toUpperCase();
