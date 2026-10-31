@@ -48,6 +48,7 @@ export function Sidebar({ activeSection, setActiveSection, setLocation }: Sideba
         { id: "history", label: "Message History", icon: History, action: () => setActiveSection("history") },
         { id: "auto-responses", label: "Auto-Responses", icon: MessageSquare, action: () => setActiveSection("auto-responses") },
         { id: "leads", label: "Leads", icon: Users, action: () => setActiveSection("leads") },
+        { id: "recruitment", label: "Recruitment", icon: ClipboardList, action: () => setLocation("/recruitment") },
         { id: "rag-settings", label: "AI Chatbot", icon: Bot, action: () => setActiveSection("rag-settings") },
         { id: "notifications", label: "Notifications", icon: BellRing, action: () => setActiveSection("notifications") },
         { id: "knowledge-base", label: "Knowledge Base", icon: Database, action: () => setActiveSection("knowledge-base") },
@@ -66,7 +67,7 @@ export function Sidebar({ activeSection, setActiveSection, setLocation }: Sideba
         ...(user?.role === 'super_admin' ? [
             { id: "super-admin", label: "Super Admin", icon: ShieldCheck, action: () => setActiveSection("super-admin") },
         ] : []),
-    ].filter((item) => canSee(item.id));
+    ].filter((item) => canSee(item.id === 'recruitment' ? 'leads' : item.id));
 
     return (
         <div className="w-64 bg-card/50 backdrop-blur-xl border-r border-border flex flex-col h-full transition-all duration-300">

@@ -7,6 +7,7 @@ import { AuthProvider, useAuth } from "@/lib/AuthContext";
 import Dashboard from "@/pages/dashboard";
 import Campaigns from "@/pages/campaigns";
 import CloudCampaigns from '@/pages/cloud-campaigns';
+import Recruitment from '@/pages/recruitment';
 import LoginPage from "@/pages/login";
 import NotFound from "@/pages/not-found";
 
@@ -22,6 +23,7 @@ function ProtectedRouter() {
       <Route path="/" component={Dashboard} />
       <Route path="/campaigns" component={Campaigns} />
       <Route path="/cloud-campaigns" component={CloudCampaigns} />
+      <Route path="/recruitment" component={Recruitment} />
       <Route component={NotFound} />
     </Switch>
   );

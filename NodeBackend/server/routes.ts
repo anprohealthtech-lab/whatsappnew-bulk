@@ -19,6 +19,7 @@ import { HIMSChatbotService } from "./services/HIMSChatbotService";
 import { requestHIMSBotConfiguration, resolveHIMSBotSettings } from "./services/HIMSOpdSettingsService";
 import { DataManagementAgentService } from "./services/DataManagementAgentService";
 import { GuideRequestService, guideRepliesConfigured } from "./services/GuideRequestService";
+import {handleRecruitment} from './recruitment/runtime';
 import { voiceTenantService } from "./services/VoiceTenantService";
 import { sendMessageSchema, sendReportSchema, createCampaignSchema, bulkSendSchema, chatbotConfigSchema, flagLeadSchema, registerHRAdminSchema, hrChatbotConfigSchema, demoSchedules, scheduleCampaignSchema, userRagAgentSchema, userRagAgents, userNotificationRecipientSchema, userNotificationRecipients, registerSchema, loginSchema, registerHIMSPatientSchema, leadPipelineSchema, leadPipelines } from "@shared/schema";
 import { log } from "./utils";
@@ -1977,7 +1978,7 @@ export async function registerRoutes(app: Express): Promise<Server> {
 
   // Handle incoming messages from any session
   const handleIncomingSessionMessage = async (userId: string, sessionName: string, data: any) => {
-    console.log(`📥 Incoming message received (user ${userId}/${sessionName}):`, data);
+    console.log(`📥 Incoming message (user ${userId}/${sessionName}): ${data.messageType || 'text'} ${data.sourceMessageId || ''}`);
     const tenant = await resolveTenantForUserId(userId);
 
     // Store each incoming message immediately in DB (don't lose any)
@@ -2098,6 +2099,13 @@ export async function registerRoutes(app: Express): Promise<Server> {
       if (isBlocked) {
         console.log(`⛔ Ignoring message from blocked number: ${data.phoneNumber}`);
         broadcast('incoming-message', data);
+        return;
+      }
+
+      // Explicitly enrolled applicants have a private CV/intake flow ahead of the
+      // clinical media allow-list and patient/sales bots. Every other sender falls through.
+      if (await handleRecruitment(scopedTenant,ownerSessionName,data,waSession)) {
+        broadcast('incoming-message',data,ownerUserId);
         return;
       }
 

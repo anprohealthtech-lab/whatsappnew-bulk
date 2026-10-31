@@ -14,6 +14,7 @@ import { seedSuperAdmin } from "./seedSuperAdmin";
 import { persistentFileService } from "./services/PersistentFileService";
 import { registerCloudCampaignRoutes } from './cloud/routes';
 import { startCloudCampaignScheduler, stopCloudCampaignScheduler } from './cloud/runtime';
+import {registerRecruitmentRoutes} from './recruitment/routes';
 
 const app = express();
 // Recipient imports use a bounded larger body only on the new official campaign routes.
@@ -78,6 +79,7 @@ app.use((req, res, next) => {
 
     const server = await registerRoutes(app);
     registerCloudCampaignRoutes(app);
+    registerRecruitmentRoutes(app);
     startCloudCampaignScheduler();
 
     app.use((err: any, _req: Request, res: Response, _next: NextFunction) => {

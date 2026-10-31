@@ -1,6 +1,7 @@
 import postgres from 'postgres';
 import { log } from './utils';
 import { cloudSchemaSql } from './cloud/schema';
+import { recruitmentSchemaSql } from './recruitment/schema';
 
 /**
  * Runs full schema migration on startup.
@@ -989,6 +990,7 @@ export async function runMigrations(): Promise<void> {
 
     // Only new cloud_* tables; no changes to the existing Baileys schema.
     await sql.begin(async tx => { await tx.unsafe(cloudSchemaSql); });
+    await sql.begin(async tx => { await tx.unsafe(recruitmentSchemaSql); });
     log('✅ Database migrations completed — all tables ready');
 
     // Seed essential data if tables are empty
