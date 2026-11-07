@@ -5,7 +5,7 @@ import {useAuth} from '@/lib/AuthContext';
 import {apiRequest} from '@/lib/queryClient';
 import {Button} from '@/components/ui/button';
 
-type Candidate={id:string;name:string;phone:string;position:string;status:string;cv_count:number;answers:Record<string,string>;awaiting_field?:string};
+type Candidate={id:string;name:string;phone:string;position:string;status:string;cv_count:number;answers:Record<string,any>;awaiting_field?:string};
 export default function Recruitment(){
  const [,navigate]=useLocation();const {user}=useAuth();const [owner,setOwner]=useState('');const [error,setError]=useState('');
  const admin=user?.role==='super_admin';const scope=owner?'?userId='+encodeURIComponent(owner):'';
@@ -20,7 +20,7 @@ export default function Recruitment(){
   {(error||loadError)&&<p role="alert" className="text-destructive">{error||String(loadError)}</p>}
   <p>{rows.length} applicants · {rows.filter(c=>c.status==='complete').length} profiles complete · {rows.filter(c=>c.cv_count>0).length} CVs received</p>
   <div className="overflow-x-auto border rounded-lg"><table className="w-full text-sm text-left"><thead className="bg-muted"><tr>{['Applicant','Status','Current organisation','Current CTC','Expected CTC','City','Area / locality','CV'].map(h=><th key={h} className="p-3 whitespace-nowrap">{h}</th>)}</tr></thead><tbody>
-   {rows.map(c=><tr key={c.id} className="border-t"><td className="p-3 min-w-48"><b>{c.name}</b><div>{c.phone}</div></td><td className="p-3">{c.status.replaceAll('_',' ')}{c.awaiting_field&&<div className="text-muted-foreground">Awaiting {c.awaiting_field.replaceAll('_',' ')}</div>}</td>{['current_organisation','current_ctc','expected_ctc','residence_city','residence_area'].map(k=><td key={k} className="p-3 min-w-32">{c.answers?.[k]||'—'}</td>)}<td className="p-3">{c.cv_count>0?<Button variant="outline" size="sm" onClick={()=>cv(c)}>Download ({c.cv_count})</Button>:'Awaiting CV'}</td></tr>)}
+   {rows.map(c=><tr key={c.id} className="border-t"><td className="p-3 min-w-48"><b>{c.name}</b><div>{c.phone}</div></td><td className="p-3">{c.status.replaceAll('_',' ')}{c.awaiting_field&&<div className="text-muted-foreground">Awaiting {c.awaiting_field.replaceAll('_',' ')}</div>}{c.answers?._review_required?.cv&&<div className="text-amber-700">CV needs review</div>}</td>{['current_organisation','current_ctc','expected_ctc','residence_city','residence_area'].map(k=><td key={k} className="p-3 min-w-32">{c.answers?.[k]||c.answers?.[k+'_as_reported']||'—'}{c.answers?._review_required?.[k]&&<div className="text-amber-700">Unconfirmed - needs review</div>}</td>)}<td className="p-3">{c.cv_count>0?<Button variant="outline" size="sm" onClick={()=>cv(c)}>Download ({c.cv_count})</Button>:'Awaiting CV'}</td></tr>)}
    {!rows.length&&<tr><td colSpan={8} className="p-6 text-muted-foreground">No applicants enrolled for this account.</td></tr>}
   </tbody></table></div>
  </div></main>;

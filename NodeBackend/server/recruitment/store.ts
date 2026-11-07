@@ -11,6 +11,12 @@ export const questions: Record<string,string> = {
  residence_area: 'Which area or locality do you currently live in? Your full home address is not needed.',
 };
 const order=['current_organisation','current_ctc','expected_ctc','residence_city','residence_area'];
+export const MAX_QUESTION_ASKS=3; // Initial question plus at most two repeats.
+export function questionInReply(reply:string):string|undefined {
+ if(/Which area or locality/.test(reply))return 'residence_area';
+ for(const key of order)if(reply.includes(questions[key]))return key;
+ if(/attach your latest CV/i.test(reply))return 'cv';
+}
 const stateOnly=/^(?:gujarat|maharashtra|rajasthan|madhya pradesh|uttar pradesh|bihar|punjab|haryana|karnataka|kerala|tamil nadu|telangana|andhra pradesh|west bengal|india)$/i;
 const locationKey=(s:string)=>s.toLowerCase().replace(/[^\p{L}\p{N}]/gu,'');
 // Preserve reported text; only split an explicit locality/city pair or a known
@@ -94,6 +100,17 @@ export class RecruitmentStore {
     status='paused';reply='I have paused the automated questions. The recruitment team can follow up with you here.';
    }
    else {
+    const asks:Record<string,number>={...(answers._question_asks||{})};
+    if(!answers._question_asks){
+     const events=await q('SELECT reply FROM recruitment_events WHERE candidate_id=$1 ORDER BY created_at',[c.id]);
+     for(const event of events){const key=questionInReply(event.reply||'');if(key)asks[key]=(asks[key]||0)+1;}
+    }
+    const review:Record<string,string>={...(answers._review_required||{})};
+    if(awaiting&&!input.sourceMessageId.startsWith('reprocess')){
+     const raw={...(answers._raw_responses||{})};
+     raw[awaiting]=[...(raw[awaiting]||[]),{content:text.slice(0,1000),type:input.messageType||'text',source_message_id:input.sourceMessageId}].slice(-20);
+     answers._raw_responses=raw;
+    }
     if(file){
      await q(`INSERT INTO recruitment_cv_files(id,candidate_id,source_message_id,file_name,mime_type,data) VALUES($1,$2,$3,$4,$5,decode($6,'base64')) ON CONFLICT(candidate_id,source_message_id) DO NOTHING`,[randomUUID(),c.id,input.sourceMessageId,file.name,file.mime,file.base64]);
     }
@@ -134,15 +151,27 @@ export class RecruitmentStore {
     }
     if(answers.residence_area&&(stateOnly.test(answers.residence_area)||locationKey(answers.residence_area)===locationKey(answers.residence_city||'')))delete answers.residence_area;
     if(answers.residence_city&&answers.residence_area)answers.residence=`${answers.residence_area}, ${answers.residence_city}`;
-    const next=order.find(k=>!answers[k]);
+    for(const key of order)if(answers[key])delete review[key];
+    if(hasCv)delete review.cv;
+    // A reply always advances the retry budget, regardless of its format or
+    // whether validation understood it. Keep unconfirmed text for the team.
+    if(awaiting&&(awaiting==='cv'?!hasCv:!answers[awaiting])&&(asks[awaiting]||0)>=MAX_QUESTION_ASKS){
+     review[awaiting]='Unclear after two repeats';
+     answers[awaiting+'_as_reported']=text.slice(0,1000)||`[${input.messageType||'empty reply'}]`;
+    }
+    for(const key of [...order,'cv'])if((key==='cv'?!hasCv:!answers[key])&&(asks[key]||0)>=MAX_QUESTION_ASKS&&!review[key])review[key]='Unclear after two repeats';
+    const next=order.find(k=>!answers[k]&&!review[k]);
     const question=(key:string)=>key==='residence_area'&&answers.residence_city?`Which area or locality in ${answers.residence_city} do you currently live in? Your full home address is not needed.`:questions[key];
-    if(!hasCv&&!answers.cv_deferred){awaiting='cv';reply=questions.cv;}
+    if(!hasCv&&!answers.cv_deferred&&!review.cv){awaiting='cv';reply=questions.cv;}
     else if(next){awaiting=next;status='collecting';reply=(file?'Your CV has been saved. ':firstCvDeferral?'Sure, you can share your updated CV when ready. Meanwhile, ':'')+question(next);}
-    else if(!hasCv){awaiting='cv';reply='Thank you. Your organisation, CTC and residence details are saved. Please attach your latest CV when ready to complete your profile.';}
+    else if(!hasCv&&!review.cv){awaiting='cv';reply='Thank you. Your responses are saved. Please attach your latest CV when ready to complete your profile.';}
+    else if(Object.keys(review).length){awaiting=null;status='needs_review';reply='Thank you. Your responses have been recorded. The recruitment team will review them and clarify any missing details with you.';}
     else{awaiting=null;status='complete';reply='Thank you. Your latest CV and the four details are saved for the recruitment team to review. They will contact you if they need anything further.';}
-    if(status!=='complete')status='collecting';
-    if(fileError)reply=fileError+' '+(questions[awaiting||'cv']||'');
-    if((input.messageType==='audio'||input.messageType==='voice_note'))reply='Please type this detail so it can be recorded accurately. '+(questions[awaiting||'cv']||'');
+    if(awaiting)status='collecting';
+    if(fileError)reply=fileError+' '+reply;
+    if(awaiting&&(input.messageType==='audio'||input.messageType==='voice_note'))reply='Please type your response if possible. '+reply;
+    const asked=questionInReply(reply||'');if(asked)asks[asked]=(asks[asked]||0)+1;
+    answers._question_asks=asks;answers._review_required=review;
    }
    const eventId=randomUUID();
    await q(`UPDATE recruitment_candidates SET status=$2,answers=$3::jsonb,awaiting_field=$4,updated_at=now() WHERE id=$1`,[c.id,status,JSON.stringify(answers),awaiting]);
@@ -160,6 +189,10 @@ export class RecruitmentStore {
   });
  }
  async files(t:Tenant,id:string){return this.database.query(`SELECT f.id,f.file_name,f.mime_type,f.created_at FROM recruitment_cv_files f JOIN recruitment_candidates c ON c.id=f.candidate_id WHERE c.id=$1 AND c.organization_id=$2 AND c.user_id=$3 ORDER BY f.created_at DESC`,[id,t.organizationId,t.userId]);}
+ async questionCounts(t:Tenant,id:string){
+  const events=await this.database.query(`SELECT e.reply FROM recruitment_events e JOIN recruitment_candidates c ON c.id=e.candidate_id WHERE c.id=$1 AND c.organization_id=$2 AND c.user_id=$3 ORDER BY e.created_at`,[id,t.organizationId,t.userId]);
+  const counts:Record<string,number>={};for(const e of events){const key=questionInReply(e.reply||'');if(key)counts[key]=(counts[key]||0)+1;}return counts;
+ }
  async conversation(t:Tenant,id:string){return this.database.query(`SELECT m.id,m.content,m.type,m.status,m.created_at,m.sent_at,m.metadata
   FROM messages m JOIN recruitment_candidates c ON c.organization_id=m.organization_id AND c.user_id=m.user_id AND c.phone=m.phone_number
   WHERE c.id=$1 AND c.organization_id=$2 AND c.user_id=$3 ORDER BY m.created_at DESC LIMIT 100`,[id,t.organizationId,t.userId]);}

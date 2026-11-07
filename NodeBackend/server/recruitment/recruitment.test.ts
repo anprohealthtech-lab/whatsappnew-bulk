@@ -83,6 +83,46 @@ test('bare salary is clarified, never silently assumed monthly or annual',async(
  assert.equal((await store.list(t))[0].answers.current_ctc,undefined);
  assert.equal((await reply('prefer not to share')).reply,questions.expected_ctc);
 });
+
+test('CTC repeats at most twice, preserves every reply and moves to expected CTC without guessing units',async()=>{
+ await reply('send later');await reply('Example Company');
+ assert.equal((await reply('30000')).reply,questions.current_ctc);
+ const duplicate=incoming('same');assert.equal((await store.consume(t,'cloud',duplicate)).reply,questions.current_ctc);
+ assert.equal((await store.consume(t,'cloud',duplicate)).reply,undefined);
+ assert.equal((await reply('as mentioned')).reply,questions.expected_ctc);
+ let [c]=await store.list(t);assert.equal(c.answers.current_ctc,undefined);assert.equal(c.answers.current_ctc_as_reported,'as mentioned');assert.equal(c.answers._question_asks.current_ctc,3);assert.equal(c.answers._raw_responses.current_ctc.length,3);assert.ok(c.answers._review_required.current_ctc);
+ await reply('45000 monthly');await reply('Bopal, Ahmedabad');await store.consume(t,'cloud',cv());
+ [c]=await store.list(t);assert.equal(c.status,'needs_review');assert.equal(c.awaiting_field,null);
+ await reply('Current CTC: 30000 monthly');assert.equal((await store.list(t))[0].status,'complete');
+});
+
+test('all questions have the same retry cap even for acknowledgements and audio replies',async()=>{
+ await store.consume(t,'cloud',cv());
+ assert.equal((await reply('ok')).reply,questions.current_organisation);
+ assert.equal((await reply('??')).reply,questions.current_organisation);
+ assert.equal((await reply('[Voice note]',{messageType:'voice_note'})).reply?.includes(questions.current_ctc),true);
+ let [c]=await store.list(t);assert.equal(c.awaiting_field,'current_ctc');assert.ok(c.answers._review_required.current_organisation);
+ for(const field of ['current_ctc','expected_ctc','residence_city','residence_area']){
+  await reply('??');await reply('??');await reply('??');
+  [c]=await store.list(t);assert.ok(c.answers._review_required[field]);assert.equal(c.answers._question_asks[field],3);
+ }
+ assert.equal(c.status,'needs_review');assert.equal(c.awaiting_field,null);
+});
+
+test('CV request also stops after two repeats without fabricating an attachment',async()=>{
+ await reply('hello');await reply('??');await reply('??');
+ assert.equal((await reply('??')).reply,questions.current_organisation);
+ const [c]=await store.list(t);assert.equal(c.cv_count,0);assert.ok(c.answers._review_required.cv);assert.equal(c.answers._question_asks.cv,3);
+});
+
+test('existing repeated questions count toward the cap across deployment and reprocessing',async()=>{
+ await reply('send later');await reply('Example Company');await reply('30000');await reply('30000');
+ await database.query("UPDATE recruitment_candidates SET answers=answers-'_question_asks'");
+ const repair=incoming('30000',{sourceMessageId:'reprocess-limit:actual-saved-reply'});
+ assert.equal((await store.consume(t,'cloud',repair)).reply,questions.expected_ctc);
+ assert.equal((await store.consume(t,'cloud',repair)).reply,undefined);
+ const [c]=await store.list(t);assert.equal(c.answers._question_asks.current_ctc,3);assert.equal(c.answers._question_asks.expected_ctc,1);
+});
 test('labeled answers in one message are retained and corrections can be made',async()=>{
  await reply('send later');
  await reply('Current organisation: Example LLP\nCurrent CTC: INR 30000 monthly\nExpected CTC: INR 40000 monthly\nResidence: Bopal, Ahmedabad');

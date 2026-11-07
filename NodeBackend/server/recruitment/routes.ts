@@ -4,7 +4,7 @@ import {getTenant,requireAuth} from '../authMiddleware';
 import {cloudStore,cloudSession,validateCampaign} from '../cloud/runtime';
 import {csvCell} from '../cloud/model';
 import {recruitmentStore,handleRecruitment} from './runtime';
-import {isCvDeferred,residenceDetails} from './store';
+import {isCvDeferred,residenceDetails,MAX_QUESTION_ASKS} from './store';
 import {ACCOUNTANT_CV_TEMPLATE,accountantInvitation} from './invitation';
 
 async function tenant(req:Request){
@@ -107,6 +107,26 @@ export function registerRecruitmentRoutes(app:Express){
   await handleRecruitment(t,c.session_name,{phoneNumber:c.phone,content:incoming.content,sourceMessageId:'reprocess-residence:'+incoming.id,messageType:'text',receivedAt},session);
   res.json({handled:true});
  }));
+ app.post('/api/recruitment/candidates/:id/reprocess-question-limit',requireAuth,route(async(req:any,res:any)=>{
+  const t=await tenant(req),c=(await recruitmentStore.list(t)).find(c=>c.id===req.params.id);
+  if(!c||c.status!=='collecting'||!c.awaiting_field)throw new Error('Candidate is not awaiting a question');
+  const field=c.awaiting_field==='residence'?'residence_city':c.awaiting_field;
+  const counts=await recruitmentStore.questionCounts(t,c.id);
+  if((counts[field]||0)<MAX_QUESTION_ASKS)throw new Error('The question has not reached its repeat limit');
+  if(await cloudStore.suppressed(cloudStore.database.query,t,c.phone))throw new Error('Applicant has opted out or is blocked');
+  const incoming=(await recruitmentStore.conversation(t,c.id)).find(m=>m.type==='incoming');
+  if(!incoming)throw new Error('No saved applicant reply');
+  const receivedAt=new Date(incoming.created_at).getTime();
+  if(!Number.isFinite(receivedAt)||Date.now()-receivedAt>=24*60*60*1000)throw new Error('The reply is outside the service window');
+  const sender=await cloudStore.session(t,String(req.body.sessionId||''));
+  if(sender.session_name!==c.session_name)throw new Error('Wrong receiving session');
+  const session=await cloudSession(t,sender.id);
+  // The original reply was already processed against this same question. Do
+  // not assign its text to a newly advanced question on a later retry.
+  const sourceMessageId='reprocess-limit:'+incoming.id;
+  await handleRecruitment(t,c.session_name,{phoneNumber:c.phone,content:incoming.content,sourceMessageId,messageType:'text',receivedAt},session);
+  res.json({handled:true});
+ }));
  app.get('/api/recruitment/files/:id',requireAuth,route(async(req:any,res:any)=>{
   const file=await recruitmentStore.download(await tenant(req),req.params.id);
   if(!file)return res.status(404).json({error:'CV not found'});
@@ -115,8 +135,8 @@ export function registerRecruitmentRoutes(app:Express){
  }));
  app.get('/api/recruitment/report.csv',requireAuth,route(async(req:any,res:any)=>{
   const rows=await recruitmentStore.list(await tenant(req));
-  const keys=['name','phone','position','status','current_organisation','current_ctc','expected_ctc','residence','residence_city','residence_area','cv_count'];
+  const keys=['name','phone','position','status','current_organisation','current_ctc','expected_ctc','residence','residence_city','residence_area','cv_count','review_required'];
   res.setHeader('Content-Type','text/csv; charset=utf-8');res.setHeader('Content-Disposition','attachment; filename="recruitment-report.csv"');
-  res.send('\uFEFF'+[keys.map(csvCell).join(','),...rows.map(r=>keys.map(k=>csvCell(r[k]??r.answers?.[k]??'')).join(','))].join('\r\n'));
+  res.send('\uFEFF'+[keys.map(csvCell).join(','),...rows.map(r=>keys.map(k=>csvCell(k==='review_required'?Object.keys(r.answers?._review_required||{}).join(', '):r[k]??r.answers?.[k]??r.answers?.[k+'_as_reported']??'')).join(','))].join('\r\n'));
  }));
 }
