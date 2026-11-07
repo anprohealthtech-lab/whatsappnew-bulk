@@ -3,7 +3,8 @@ import {z} from 'zod';
 import {getTenant,requireAuth} from '../authMiddleware';
 import {cloudStore,cloudSession,validateCampaign} from '../cloud/runtime';
 import {csvCell} from '../cloud/model';
-import {recruitmentStore} from './runtime';
+import {recruitmentStore,handleRecruitment} from './runtime';
+import {isCvDeferred} from './store';
 import {ACCOUNTANT_CV_TEMPLATE,accountantInvitation} from './invitation';
 
 async function tenant(req:Request){
@@ -67,6 +68,24 @@ export function registerRecruitmentRoutes(app:Express){
   res.json({campaignId:campaign.id,status:'running',recipients:candidates.length});
  }));
  app.get('/api/recruitment/candidates/:id/files',requireAuth,route(async(req:any,res:any)=>res.json(await recruitmentStore.files(await tenant(req),req.params.id))));
+ app.get('/api/recruitment/candidates/:id/conversation',requireAuth,route(async(req:any,res:any)=>res.json(await recruitmentStore.conversation(await tenant(req),req.params.id))));
+ // Re-evaluate a saved promise to share the CV after a parser correction. The
+ // message comes from stored history, never from caller-supplied applicant text.
+ app.post('/api/recruitment/candidates/:id/reprocess-cv-promise',requireAuth,route(async(req:any,res:any)=>{
+  const t=await tenant(req),all=await recruitmentStore.list(t);
+  const c=all.find(candidate=>candidate.id===req.params.id);
+  if(!c||c.status!=='collecting'||c.awaiting_field!=='cv'||c.cv_count>0)throw new Error('Candidate is not awaiting a deferred CV');
+  const history=await recruitmentStore.conversation(t,c.id);
+  const incoming=history.find(m=>m.type==='incoming');
+  if(!incoming||!isCvDeferred(incoming.content))throw new Error('The latest saved reply is not a CV deferral');
+  const receivedAt=new Date(incoming.created_at).getTime();
+  if(!Number.isFinite(receivedAt)||Date.now()-receivedAt>=24*60*60*1000)throw new Error('The reply is outside the service window');
+  const sender=await cloudStore.session(t,String(req.body.sessionId||''));
+  if(sender.session_name!==c.session_name)throw new Error('Wrong receiving session');
+  const session=await cloudSession(t,sender.id);
+  await handleRecruitment(t,c.session_name,{phoneNumber:c.phone,content:incoming.content,sourceMessageId:'reprocess:'+incoming.id,messageType:'text',receivedAt},session);
+  res.json({handled:true});
+ }));
  app.get('/api/recruitment/files/:id',requireAuth,route(async(req:any,res:any)=>{
   const file=await recruitmentStore.download(await tenant(req),req.params.id);
   if(!file)return res.status(404).json({error:'CV not found'});

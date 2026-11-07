@@ -14,7 +14,7 @@ let sequence=0;
 const incoming=(content:string,rest:any={})=>({phoneNumber:'919876543210',content,sourceMessageId:'message-'+(++sequence),messageType:'text',...rest});
 const reply=(content:string,rest:any={})=>store.consume(t,'cloud',incoming(content,rest));
 const cv=()=>incoming('[Document: CV.pdf]',{messageType:'document',mediaInfo:{mimetype:'application/pdf',fileName:'CV.pdf'},mediaBuffer:Buffer.from('%PDF-1.7\nCV fixture')});
-before(async()=>{await pg.exec(recruitmentSchemaSql);await pg.exec(recruitmentSchemaSql);await pg.exec('CREATE TABLE messages(id text PRIMARY KEY,organization_id text,user_id text,phone_number text,content text,type text,status text,metadata jsonb,sent_at timestamptz)');});
+before(async()=>{await pg.exec(recruitmentSchemaSql);await pg.exec(recruitmentSchemaSql);await pg.exec('CREATE TABLE messages(id text PRIMARY KEY,organization_id text,user_id text,phone_number text,content text,type text,status text,metadata jsonb,sent_at timestamptz,created_at timestamptz DEFAULT now())');});
 beforeEach(async()=>{await pg.exec('TRUNCATE messages,recruitment_events,recruitment_cv_files,recruitment_candidates CASCADE');await store.enroll(t,'cloud',[recipient]);});
 after(()=>pg.close());
 
@@ -66,6 +66,13 @@ test('CV deferral collects answers and leaves profile incomplete until attachmen
  assert.match((await store.consume(t,'cloud',cv())).reply!,/four details are saved/);
  assert.equal((await store.list(t))[0].status,'complete');
 });
+test('a promise to share the CV today moves on to organisation instead of requesting the CV again',async()=>{
+ await reply('hello');
+ const result=await reply('Ok will share it by today');
+ assert.match(result.reply!,/when ready/);assert.match(result.reply!,/current organisation/);
+ const [candidate]=await store.list(t);assert.equal(candidate.answers.cv_deferred,true);assert.equal(candidate.awaiting_field,'current_organisation');
+ assert.equal((await reply('Example Accountants LLP')).reply,questions.current_ctc);
+});
 test('bare salary is clarified, never silently assumed monthly or annual',async()=>{
  await reply('send later');await reply('Example Company');
  assert.equal((await reply('30000')).reply,questions.current_ctc);
@@ -98,6 +105,7 @@ test('old webhook outside service window is ignored without a free-form reply',a
 test('accepted replies appear once in tenant message history, ambiguous sends do not',async()=>{
  const first=await reply('hello');await store.outcome(first.eventId!,'sent','wamid.reply1');await store.outcome(first.eventId!,'sent','wamid.reply1');
  const logs=await database.query('SELECT * FROM messages');assert.equal(logs.length,1);assert.equal(logs[0].organization_id,t.organizationId);assert.equal(logs[0].metadata.whatsappId,'wamid.reply1');
+ const [candidate]=await store.list(t);assert.equal((await store.conversation(t,candidate.id)).length,1);assert.deepEqual(await store.conversation(other,candidate.id),[]);
  const second=await reply('send later');await store.outcome(second.eventId!,'unknown',undefined,'timeout');
  assert.equal((await database.query('SELECT * FROM messages')).length,1);
 });

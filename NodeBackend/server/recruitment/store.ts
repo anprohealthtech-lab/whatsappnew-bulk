@@ -9,6 +9,7 @@ export const questions: Record<string,string> = {
  residence: 'Which area and city do you currently live in? Your full home address is not needed.',
 };
 const order=['current_organisation','current_ctc','expected_ctc','residence'];
+export const isCvDeferred=(text:string)=>/\b(later|send later|will (?:send|share|upload|forward)|(?:send|share|upload) (?:it |my cv |the cv )?(?:by |on )?(?:today|tomorrow|tonight)|no cv|don.t have|dont have)\b/i.test(text);
 export type IncomingRecruitment = {phoneNumber:string;content?:string;sourceMessageId?:string;messageType?:string;receivedAt?:number;mediaBuffer?:Buffer;mediaInfo?:{mimetype?:string;fileName?:string}};
 export function validRecruitmentPhone(value:string):string {
  if(!/^\+?[\d\s()-]+$/.test(value))throw new Error('Invalid phone number');
@@ -76,7 +77,8 @@ export class RecruitmentStore {
     }
     const [cv]=await q('SELECT count(*)::int count FROM recruitment_cv_files WHERE candidate_id=$1',[c.id]);
     const hasCv=cv.count>0;
-    const skipCv=/\b(later|send later|will send|upload later|no cv|don.t have|dont have)\b/i.test(text);
+    const skipCv=isCvDeferred(text);
+    const firstCvDeferral=skipCv&&!hasCv&&!answers.cv_deferred;
     if(skipCv)answers.cv_deferred=true;
     // Labeled answers can arrive together and do not depend on the last question.
     const labels:Record<string,string>={'current organisation':'current_organisation','current organization':'current_organisation','organisation':'current_organisation','organization':'current_organisation','current ctc':'current_ctc','expected ctc':'expected_ctc','residence':'residence','place of residence':'residence','location':'residence'};
@@ -96,7 +98,7 @@ export class RecruitmentStore {
     }
     const next=order.find(k=>!answers[k]);
     if(!hasCv&&!answers.cv_deferred){awaiting='cv';reply=questions.cv;}
-    else if(next){awaiting=next;reply=(file?'Your CV has been saved. ':'')+questions[next];}
+    else if(next){awaiting=next;reply=(file?'Your CV has been saved. ':firstCvDeferral?'Sure, you can share your updated CV when ready. Meanwhile, ':'')+questions[next];}
     else if(!hasCv){awaiting='cv';reply='Thank you. Your organisation, CTC and residence details are saved. Please attach your latest CV when ready to complete your profile.';}
     else{awaiting=null;status='complete';reply='Thank you. Your latest CV and the four details are saved for the recruitment team to review. They will contact you if they need anything further.';}
     if(status!=='complete')status='collecting';
@@ -119,5 +121,8 @@ export class RecruitmentStore {
   });
  }
  async files(t:Tenant,id:string){return this.database.query(`SELECT f.id,f.file_name,f.mime_type,f.created_at FROM recruitment_cv_files f JOIN recruitment_candidates c ON c.id=f.candidate_id WHERE c.id=$1 AND c.organization_id=$2 AND c.user_id=$3 ORDER BY f.created_at DESC`,[id,t.organizationId,t.userId]);}
+ async conversation(t:Tenant,id:string){return this.database.query(`SELECT m.id,m.content,m.type,m.status,m.created_at,m.sent_at,m.metadata
+  FROM messages m JOIN recruitment_candidates c ON c.organization_id=m.organization_id AND c.user_id=m.user_id AND c.phone=m.phone_number
+  WHERE c.id=$1 AND c.organization_id=$2 AND c.user_id=$3 ORDER BY m.created_at DESC LIMIT 100`,[id,t.organizationId,t.userId]);}
  async download(t:Tenant,id:string):Promise<Row|undefined>{return (await this.database.query(`SELECT f.file_name,f.mime_type,encode(f.data,'base64') data FROM recruitment_cv_files f JOIN recruitment_candidates c ON c.id=f.candidate_id WHERE f.id=$1 AND c.organization_id=$2 AND c.user_id=$3`,[id,t.organizationId,t.userId]))[0];}
 }
