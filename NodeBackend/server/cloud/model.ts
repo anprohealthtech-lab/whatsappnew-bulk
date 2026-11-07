@@ -5,6 +5,15 @@ export type Row = Record<string, any>;
 export type Query = (text: string, params?: any[]) => Promise<Row[]>;
 export interface CloudDatabase { query: Query; transaction<T>(fn: (query: Query) => Promise<T>): Promise<T>; }
 
+// PostgreSQL jsonb and Meta can serialize the same object with different key
+// order. Keep array order and every value significant when checking the snapshot.
+export function sameTemplateComponents(left:unknown,right:unknown):boolean {
+  const canonical=(value:any):any=>Array.isArray(value) ? value.map(canonical)
+    : value!==null && typeof value==='object'
+      ? Object.fromEntries(Object.keys(value).sort().map(key=>[key,canonical(value[key])])) : value;
+  return JSON.stringify(canonical(left))===JSON.stringify(canonical(right));
+}
+
 export function normalizePhone(input: string): string {
   if (!/^\+?[\d ()-]+$/.test(input)) throw new Error('Use a phone number with country code');
   const phone = input.replace(/\D/g, '');

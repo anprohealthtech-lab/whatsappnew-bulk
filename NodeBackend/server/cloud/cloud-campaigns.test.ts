@@ -3,13 +3,21 @@ import assert from 'node:assert/strict';
 import { PGlite } from '@electric-sql/pglite';
 import { CloudCampaignStore } from './store';
 import { cloudSchemaSql } from './schema';
-import { csvCell, normalizePhone, templateComponents, type Query } from './model';
+import { csvCell, normalizePhone, templateComponents, sameTemplateComponents, type Query } from './model';
 
 const pg = new PGlite();
 const q: Query = async(text,params=[]) => (await pg.query(text,params)).rows as any[];
 const store = new CloudCampaignStore({query:q,transaction:fn=>pg.transaction(tx=>fn(async(text,params=[])=> (await tx.query(text,params)).rows as any[]))});
 const tenant={organizationId:'clinic',userId:'owner'};
 const other={organizationId:'other',userId:'other-owner'};
+test('template snapshot tolerates jsonb object key ordering but rejects real content or array changes',()=>{
+  const meta=[{type:'BODY',text:'Hello {{1}}',example:{body_text:[['Applicant']]}},{type:'FOOTER',text:'Reply STOP'}];
+  const jsonb=[{text:'Hello {{1}}',type:'BODY',example:{body_text:[['Applicant']]}},{text:'Reply STOP',type:'FOOTER'}];
+  assert.equal(sameTemplateComponents(meta,jsonb),true);
+  assert.equal(sameTemplateComponents(meta,[{...jsonb[0],text:'Different text'},jsonb[1]]),false);
+  assert.equal(sameTemplateComponents(meta,[jsonb[1],jsonb[0]]),false);
+  assert.equal(sameTemplateComponents(meta,[{...jsonb[0],example:{body_text:[['Changed sample']]}},jsonb[1]]),false);
+});
 const template={name:'dr_amit_now_available',language:'en',status:'APPROVED',components:[
   {type:'HEADER',format:'IMAGE'}, {type:'BODY',text:'Hello {{1}}'},
   {type:'BUTTONS',buttons:[{type:'QUICK_REPLY',text:'STOP'}]},

@@ -1,6 +1,7 @@
 import { queryClient } from '../db';
 import { CloudCampaignStore } from './store';
 import type { Row, Tenant } from './model';
+import {sameTemplateComponents} from './model';
 import { sessionManager } from '../services/WhatsAppSessionManager';
 import { CloudApiSession, GraphApiError } from '../services/CloudApiSession';
 import { log } from '../utils';
@@ -28,7 +29,8 @@ export async function validateCampaign(c: Row) {
   if (session.phoneNumberId!==c.phone_number_id || session.wabaId!==c.waba_id) throw new Error('Campaign sender has changed');
   const template = await session.getCampaignTemplate(c.template_name,c.language);
   if (template.status !== 'APPROVED') throw new Error('Template is no longer approved');
-  if (JSON.stringify(template.components)!==JSON.stringify(c.template_snapshot.components)) throw new Error('Approved template content changed. Create a new campaign.');
+  if (template.category!==c.template_snapshot.category) throw new Error('Approved template category changed. Create a new campaign.');
+  if (!sameTemplateComponents(template.components,c.template_snapshot.components)) throw new Error('Approved template content changed. Create a new campaign.');
   return session;
 }
 

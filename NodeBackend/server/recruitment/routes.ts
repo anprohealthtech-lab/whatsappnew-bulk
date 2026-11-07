@@ -1,7 +1,7 @@
 import type {Express,Request} from 'express';
 import {z} from 'zod';
 import {getTenant,requireAuth} from '../authMiddleware';
-import {cloudStore,cloudSession} from '../cloud/runtime';
+import {cloudStore,cloudSession,validateCampaign} from '../cloud/runtime';
 import {csvCell} from '../cloud/model';
 import {recruitmentStore} from './runtime';
 import {ACCOUNTANT_CV_TEMPLATE,accountantInvitation} from './invitation';
@@ -20,6 +20,13 @@ export function registerRecruitmentRoutes(app:Express){
  app.get('/api/recruitment/candidates',requireAuth,route(async(req:any,res:any)=>res.json(await recruitmentStore.list(await tenant(req)))));
  app.get('/api/recruitment/campaigns/:id',requireAuth,route(async(req:any,res:any)=>{
   res.json(await cloudStore.report(await tenant(req),req.params.id));
+ }));
+ app.post('/api/recruitment/campaigns/:id/resume',requireAuth,route(async(req:any,res:any)=>{
+  const t=await tenant(req),campaign=await cloudStore.campaign(t,req.params.id);
+  if(campaign.template_name!==ACCOUNTANT_CV_TEMPLATE)throw new Error('This is not an accountant application campaign');
+  await validateCampaign(campaign);
+  await cloudStore.control(t,campaign.id,'start');
+  res.json(await cloudStore.report(t,campaign.id));
  }));
  app.get('/api/recruitment/senders',requireAuth,route(async(req:any,res:any)=>{
   const t=await tenant(req);res.json(await cloudStore.database.query(`SELECT id,session_name,phone_number,status FROM whatsapp_sessions WHERE organization_id=$1 AND user_id=$2 AND provider='cloud_api'`,[t.organizationId,t.userId]));
