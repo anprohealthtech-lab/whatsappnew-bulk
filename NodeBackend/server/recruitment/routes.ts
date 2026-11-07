@@ -4,7 +4,7 @@ import {getTenant,requireAuth} from '../authMiddleware';
 import {cloudStore,cloudSession,validateCampaign} from '../cloud/runtime';
 import {csvCell} from '../cloud/model';
 import {recruitmentStore,handleRecruitment} from './runtime';
-import {isCvDeferred,residenceDetails,MAX_QUESTION_ASKS} from './store';
+import {isCvDeferred,residenceDetails,MAX_QUESTION_ASKS,isHumanRequest} from './store';
 import {ACCOUNTANT_CV_TEMPLATE,accountantInvitation} from './invitation';
 
 async function tenant(req:Request){
@@ -92,11 +92,13 @@ export function registerRecruitmentRoutes(app:Express){
   const c=all.find(candidate=>candidate.id===req.params.id);
   if(!c||['declined','paused'].includes(c.status))throw new Error('Candidate is not available for residence follow-up');
   const answers=residenceDetails(c.answers);
-  if(!c.answers.residence||answers.residence_area)throw new Error('Candidate does not need a residence follow-up');
+  const history=await recruitmentStore.conversation(t,c.id);
+  const latest=history.find(m=>m.type==='incoming');
+  const handoff=latest&&isHumanRequest(latest.content)&&c.answers.residence_area===latest.content.trim();
+  if(!handoff&&(!c.answers.residence||answers.residence_area))throw new Error('Candidate does not need a residence follow-up');
   if(!['current_organisation','current_ctc','expected_ctc'].every(key=>answers[key]))throw new Error('Earlier qualification answers are still outstanding');
   if(await cloudStore.suppressed(cloudStore.database.query,t,c.phone))throw new Error('Applicant has opted out or is blocked');
-  const history=await recruitmentStore.conversation(t,c.id);
-  const incoming=history.find(m=>m.type==='incoming'&&m.content.trim().toLowerCase()===c.answers.residence.trim().toLowerCase());
+  const incoming=handoff?latest:history.find(m=>m.type==='incoming'&&m.content.trim().toLowerCase()===c.answers.residence.trim().toLowerCase());
   if(!incoming)throw new Error('The saved residence reply was not found');
   if(history.some(m=>m.type==='incoming'&&new Date(m.created_at)>new Date(incoming.created_at)&&!/^(?:ok|okay|ohk|thanks|thank you)[.!\s]*$/i.test(m.content.trim())))throw new Error('A newer substantive reply needs review first');
   const receivedAt=new Date(incoming.created_at).getTime();

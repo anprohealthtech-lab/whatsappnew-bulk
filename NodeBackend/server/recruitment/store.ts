@@ -12,6 +12,7 @@ export const questions: Record<string,string> = {
 };
 const order=['current_organisation','current_ctc','expected_ctc','residence_city','residence_area'];
 export const MAX_QUESTION_ASKS=3; // Initial question plus at most two repeats.
+export const isHumanRequest=(text:string)=>/^(human|person|recruiter|call me|speak to someone|talk to someone)[.!\s]*$/i.test(text)||/\b(?:can|may|could)\s+i\s+(?:call|speak|talk)\b/i.test(text);
 export function questionInReply(reply:string):string|undefined {
  if(/Which area or locality/.test(reply))return 'residence_area';
  for(const key of order)if(reply.includes(questions[key]))return key;
@@ -96,7 +97,8 @@ export class RecruitmentStore {
    const stop=/^(stop|unsubscribe|cancel|not interested|no longer interested|not looking|job found|already joined)[.!\s]*$/i.test(text);
    if(stop){status='declined';awaiting=null;reply='Understood. We have stopped this recruitment follow-up. Thank you for letting us know.';}
    else if(status==='declined'||status==='paused'){return {handled:true};}
-   else if(/^(human|person|recruiter|call me|speak to someone|talk to someone)[.!\s]*$/i.test(text)){
+   else if(isHumanRequest(text)){
+    if(answers.residence_area===text){answers.residence_area_as_reported=text;delete answers.residence_area;answers.residence=answers.residence_city||'';answers._review_required={...(answers._review_required||{}),residence_area:'Applicant requested a call'};}
     status='paused';reply='I have paused the automated questions. The recruitment team can follow up with you here.';
    }
    else {

@@ -178,6 +178,12 @@ test('human request pauses the recruitment conversation',async()=>{
  assert.match((await reply('call me')).reply!,/paused/);assert.equal((await reply('hello')).reply,undefined);
  assert.equal((await store.list(t))[0].status,'paused');
 });
+
+test('a conversational call request pauses instead of being recorded as the residence area',async()=>{
+ await store.consume(t,'cloud',cv());await reply('Example LLP');await reply('30000 monthly');await reply('40000 monthly');await reply('Ahmedabad');
+ assert.match((await reply('Sir/mam can I call you')).reply!,/paused/);
+ const [c]=await store.list(t);assert.equal(c.status,'paused');assert.equal(c.answers.residence_area,undefined);
+});
 test('invalid file bytes are rejected without marking a CV received',async()=>{
  const next=await reply('[Document: CV.pdf]',{messageType:'document',mediaInfo:{mimetype:'application/pdf',fileName:'CV.pdf'},mediaBuffer:Buffer.from('<html>not PDF</html>')});
  assert.match(next.reply!,/PDF, Word/);assert.equal((await store.list(t))[0].cv_count,0);
