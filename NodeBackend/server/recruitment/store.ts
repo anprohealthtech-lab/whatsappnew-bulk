@@ -7,8 +7,28 @@ export const questions: Record<string,string> = {
  current_ctc: 'What is your current CTC? Please include the currency and whether the amount is monthly or annual. You may reply "prefer not to share".',
  expected_ctc: 'What is your expected CTC? Please include the currency and whether the amount is monthly or annual. You may reply "prefer not to share".',
  residence: 'Which area and city do you currently live in? Your full home address is not needed.',
+ residence_city: 'Which area and city do you currently live in? Your full home address is not needed.',
+ residence_area: 'Which area or locality do you currently live in? Your full home address is not needed.',
 };
-const order=['current_organisation','current_ctc','expected_ctc','residence'];
+const order=['current_organisation','current_ctc','expected_ctc','residence_city','residence_area'];
+const stateOnly=/^(?:gujarat|maharashtra|rajasthan|madhya pradesh|uttar pradesh|bihar|punjab|haryana|karnataka|kerala|tamil nadu|telangana|andhra pradesh|west bengal|india)$/i;
+const locationKey=(s:string)=>s.toLowerCase().replace(/[^\p{L}\p{N}]/gu,'');
+// Preserve reported text; only split an explicit locality/city pair or a known
+// city suffix. A city followed by its state must never become an area/city pair.
+export function parseResidence(raw:string):{city:string;area?:string}{
+ const value=raw.trim().slice(0,1000);
+ const known=value.match(/^(?:(.+?)[,\s]+)?(Ahmedabad|Ahemdabad|Gandhinagar|Vadodara|Baroda|Surat|Rajkot|Mumbai|Pune|Delhi|Bengaluru|Bangalore|Jaipur)(?:[,\s]+(?:Gujarat|Maharashtra|Rajasthan|Karnataka|India))*[.\s]*$/i);
+ if(known){const area=known[1]?.replace(/[,\s]+$/,'').trim();return {city:known[2],...(area&&!stateOnly.test(area)?{area}:{})};}
+ const parts=value.split(/[,\n]+/).map(s=>s.trim()).filter(Boolean);
+ while(parts.length>1&&stateOnly.test(parts[parts.length-1]))parts.pop();
+ return parts.length>1?{area:parts.slice(0,-1).join(', '),city:parts[parts.length-1]}:{city:parts[0]||value};
+}
+export function residenceDetails(answers:Record<string,any>){
+ const result={...answers};
+ if(result.residence&&!result.residence_city){const parsed=parseResidence(result.residence);result.residence_city=parsed.city;if(parsed.area)result.residence_area=parsed.area;}
+ if(result.residence_city&&result.residence_area)result.residence=`${result.residence_area}, ${result.residence_city}`;
+ return result;
+}
 export const isCvDeferred=(text:string)=>/\b(later|send later|will (?:send|share|upload|forward)|(?:send|share|upload) (?:it |my cv |the cv )?(?:by |on )?(?:today|tomorrow|tonight)|no cv|don.t have|dont have)\b/i.test(text)
  || /^(?:ok(?:ay)?|yes|sure|will do|interested|i am interested)[.!\s]*$/i.test(text.trim());
 export type IncomingRecruitment = {phoneNumber:string;content?:string;sourceMessageId?:string;messageType?:string;receivedAt?:number;mediaBuffer?:Buffer;mediaInfo?:{mimetype?:string;fileName?:string}};
@@ -62,7 +82,7 @@ export class RecruitmentStore {
    const [prior]=await q('SELECT id FROM recruitment_events WHERE candidate_id=$1 AND source_message_id=$2',[c.id,input.sourceMessageId]);
    if(prior)return {handled:true};
    const text=(input.content||'').trim();const lower=text.toLowerCase();
-   const answers={...c.answers};let status=c.status;let awaiting=c.awaiting_field;let reply:string|undefined;
+   const answers=residenceDetails(c.answers);let status=c.status;let awaiting=c.awaiting_field==='residence'?'residence_city':c.awaiting_field;let reply:string|undefined;
    let file:ReturnType<typeof cvFile>=null;let fileError='';
    const isMedia=['image','document'].includes(input.messageType||'');
    if(isMedia){try{file=cvFile(input);if(!file)fileError='The CV download failed. Please attach it again.';}catch(e){fileError=e instanceof Error?e.message:'Could not save the CV.';}}
@@ -82,11 +102,16 @@ export class RecruitmentStore {
     const firstCvDeferral=skipCv&&!hasCv&&!answers.cv_deferred;
     if(skipCv)answers.cv_deferred=true;
     // Labeled answers can arrive together and do not depend on the last question.
-    const labels:Record<string,string>={'current organisation':'current_organisation','current organization':'current_organisation','organisation':'current_organisation','organization':'current_organisation','current ctc':'current_ctc','expected ctc':'expected_ctc','residence':'residence','place of residence':'residence','location':'residence'};
+    const labels:Record<string,string>={'current organisation':'current_organisation','current organization':'current_organisation','organisation':'current_organisation','organization':'current_organisation','current ctc':'current_ctc','expected ctc':'expected_ctc','residence':'residence','place of residence':'residence','location':'residence','city':'residence_city','area':'residence_area','locality':'residence_area'};
     let labeled=false;
     if(!isMedia)for(const line of text.split(/\n/)){
      const match=line.match(/^\s*([^:]+):\s*(.+)$/);if(!match)continue;
-     const key=labels[match[1].toLowerCase().trim()];if(key){answers[key]=match[2].trim().slice(0,1000);labeled=true;}
+     const key=labels[match[1].toLowerCase().trim()];if(key){
+      const value=match[2].trim().slice(0,1000);
+      if(key==='residence'){const parsed=parseResidence(value);answers.residence=value;answers.residence_city=parsed.city;delete answers.residence_area;if(parsed.area)answers.residence_area=parsed.area;}
+      else answers[key]=value;
+      labeled=true;
+     }
     }
     for(const key of ['current_ctc','expected_ctc']){
      if(answers[key]&&!/\b(month|monthly|monthwise|pm|p\.m|annual|annually|year|yearly|pa|p\.a|lpa|prefer not|not applicable|unemployed|not working|fresher|none)\b/i.test(answers[key]))delete answers[key];
@@ -95,11 +120,20 @@ export class RecruitmentStore {
     if(!labeled&&!isMedia&&!control&&!skipCv&&awaiting&&order.includes(awaiting)&&text&&!text.includes('?')&&!/^\[/.test(text)){
      // Never guess whether a bare salary is monthly or annual.
      const ctc=awaiting.endsWith('_ctc');
-     if(!ctc||/\b(month|monthly|monthwise|pm|p\.m|annual|annually|year|yearly|pa|p\.a|lpa|prefer not|not applicable|unemployed|not working|fresher|none)\b/i.test(text))answers[awaiting]=text.slice(0,1000);
+     if(awaiting==='residence_city'){const parsed=parseResidence(text);answers.residence=text.slice(0,1000);answers.residence_city=parsed.city;if(parsed.area)answers.residence_area=parsed.area;}
+     else if(awaiting==='residence_area'){
+      const parsed=parseResidence(text);
+      if(parsed.area&&locationKey(parsed.city)===locationKey(answers.residence_city||''))answers.residence_area=parsed.area;
+      else if(!parsed.area&&!stateOnly.test(text)&&locationKey(parsed.city)!==locationKey(answers.residence_city||''))answers.residence_area=text.slice(0,1000);
+     }
+     else if(!ctc||/\b(month|monthly|monthwise|pm|p\.m|annual|annually|year|yearly|pa|p\.a|lpa|prefer not|not applicable|unemployed|not working|fresher|none)\b/i.test(text))answers[awaiting]=text.slice(0,1000);
     }
+    if(answers.residence_area&&(stateOnly.test(answers.residence_area)||locationKey(answers.residence_area)===locationKey(answers.residence_city||'')))delete answers.residence_area;
+    if(answers.residence_city&&answers.residence_area)answers.residence=`${answers.residence_area}, ${answers.residence_city}`;
     const next=order.find(k=>!answers[k]);
+    const question=(key:string)=>key==='residence_area'&&answers.residence_city?`Which area or locality in ${answers.residence_city} do you currently live in? Your full home address is not needed.`:questions[key];
     if(!hasCv&&!answers.cv_deferred){awaiting='cv';reply=questions.cv;}
-    else if(next){awaiting=next;reply=(file?'Your CV has been saved. ':firstCvDeferral?'Sure, you can share your updated CV when ready. Meanwhile, ':'')+questions[next];}
+    else if(next){awaiting=next;status='collecting';reply=(file?'Your CV has been saved. ':firstCvDeferral?'Sure, you can share your updated CV when ready. Meanwhile, ':'')+question(next);}
     else if(!hasCv){awaiting='cv';reply='Thank you. Your organisation, CTC and residence details are saved. Please attach your latest CV when ready to complete your profile.';}
     else{awaiting=null;status='complete';reply='Thank you. Your latest CV and the four details are saved for the recruitment team to review. They will contact you if they need anything further.';}
     if(status!=='complete')status='collecting';

@@ -89,6 +89,31 @@ test('labeled answers in one message are retained and corrections can be made',a
  assert.equal((await store.list(t))[0].answers.residence,'Bopal, Ahmedabad');
  await reply('Expected CTC: INR 45000 monthly');assert.equal((await store.list(t))[0].answers.expected_ctc,'INR 45000 monthly');
 });
+
+test('city and state alone require locality, and repeating the city does not complete the profile',async()=>{
+ await store.consume(t,'cloud',cv());await reply('Example LLP');await reply('30000 monthly');await reply('40000 monthly');
+ const city=await reply('Ahmedabad Gujarat');assert.match(city.reply!,/area or locality in Ahmedabad/);
+ let [c]=await store.list(t);assert.equal(c.status,'collecting');assert.equal(c.awaiting_field,'residence_area');assert.equal(c.answers.residence_city,'Ahmedabad');assert.equal(c.answers.residence_area,undefined);
+ await reply('Ahmedabad, Gujarat');assert.equal((await store.list(t))[0].status,'collecting');
+ await reply('Gujarat');assert.equal((await store.list(t))[0].answers.residence_area,undefined);
+ await reply('South Bopal');[c]=await store.list(t);assert.equal(c.status,'complete');assert.equal(c.answers.residence_area,'South Bopal');assert.equal(c.answers.residence,'South Bopal, Ahmedabad');assert.equal(c.cv_count,1);
+});
+
+test('legacy completed city-only profile reopens for locality without losing CV or salary answers',async()=>{
+ await store.consume(t,'cloud',cv());
+ const legacy={current_organisation:'Example LLP',current_ctc:'1200000 p.a.',expected_ctc:'100000 p.m.',residence:'Ahmedabad Gujarat'};
+ await database.query("UPDATE recruitment_candidates SET status='complete',awaiting_field=NULL,answers=$1::jsonb",[JSON.stringify(legacy)]);
+ const msg=incoming('Ahmedabad Gujarat',{sourceMessageId:'reprocess-residence:original'});
+ assert.match((await store.consume(t,'cloud',msg)).reply!,/area or locality in Ahmedabad/);
+ assert.equal((await store.consume(t,'cloud',msg)).reply,undefined);
+ const [c]=await store.list(t);assert.equal(c.status,'collecting');assert.equal(c.awaiting_field,'residence_area');assert.equal(c.cv_count,1);assert.equal(c.answers.current_ctc,legacy.current_ctc);
+ await reply('Shela, Ahmedabad');assert.equal((await store.list(t))[0].status,'complete');
+});
+
+test('separate labeled city and area are retained as distinct residence fields',async()=>{
+ await reply('send later');await reply('City: Ahmedabad\nArea: Bopal');
+ const [c]=await store.list(t);assert.equal(c.answers.residence_city,'Ahmedabad');assert.equal(c.answers.residence_area,'Bopal');assert.equal(c.answers.residence,'Bopal, Ahmedabad');
+});
 test('opt-out and human handoff prevent fallback bots and further automated questions',async()=>{
  assert.match((await reply('not interested')).reply!,/stopped/);
  assert.equal((await reply('hello')).reply,undefined);
