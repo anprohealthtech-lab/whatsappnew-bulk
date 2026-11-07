@@ -114,6 +114,21 @@ test('separate labeled city and area are retained as distinct residence fields',
  await reply('send later');await reply('City: Ahmedabad\nArea: Bopal');
  const [c]=await store.list(t);assert.equal(c.answers.residence_city,'Ahmedabad');assert.equal(c.answers.residence_area,'Bopal');assert.equal(c.answers.residence,'Bopal, Ahmedabad');
 });
+
+test('late explicit salary correction is not mistaken for a city or locality',async()=>{
+ await store.consume(t,'cloud',cv());await reply('Example LLP');await reply('261780 yearly');await reply('21815 monthly');
+ assert.equal((await reply('I was expected ctc monthly in 30 thousand on hand')).reply,questions.residence);
+ let [c]=await store.list(t);assert.equal(c.status,'collecting');assert.equal(c.answers.residence_city,undefined);assert.match(c.answers.expected_ctc,/30 thousand/);
+ await reply('Ahmedabad');await reply('30000 monthly');[c]=await store.list(t);assert.equal(c.awaiting_field,'residence_area');assert.equal(c.answers.residence_area,undefined);
+});
+
+test('legacy salary stored as residence is repaired using the original actual reply',async()=>{
+ await store.consume(t,'cloud',cv());
+ const text='I was expected ctc monthly in 30 thousand on hand';
+ await database.query("UPDATE recruitment_candidates SET status='complete',awaiting_field=NULL,answers=$1::jsonb",[JSON.stringify({current_organisation:'Example LLP',current_ctc:'261780 yearly',expected_ctc:'21815 monthly',residence:text})]);
+ assert.equal((await reply(text)).reply,questions.residence);
+ const [c]=await store.list(t);assert.equal(c.awaiting_field,'residence_city');assert.equal(c.answers.residence_city,undefined);assert.equal(c.answers.residence_as_reported,text);assert.equal(c.answers.expected_ctc,text);
+});
 test('opt-out and human handoff prevent fallback bots and further automated questions',async()=>{
  assert.match((await reply('not interested')).reply!,/stopped/);
  assert.equal((await reply('hello')).reply,undefined);

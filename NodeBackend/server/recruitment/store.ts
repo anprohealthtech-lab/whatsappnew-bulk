@@ -17,6 +17,7 @@ const locationKey=(s:string)=>s.toLowerCase().replace(/[^\p{L}\p{N}]/gu,'');
 // city suffix. A city followed by its state must never become an area/city pair.
 export function parseResidence(raw:string):{city:string;area?:string}{
  const value=raw.trim().slice(0,1000);
+ if(/\b(ctc|salary|monthly|annually|yearly|thousand|lakh|lpa|per month|per year|on hand|deduction)\b/i.test(value))return {city:''};
  const known=value.match(/^(?:(.+?)[,\s]+)?(Ahmedabad|Ahemdabad|Gandhinagar|Vadodara|Baroda|Surat|Rajkot|Mumbai|Pune|Delhi|Bengaluru|Bangalore|Jaipur)(?:[,\s]+(?:Gujarat|Maharashtra|Rajasthan|Karnataka|India))*[.\s]*$/i);
  if(known){const area=known[1]?.replace(/[,\s]+$/,'').trim();return {city:known[2],...(area&&!stateOnly.test(area)?{area}:{})};}
  const parts=value.split(/[,\n]+/).map(s=>s.trim()).filter(Boolean);
@@ -25,7 +26,7 @@ export function parseResidence(raw:string):{city:string;area?:string}{
 }
 export function residenceDetails(answers:Record<string,any>){
  const result={...answers};
- if(result.residence&&!result.residence_city){const parsed=parseResidence(result.residence);result.residence_city=parsed.city;if(parsed.area)result.residence_area=parsed.area;}
+ if(result.residence&&!result.residence_city){const parsed=parseResidence(result.residence);if(parsed.city){result.residence_city=parsed.city;if(parsed.area)result.residence_area=parsed.area;}else{result.residence_as_reported=result.residence;delete result.residence;}}
  if(result.residence_city&&result.residence_area)result.residence=`${result.residence_area}, ${result.residence_city}`;
  return result;
 }
@@ -104,11 +105,14 @@ export class RecruitmentStore {
     // Labeled answers can arrive together and do not depend on the last question.
     const labels:Record<string,string>={'current organisation':'current_organisation','current organization':'current_organisation','organisation':'current_organisation','organization':'current_organisation','current ctc':'current_ctc','expected ctc':'expected_ctc','residence':'residence','place of residence':'residence','location':'residence','city':'residence_city','area':'residence_area','locality':'residence_area'};
     let labeled=false;
+    // An explicitly named salary correction remains a salary answer even if
+    // it arrives after the bot has moved on to the residence question.
+    if(!isMedia&&/\bexpected\s*(?:ctc|salary)\b/i.test(text)&&/\b(month|monthly|annual|annually|year|yearly|pm|p\.m|pa|p\.a|lpa)\b/i.test(text)){answers.expected_ctc=text.slice(0,1000);labeled=true;}
     if(!isMedia)for(const line of text.split(/\n/)){
      const match=line.match(/^\s*([^:]+):\s*(.+)$/);if(!match)continue;
      const key=labels[match[1].toLowerCase().trim()];if(key){
       const value=match[2].trim().slice(0,1000);
-      if(key==='residence'){const parsed=parseResidence(value);answers.residence=value;answers.residence_city=parsed.city;delete answers.residence_area;if(parsed.area)answers.residence_area=parsed.area;}
+      if(key==='residence'){const parsed=parseResidence(value);if(parsed.city){answers.residence=value;answers.residence_city=parsed.city;delete answers.residence_area;if(parsed.area)answers.residence_area=parsed.area;}}
       else answers[key]=value;
       labeled=true;
      }
@@ -120,11 +124,11 @@ export class RecruitmentStore {
     if(!labeled&&!isMedia&&!control&&!skipCv&&awaiting&&order.includes(awaiting)&&text&&!text.includes('?')&&!/^\[/.test(text)){
      // Never guess whether a bare salary is monthly or annual.
      const ctc=awaiting.endsWith('_ctc');
-     if(awaiting==='residence_city'){const parsed=parseResidence(text);answers.residence=text.slice(0,1000);answers.residence_city=parsed.city;if(parsed.area)answers.residence_area=parsed.area;}
+     if(awaiting==='residence_city'){const parsed=parseResidence(text);if(parsed.city){answers.residence=text.slice(0,1000);answers.residence_city=parsed.city;if(parsed.area)answers.residence_area=parsed.area;}}
      else if(awaiting==='residence_area'){
       const parsed=parseResidence(text);
       if(parsed.area&&locationKey(parsed.city)===locationKey(answers.residence_city||''))answers.residence_area=parsed.area;
-      else if(!parsed.area&&!stateOnly.test(text)&&locationKey(parsed.city)!==locationKey(answers.residence_city||''))answers.residence_area=text.slice(0,1000);
+      else if(parsed.city&&!parsed.area&&!stateOnly.test(text)&&locationKey(parsed.city)!==locationKey(answers.residence_city||''))answers.residence_area=text.slice(0,1000);
      }
      else if(!ctc||/\b(month|monthly|monthwise|pm|p\.m|annual|annually|year|yearly|pa|p\.a|lpa|prefer not|not applicable|unemployed|not working|fresher|none)\b/i.test(text))answers[awaiting]=text.slice(0,1000);
     }

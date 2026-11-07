@@ -92,12 +92,13 @@ export function registerRecruitmentRoutes(app:Express){
   const c=all.find(candidate=>candidate.id===req.params.id);
   if(!c||['declined','paused'].includes(c.status))throw new Error('Candidate is not available for residence follow-up');
   const answers=residenceDetails(c.answers);
-  if(!c.answers.residence||!answers.residence_city||answers.residence_area)throw new Error('Candidate does not need an area follow-up');
+  if(!c.answers.residence||answers.residence_area)throw new Error('Candidate does not need a residence follow-up');
   if(!['current_organisation','current_ctc','expected_ctc'].every(key=>answers[key]))throw new Error('Earlier qualification answers are still outstanding');
   if(await cloudStore.suppressed(cloudStore.database.query,t,c.phone))throw new Error('Applicant has opted out or is blocked');
   const history=await recruitmentStore.conversation(t,c.id);
-  const incoming=history.find(m=>m.type==='incoming');
-  if(!incoming||incoming.content.trim().toLowerCase()!==c.answers.residence.trim().toLowerCase())throw new Error('The latest saved reply is not the residence answer');
+  const incoming=history.find(m=>m.type==='incoming'&&m.content.trim().toLowerCase()===c.answers.residence.trim().toLowerCase());
+  if(!incoming)throw new Error('The saved residence reply was not found');
+  if(history.some(m=>m.type==='incoming'&&new Date(m.created_at)>new Date(incoming.created_at)&&!/^(?:ok|okay|ohk|thanks|thank you)[.!\s]*$/i.test(m.content.trim())))throw new Error('A newer substantive reply needs review first');
   const receivedAt=new Date(incoming.created_at).getTime();
   if(!Number.isFinite(receivedAt)||Date.now()-receivedAt>=24*60*60*1000)throw new Error('The reply is outside the service window');
   const sender=await cloudStore.session(t,String(req.body.sessionId||''));
