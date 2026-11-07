@@ -75,6 +75,7 @@ export function registerRecruitmentRoutes(app:Express){
   const t=await tenant(req),all=await recruitmentStore.list(t);
   const c=all.find(candidate=>candidate.id===req.params.id);
   if(!c||c.status!=='collecting'||c.awaiting_field!=='cv'||c.cv_count>0)throw new Error('Candidate is not awaiting a deferred CV');
+  if(await cloudStore.suppressed(cloudStore.database.query,t,c.phone))throw new Error('Applicant has opted out or is blocked');
   const history=await recruitmentStore.conversation(t,c.id);
   const incoming=history.find(m=>m.type==='incoming');
   if(!incoming||!isCvDeferred(incoming.content))throw new Error('The latest saved reply is not a CV deferral');
