@@ -73,6 +73,10 @@ test('a promise to share the CV today moves on to organisation instead of reques
  const [candidate]=await store.list(t);assert.equal(candidate.answers.cv_deferred,true);assert.equal(candidate.awaiting_field,'current_organisation');
  assert.equal((await reply('Example Accountants LLP')).reply,questions.current_ctc);
 });
+test('an acknowledgement starts the four questions while leaving CV outstanding',async()=>{
+ const next=await reply('Ok');assert.match(next.reply!,/current organisation/);
+ const [candidate]=await store.list(t);assert.equal(candidate.cv_count,0);assert.equal(candidate.answers.cv_deferred,true);assert.equal(candidate.awaiting_field,'current_organisation');
+});
 test('bare salary is clarified, never silently assumed monthly or annual',async()=>{
  await reply('send later');await reply('Example Company');
  assert.equal((await reply('30000')).reply,questions.current_ctc);

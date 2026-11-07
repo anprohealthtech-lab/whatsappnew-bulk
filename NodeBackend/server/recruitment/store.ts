@@ -9,7 +9,8 @@ export const questions: Record<string,string> = {
  residence: 'Which area and city do you currently live in? Your full home address is not needed.',
 };
 const order=['current_organisation','current_ctc','expected_ctc','residence'];
-export const isCvDeferred=(text:string)=>/\b(later|send later|will (?:send|share|upload|forward)|(?:send|share|upload) (?:it |my cv |the cv )?(?:by |on )?(?:today|tomorrow|tonight)|no cv|don.t have|dont have)\b/i.test(text);
+export const isCvDeferred=(text:string)=>/\b(later|send later|will (?:send|share|upload|forward)|(?:send|share|upload) (?:it |my cv |the cv )?(?:by |on )?(?:today|tomorrow|tonight)|no cv|don.t have|dont have)\b/i.test(text)
+ || /^(?:ok(?:ay)?|yes|sure|will do|interested|i am interested)[.!\s]*$/i.test(text.trim());
 export type IncomingRecruitment = {phoneNumber:string;content?:string;sourceMessageId?:string;messageType?:string;receivedAt?:number;mediaBuffer?:Buffer;mediaInfo?:{mimetype?:string;fileName?:string}};
 export function validRecruitmentPhone(value:string):string {
  if(!/^\+?[\d\s()-]+$/.test(value))throw new Error('Invalid phone number');
