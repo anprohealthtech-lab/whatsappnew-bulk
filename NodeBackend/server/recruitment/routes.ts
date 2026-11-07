@@ -4,6 +4,7 @@ import {getTenant,requireAuth} from '../authMiddleware';
 import {cloudStore,cloudSession} from '../cloud/runtime';
 import {csvCell} from '../cloud/model';
 import {recruitmentStore} from './runtime';
+import {ACCOUNTANT_CV_TEMPLATE,accountantInvitation} from './invitation';
 
 async function tenant(req:Request){
  const requested=req.query.userId;
@@ -37,11 +38,12 @@ export function registerRecruitmentRoutes(app:Express){
   if(candidates.length!==new Set(data.candidateIds).size)throw new Error('Candidate not found in this account');
   if(candidates.some(c=>c.status!=='awaiting_reply'||c.session_name!==sender.session_name))throw new Error('Only uncontacted candidates for this sender may be started');
   const previouslySent=await cloudStore.database.query(`SELECT DISTINCT r.phone FROM cloud_campaign_recipients r JOIN cloud_campaigns c ON c.id=r.campaign_id
-   WHERE c.organization_id=$1 AND c.user_id=$2 AND c.template_name='cv_received' AND c.status NOT IN ('draft','cancelled')`,[t.organizationId,t.userId]);
+   WHERE c.organization_id=$1 AND c.user_id=$2 AND c.template_name IN ('cv_received','accountant_application_cv_request') AND c.status NOT IN ('draft','cancelled')`,[t.organizationId,t.userId]);
   if(candidates.some(c=>previouslySent.some(r=>r.phone===c.phone)))throw new Error('A CV campaign already exists for an applicant. Review its delivery report before retrying.');
-  const template=await session.getCampaignTemplate('cv_received','en');
-  const campaign=await cloudStore.create(t,{name:'Accountant CV refresh - '+new Date().toISOString().slice(0,10),sessionId:data.sessionId,templateName:'cv_received',language:'en',headerParams:[],buttonParams:[],intervalSeconds:25,dailyLimit:100,
-   recipients:candidates.map(c=>({name:c.name,phone:c.phone,bodyParams:[c.name,'Accounts Executive'],consentNote:data.consentSource}))},template);
+  const template=await session.getCampaignTemplate(ACCOUNTANT_CV_TEMPLATE,'en');
+  accountantInvitation(template,'Applicant');
+  const campaign=await cloudStore.create(t,{name:'Accountant CV refresh - '+new Date().toISOString().slice(0,10),sessionId:data.sessionId,templateName:ACCOUNTANT_CV_TEMPLATE,language:'en',headerParams:[],buttonParams:[],intervalSeconds:25,dailyLimit:100,
+   recipients:candidates.map(c=>({name:c.name,phone:c.phone,bodyParams:accountantInvitation(template,c.name).bodyParams,consentNote:data.consentSource}))},template);
   // Reserve every candidate under row locks before a worker can send. Concurrent
   // start requests may leave an unused draft, but cannot start duplicate invitations.
   await cloudStore.database.transaction(async q=>{

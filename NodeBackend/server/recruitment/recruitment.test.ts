@@ -3,6 +3,8 @@ import assert from 'node:assert/strict';
 import {PGlite} from '@electric-sql/pglite';
 import {RecruitmentStore,validRecruitmentPhone,questions} from './store';
 import {recruitmentSchemaSql} from './schema';
+import {ACCOUNTANT_CV_TEMPLATE,accountantInvitation} from './invitation';
+import {templateComponents} from '../cloud/model';
 const pg=new PGlite();
 const database={query:async(text:string,params:any[]=[]) => (await pg.query(text,params)).rows as any[],transaction:<T>(fn:any):Promise<T>=>pg.transaction(tx=>fn(async(text:string,params:any[]=[]) => (await tx.query(text,params)).rows))};
 const store=new RecruitmentStore(database);
@@ -15,6 +17,16 @@ const cv=()=>incoming('[Document: CV.pdf]',{messageType:'document',mediaInfo:{mi
 before(async()=>{await pg.exec(recruitmentSchemaSql);await pg.exec(recruitmentSchemaSql);await pg.exec('CREATE TABLE messages(id text PRIMARY KEY,organization_id text,user_id text,phone_number text,content text,type text,status text,metadata jsonb,sent_at timestamptz)');});
 beforeEach(async()=>{await pg.exec('TRUNCATE messages,recruitment_events,recruitment_cv_files,recruitment_candidates CASCADE');await store.enroll(t,'cloud',[recipient]);});
 after(()=>pg.close());
+
+test('application invitation uses the approved Utility template and one name parameter',()=>{
+ const template={name:ACCOUNTANT_CV_TEMPLATE,language:'en',status:'APPROVED',category:'UTILITY',components:[{type:'BODY',text:'Hello {{1}}, please share your updated CV.'}]};
+ const invitation=accountantInvitation(template,'Applicant');
+ assert.equal(invitation.templateName,ACCOUNTANT_CV_TEMPLATE);
+ assert.deepEqual(templateComponents(template,invitation.bodyParams,[],[]),[{type:'body',parameters:[{type:'text',text:'Applicant'}]}]);
+ assert.throws(()=>accountantInvitation({...template,status:'PENDING'},'Applicant'),/approval/);
+ assert.throws(()=>accountantInvitation({...template,category:'MARKETING'},'Applicant'),/Utility/);
+ assert.throws(()=>accountantInvitation({...template,name:'cv_received'},'Applicant'),/accountant application/);
+});
 
 test('validates applicant phone numbers and rejects malformed source values',()=>{
  assert.equal(validRecruitmentPhone('9876543210'),'919876543210');
