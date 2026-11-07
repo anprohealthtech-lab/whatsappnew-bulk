@@ -18,6 +18,9 @@ const input=z.object({sessionId:z.string().min(1),recipients:z.array(z.object({n
 export function registerRecruitmentRoutes(app:Express){
  const route=(fn:any)=>async(req:any,res:any)=>{try{await fn(req,res);}catch(e){res.status(400).json({error:e instanceof Error?e.message:'Recruitment request failed'});}};
  app.get('/api/recruitment/candidates',requireAuth,route(async(req:any,res:any)=>res.json(await recruitmentStore.list(await tenant(req)))));
+ app.get('/api/recruitment/campaigns/:id',requireAuth,route(async(req:any,res:any)=>{
+  res.json(await cloudStore.report(await tenant(req),req.params.id));
+ }));
  app.get('/api/recruitment/senders',requireAuth,route(async(req:any,res:any)=>{
   const t=await tenant(req);res.json(await cloudStore.database.query(`SELECT id,session_name,phone_number,status FROM whatsapp_sessions WHERE organization_id=$1 AND user_id=$2 AND provider='cloud_api'`,[t.organizationId,t.userId]));
  }));
