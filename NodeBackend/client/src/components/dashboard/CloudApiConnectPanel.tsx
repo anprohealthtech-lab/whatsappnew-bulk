@@ -7,7 +7,7 @@ import { Badge } from "@/components/ui/badge";
 import { Alert, AlertDescription } from "@/components/ui/alert";
 import { useToast } from "@/hooks/use-toast";
 import { Cloud, Loader2, CheckCircle2, Unplug, ShieldCheck } from "lucide-react";
-import { parseMetaSignupMessage } from "@shared/metaSignup";
+import { metaSignupDiagnostic, parseMetaSignupMessage } from "@shared/metaSignup";
 
 /**
  * "Connect WhatsApp Business (official API)" card.
@@ -74,7 +74,9 @@ export function CloudApiConnectPanel() {
   const queryClient = useQueryClient();
   const [busy, setBusy] = useState(false);
   const [progress, setProgress] = useState<string | null>(null);
+  const [diagnostic, setDiagnostic] = useState<string | null>(null);
   const signupResult = useRef<SignupResult>({});
+  const lastDiagnostic = useRef<string | null>(null);
 
   const { data: config } = useQuery<SignupConfig>({
     queryKey: ["/api/cloud/signup-config"],
@@ -93,6 +95,7 @@ export function CloudApiConnectPanel() {
     const onMessage = (event: MessageEvent) => {
       const payload = parseMetaSignupMessage(event.origin, event.data);
       if (!payload) return;
+      lastDiagnostic.current = JSON.stringify(metaSignupDiagnostic(payload), null, 2);
       if (payload.event === "FINISH" || payload.event === "FINISH_ONLY_WABA" || payload.event === "FINISH_WHATSAPP_BUSINESS_APP_ONBOARDING") {
         signupResult.current = {
           event: payload.event,
@@ -143,6 +146,8 @@ export function CloudApiConnectPanel() {
     if (!config?.enabled) return;
     setBusy(true);
     setProgress("Opening Meta's signup window...");
+    setDiagnostic(null);
+    lastDiagnostic.current = null;
     signupResult.current = {};
     try {
       await loadFacebookSdk(config.appId, config.graphVersion);
@@ -186,9 +191,13 @@ export function CloudApiConnectPanel() {
           } else {
             setBusy(false);
             setProgress(null);
+            setDiagnostic(lastDiagnostic.current || JSON.stringify({ event: "none", fields: {} }, null, 2));
+            const receivedFinish = signupResult.current.event?.startsWith("FINISH");
             toast({
-              title: "Meta signup details were not received",
-              description: `Facebook authorized the login, but the WhatsApp account details did not reach this page (event: ${signupResult.current.event || "none"}). Your phone verification may have succeeded. Check the Embedded Signup configuration and popup completion before retrying.`,
+              title: receivedFinish ? "Meta signup account ID is missing" : "Meta signup details were not received",
+              description: receivedFinish
+                ? "Meta sent a completion message, but the app could not read the WhatsApp account ID. Copy the signup diagnostic below so we can check the response format. Your phone verification may have succeeded."
+                : "Facebook authorized the login, but no WhatsApp completion message reached this page. Check the Embedded Signup configuration and popup completion before retrying.",
               variant: "destructive",
             });
           }
@@ -281,6 +290,28 @@ export function CloudApiConnectPanel() {
           <div className="flex items-center gap-2 text-sm">
             <Loader2 className="h-4 w-4 animate-spin" /> {progress}
           </div>
+        )}
+        {diagnostic && (
+          <Alert>
+            <AlertDescription className="space-y-2">
+              <p>Copy this signup diagnostic and share it with support. It contains field names, types and account IDs; login codes and tokens are excluded.</p>
+              <textarea
+                aria-label="Meta signup diagnostic"
+                readOnly
+                value={diagnostic}
+                onFocus={(event) => event.currentTarget.select()}
+                className="w-full h-48 rounded border bg-background p-2 font-mono text-xs"
+              />
+              <Button variant="outline" size="sm" onClick={async () => {
+                try {
+                  await navigator.clipboard.writeText(diagnostic);
+                  toast({ title: "Signup diagnostic copied" });
+                } catch {
+                  toast({ title: "Select the diagnostic text and copy it manually" });
+                }
+              }}>Copy signup diagnostic</Button>
+            </AlertDescription>
+          </Alert>
         )}
       </CardContent>
     </Card>

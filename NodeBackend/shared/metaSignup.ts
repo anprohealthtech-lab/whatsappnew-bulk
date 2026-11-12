@@ -12,6 +12,36 @@ export function parseMetaSignupMessage(origin: string, raw: unknown): any | null
   }
 }
 
+/** Copyable field layout for troubleshooting; never include arbitrary message values. */
+export function metaSignupDiagnostic(payload: any) {
+  const knownEvents = ['FINISH', 'FINISH_ONLY_WABA', 'FINISH_WHATSAPP_BUSINESS_APP_ONBOARDING', 'CANCEL', 'ERROR'];
+  const fields: Record<string, string> = {};
+  const ids: Record<string, string> = {};
+  const idFields = new Set(['waba_id', 'phone_number_id', 'business_id', 'messaging_account_ids']);
+  const visit = (value: unknown, path: string, depth: number, idField = false) => {
+    if (Object.keys(fields).length >= 50) return;
+    fields[path] = value === null ? 'null' : Array.isArray(value) ? 'array' : typeof value;
+    // Meta IDs are decimal strings. Never copy codes, tokens, error text or phone numbers.
+    if (idField && typeof value === 'string' && /^\d{1,40}$/.test(value)) ids[path] = value;
+    if (depth >= 4 || !value || typeof value !== 'object') return;
+    if (Array.isArray(value)) {
+      value.slice(0, 3).forEach((item, index) => visit(item, `${path}[${index}]`, depth + 1, idField));
+    } else {
+      Object.entries(value).slice(0, 30).forEach(([key, item]) => {
+        visit(item, `${path}.${key}`, depth + 1, idFields.has(key));
+      });
+    }
+  };
+  visit(payload?.data, 'data', 0);
+  return {
+    event: knownEvents.includes(payload?.event) ? payload.event : 'OTHER',
+    version: /^v?\d{1,3}$/.test(String(payload?.version)) ? String(payload.version) : 'unknown',
+    messageFields: payload && typeof payload === 'object' ? Object.keys(payload).slice(0, 30) : [],
+    fields,
+    ids,
+  };
+}
+
 /** Never silently select between multiple phones or from an incomplete list. */
 export function selectSignupPhone(result: any, requestedId?: string): string {
   const phones = Array.isArray(result?.data) ? result.data : [];
