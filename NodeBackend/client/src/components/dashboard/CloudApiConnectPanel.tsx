@@ -115,7 +115,7 @@ export function CloudApiConnectPanel() {
   }, []);
 
   const onboard = useMutation({
-    mutationFn: async (body: { code: string; phoneNumberId?: string; wabaId: string }) => {
+    mutationFn: async (body: { code: string; phoneNumberId?: string; wabaId: string; signupEvent?: string }) => {
       const res = await apiRequest("POST", "/api/cloud/onboard", body);
       return res.json();
     },
@@ -179,24 +179,28 @@ export function CloudApiConnectPanel() {
             }
             return;
           }
-          const { phoneNumberId, wabaId } = signupResult.current;
+          const { phoneNumberId, wabaId, event: signupEvent } = signupResult.current;
           if (phoneNumberId && wabaId) {
-            onboard.mutate({ code, phoneNumberId, wabaId });
+            onboard.mutate({ code, phoneNumberId, wabaId, signupEvent });
           } else if (attempt < 60) {
             setTimeout(() => finish(attempt + 1), 250);
           } else if (wabaId) {
             // Some completed flows return the account without a phone ID.
             // The server may resolve it only when that account has one phone.
-            onboard.mutate({ code, wabaId });
+            onboard.mutate({ code, wabaId, signupEvent });
           } else {
             setBusy(false);
             setProgress(null);
-            setDiagnostic(lastDiagnostic.current || JSON.stringify({ event: "none", fields: {} }, null, 2));
+            setDiagnostic(JSON.stringify({
+              configId: config.configId,
+              featureType: "whatsapp_business_app_onboarding",
+              response: lastDiagnostic.current ? JSON.parse(lastDiagnostic.current) : { event: "none", fields: {} },
+            }, null, 2));
             const receivedFinish = signupResult.current.event?.startsWith("FINISH");
             toast({
               title: receivedFinish ? "Meta signup account ID is missing" : "Meta signup details were not received",
               description: receivedFinish
-                ? "Meta sent a completion message, but the app could not read the WhatsApp account ID. Copy the signup diagnostic below so we can check the response format. Your phone verification may have succeeded."
+                ? "Meta completed the flow without returning a WhatsApp account ID. Check that the login configuration includes WhatsApp Cloud API and WhatsApp accounts, and complete the connection of your WhatsApp Business app number. Copy the signup diagnostic below if it still fails."
                 : "Facebook authorized the login, but no WhatsApp completion message reached this page. Check the Embedded Signup configuration and popup completion before retrying.",
               variant: "destructive",
             });
@@ -210,8 +214,7 @@ export function CloudApiConnectPanel() {
         override_default_response_type: true,
         extras: {
           setup: {},
-          featureType: "",
-          sessionInfoVersion: "3",
+          featureType: "whatsapp_business_app_onboarding",
         },
       },
     );
@@ -227,9 +230,8 @@ export function CloudApiConnectPanel() {
       </CardHeader>
       <CardContent className="space-y-4">
         <p className="text-sm text-muted-foreground">
-          Link a WhatsApp Business number through Meta's official API instead of a QR code. No phone needs to stay
-          online, there is no risk of the number being banned for automation, and your team can keep using the
-          WhatsApp Business app on the same number.
+          Connect your existing WhatsApp Business app number through Meta's official API. For eligible numbers,
+          Meta's connection flow lets your team keep using the WhatsApp Business app on the same number.
         </p>
 
         {isLoading ? (
@@ -280,7 +282,7 @@ export function CloudApiConnectPanel() {
             </Button>
             <ul className="text-xs text-muted-foreground list-disc pl-5 space-y-1">
               <li>You will log in to Facebook and pick or create your Meta Business portfolio.</li>
-              <li>Add the number you want to use. A number already on the WhatsApp Business app can stay on the app.</li>
+              <li>Choose the option to connect your existing WhatsApp Business app and follow Meta's verification instructions on your phone.</li>
               <li>Messaging charges from Meta are billed to your own business account.</li>
             </ul>
           </>

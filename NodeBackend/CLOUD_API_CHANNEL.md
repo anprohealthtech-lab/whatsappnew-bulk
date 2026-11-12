@@ -100,16 +100,21 @@ Flow:
    and the card then shows a notice instead of the button).
 2. `client/src/components/dashboard/CloudApiConnectPanel.tsx` loads Meta's JS
    SDK and calls `FB.login()` with `config_id`, `response_type: "code"`,
-   `override_default_response_type: true`, `extras.sessionInfoVersion: "3"`.
+   `override_default_response_type: true`, and
+   `extras.featureType: "whatsapp_business_app_onboarding"` to offer the
+   existing WhatsApp Business app (Coexistence) connection path. The login
+   configuration must use the WhatsApp Embedded Signup variation with the
+   WhatsApp Cloud API product and WhatsApp accounts asset; a configuration
+   named "WhatsApp Embedded Signup" but using the General variation is insufficient.
    The popup sends a `WA_EMBEDDED_SIGNUP` `postMessage` (`FINISH` event with
    `phone_number_id` + `waba_id`); the login callback returns a one-time
    `code`.
-3. `POST /api/cloud/onboard { code, phoneNumberId, wabaId }` (tenant auth):
+3. `POST /api/cloud/onboard { code, phoneNumberId, wabaId, signupEvent }` (tenant auth):
    exchanges the code at `/oauth/access_token` for a permanent business
    token, verifies the token can read the WABA and number, `POST
    /{waba}/subscribed_apps` (webhooks), `POST /{phone}/register` with a PIN
-   derived from the app secret (ignored when already registered, e.g.
-   coexistence numbers), then upserts the tenant's `cloud_api` session row
+   derived from the app secret (skipped for Business app completion events
+   and phones Meta already reports as CLOUD_API/CONNECTED), then upserts the tenant's `cloud_api` session row
    and loads it. The response lists each step's outcome.
 4. `GET /api/cloud/session` / `POST /api/cloud/session/disconnect` drive the
    card's status and the Disconnect button.
@@ -127,6 +132,15 @@ Meta App Dashboard prerequisites (one-time, app "AnPro Healthtech"):
   numbers, permissions `whatsapp_business_management` +
   `whatsapp_business_messaging`. Copy the configuration id into
   `META_ES_CONFIG_ID`.
+- For the configurations checked on 2026-11-12, `1044626671915827`
+  ("Tech Provider Meta-hosted Embedded Signup config") has these products
+  and assets. `2041930493134731` uses the General variation. Verify the
+  deployed `META_ES_CONFIG_ID` points to the WhatsApp-specific configuration.
+- On a missing-account failure, "Copy signup diagnostic" includes the launch
+  configuration ID and feature type as well as the sanitized Meta response.
+  This makes it possible to verify the deployed configuration without sharing
+  authorization codes or tokens. Retry after deployment with a full refresh;
+  choose the existing Business app option and follow Meta's phone verification.
 - Until **App Review** grants Advanced Access on those two permissions, only
   people with a role on the app (admin/developer/tester) can complete the
   popup. External clients need the review to pass (needs privacy policy URL,

@@ -28,6 +28,7 @@ import { CloudApiSession, GraphApiError } from './services/CloudApiSession';
 import { requireAuth, requireSuperAdmin, getTenant } from './authMiddleware';
 import { selectSignupPhone } from '@shared/metaSignup';
 import { cloudStore } from './cloud/runtime';
+import { completeSignupRegistration } from './cloud/signupRegistration';
 
 const GRAPH_VERSION = process.env.META_GRAPH_VERSION || 'v25.0';
 const GRAPH_BASE = `https://graph.facebook.com/${GRAPH_VERSION}`;
@@ -295,13 +296,13 @@ export function registerCloudApiRoutes(app: Express) {
   });
 
   /**
-   * Body: { code, phoneNumberId, wabaId, sessionName? }
+   * Body: { code, phoneNumberId, wabaId, signupEvent?, sessionName? }
    *  - code: from FB.login() callback (response.authResponse.code)
    *  - phoneNumberId / wabaId: from the WA_EMBEDDED_SIGNUP "FINISH" message event
    */
   app.post('/api/cloud/onboard', requireAuth, async (req: Request, res: Response) => {
     const tenant = getTenant(req);
-    const { code, wabaId, sessionName = DEFAULT_CLOUD_SESSION_NAME } = req.body || {};
+    const { code, wabaId, signupEvent, sessionName = DEFAULT_CLOUD_SESSION_NAME } = req.body || {};
     let phoneNumberId = req.body?.phoneNumberId ? String(req.body.phoneNumberId) : undefined;
     const appId = process.env.META_APP_ID;
     const appSecret = process.env.META_APP_SECRET;
@@ -349,29 +350,19 @@ export function registerCloudApiRoutes(app: Express) {
         throw error;
       }
 
-      // 4. Register the number for Cloud API messaging (no-op if already registered).
-      try {
-        await graph('POST', `/${phoneNumberId}/register`, accessToken, undefined, {
+      // 4. Business app onboarding registers the number inside Meta's flow.
+      // This client hint can only skip registration; the Graph status check below
+      // must still confirm a connected Cloud API phone before creating a session.
+      const registeredPhone = await completeSignupRegistration({
+        phone,
+        signupEvent,
+        steps,
+        register: () => graph('POST', `/${phoneNumberId}/register`, accessToken, undefined, {
           messaging_product: 'whatsapp',
           pin: registrationPin(String(phoneNumberId)),
-        });
-        steps.register = 'ok';
-      } catch (error) {
-        const msg = errorMessage(error);
-        // Already registered numbers (e.g. coexistence) return an error we can ignore.
-        if (/already|registered/i.test(msg)) {
-          steps.register = 'already registered';
-        } else {
-          steps.register = `failed: ${msg}`;
-          log(`[CloudAPI] register failed for ${phoneNumberId}: ${msg}`);
-          throw error;
-        }
-      }
-
-      const registeredPhone = await graph('GET', `/${phoneNumberId}`, accessToken, { fields: 'platform_type,status' });
-      if (registeredPhone.platform_type !== 'CLOUD_API' || registeredPhone.status !== 'CONNECTED') {
-        throw new Error(`Meta has not completed Cloud API registration (platform ${registeredPhone.platform_type || 'unknown'}, status ${registeredPhone.status || 'unknown'}). The app session was not linked. Complete the appropriate onboarding/migration flow and retry.`);
-      }
+        }),
+        readPhone: () => graph('GET', `/${phoneNumberId}`, accessToken, { fields: 'platform_type,status' }),
+      });
 
       // 5. Store + load the session for this tenant.
       const service = await upsertCloudSession({
