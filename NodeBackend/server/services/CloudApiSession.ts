@@ -20,6 +20,7 @@ import fs from 'fs';
 import path from 'path';
 import { log } from '../utils';
 import type { WAServiceInstance, WhatsAppStatus } from './WhatsAppSessionManager';
+import type { metaTemplatePayload } from '@shared/cloudTemplate';
 
 const GRAPH_VERSION = process.env.META_GRAPH_VERSION || 'v25.0';
 const GRAPH_BASE = `https://graph.facebook.com/${GRAPH_VERSION}`;
@@ -321,7 +322,7 @@ export class CloudApiSession extends EventEmitter implements WAServiceInstance {
     let after: string | undefined;
     for (let page=0;page<20;page++) {
       const result=await this.graph('GET',`/${this.wabaId}/message_templates`,{
-        fields:'id,name,status,category,language,components,parameter_format',limit:'100',...(after ? {after} : {}),
+        fields:'id,name,status,category,language,components,parameter_format,rejected_reason',limit:'100',...(after ? {after} : {}),
       },undefined,30000);
       templates.push(...(result.data || []));
       if (!result.paging?.next) return templates;
@@ -339,6 +340,11 @@ export class CloudApiSession extends EventEmitter implements WAServiceInstance {
     const template = result?.data?.find((t: any) => t.name === name && t.language === language);
     if (!template) throw new Error('Template not found for this sender and language');
     return template;
+  }
+
+  async createMessageTemplate(payload: ReturnType<typeof metaTemplatePayload>): Promise<any> {
+    if (!this.wabaId) throw new Error('Sender has no WABA');
+    return this.graph('POST', `/${this.wabaId}/message_templates`, undefined, payload, 30000);
   }
 
   async sendCampaignTemplate(to: string, template: any, attemptId: string): Promise<string> {

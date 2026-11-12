@@ -1,6 +1,28 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { CloudApiSession, GraphApiError } from '../services/CloudApiSession';
+import { metaTemplatePayload } from '@shared/cloudTemplate';
+
+test('template approval request uses the selected session WABA and its token, not the message-send endpoint',async()=>{
+  const original=globalThis.fetch;
+  const requests:any[]=[];
+  globalThis.fetch=async(url,init)=>{
+    requests.push({url:String(url),method:init?.method,headers:init?.headers,body:JSON.parse(String(init?.body))});
+    return new Response(JSON.stringify({id:'new-template',status:'PENDING',category:'UTILITY'}),{status:200});
+  };
+  try {
+    const session=new CloudApiSession({userId:'fixture',sessionName:'cloud',phoneNumberId:'owned-phone',wabaId:'owned-waba',accessToken:'fixture-token'});
+    const payload=metaTemplatePayload({name:'order_update',language:'en_US',category:'UTILITY',bodyText:'Your requested order update is ready.'});
+    const result=await session.createMessageTemplate(payload);
+    assert.equal(result.status,'PENDING');
+    assert.equal(requests.length,1);
+    assert.match(requests[0].url,/\/owned-waba\/message_templates$/);
+    assert.equal(requests[0].method,'POST');
+    assert.equal(requests[0].headers.Authorization,'Bearer fixture-token');
+    assert.deepEqual(requests[0].body,payload);
+    assert.equal(JSON.stringify(result).includes('fixture-token'),false);
+  } finally {globalThis.fetch=original;}
+});
 
 test('official campaign sends image template and correlation id without changing legacy text transport',async()=>{
   const original=globalThis.fetch;

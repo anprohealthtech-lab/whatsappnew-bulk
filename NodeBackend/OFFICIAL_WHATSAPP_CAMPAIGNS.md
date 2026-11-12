@@ -2,6 +2,27 @@
 
 The official campaign workflow is separate from the existing Baileys campaign sender. Open `/cloud-campaigns` or **Official WhatsApp** in the sidebar. Existing `/campaigns`, campaign tables, Baileys services, ad-hoc template sends and bot replies retain their existing interfaces.
 
+## User templates and Claude Haiku helper
+
+Open **Official WhatsApp -> Templates & AI helper** (`/cloud-templates`). Select a connected official sender belonging to the signed-in user. The server checks both organization and user ownership before listing templates, spending AI tokens, submitting to Meta, or returning billing context. Templates are Meta WABA assets: numbers sharing the same WABA share its template library.
+
+The library shows all Meta statuses, category, language, message content and rejection reasons when supplied. It refreshes once per minute or through **Refresh status**. Approved Utility and Marketing templates have a **Use in a campaign** action that carries the sender, template, language and approved category into a new campaign draft. Campaign type is checked against Meta's approved category on the server; the authoritative category remains in the saved template snapshot. Authentication/OTP templates remain visible in the library but cannot be used for bulk campaigns.
+
+The helper uses the existing server-side `ANTHROPIC_API_KEY` with `claude-haiku-4-5-20251001`. It makes one forced-tool draft request, validates the structured result, and never submits or sends from the AI call. It recommends Marketing for promotional briefs rather than presenting them as Utility. There is one concurrent generation and a five-draft-per-minute limit per signed-in user, enforced within each server process. Manual composition remains available when AI is not configured.
+
+The editor supports text bodies, optional plain-text header/footer, up to ten positional variables with fictional examples, and up to three quick-reply/static HTTPS URL/phone buttons. Existing approved media templates remain usable by the campaign composer; creating new media or OTP templates through this editor is not supported. Drafts remain on the current page until submitted; they are not saved to the database. The user edits and reviews the exact content and sender, then clicks **Submit to Meta**. Meta returns the template ID, status and category; the app does not claim approval before Meta confirms it. On an uncertain submission error, refresh the library before retrying; submission is not automatically retried.
+
+**Meta billing & credit** opens Meta Billing and shows the selected WABA context. The app does not fetch a live Meta credit balance, estimate invoice amounts or add an app wallet. `balance: null` means unavailable, not zero. The user must select the business owning that WABA in Meta Billing.
+
+Additional authenticated endpoints:
+
+- `GET /api/cloud/template-library?sessionId=...`
+- `POST /api/cloud/template-assistant { sessionId, category, language, brief }`
+- `POST /api/cloud/template-library { sessionId, template }`
+- `GET /api/cloud/billing-info?sessionId=...`
+
+No new database migration or dependency is required for this workflow. It requires an already connected official sender with WhatsApp account management permissions; it does not resolve Meta portfolio eligibility errors during Embedded Signup.
+
 ## Storage
 
 The existing PostgreSQL database holds four new tables:

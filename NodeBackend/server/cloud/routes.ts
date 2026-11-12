@@ -2,6 +2,10 @@ import type { Express, Request, Response } from 'express';
 import { requireAuth,getTenant } from '../authMiddleware';
 import { campaignInput,csvCell } from './model';
 import { cloudStore,cloudSession,validateCampaign } from './runtime';
+import { CloudTemplateWorkflow } from './templateWorkflow';
+import { generateTemplateDraft } from './templateAssistant';
+
+const templateWorkflow = new CloudTemplateWorkflow(cloudSession, generateTemplateDraft);
 
 export function registerCloudCampaignRoutes(app: Express) {
   const route = (fn: (req: Request,res: Response)=>Promise<unknown>) => async(req: Request,res: Response) => {
@@ -17,6 +21,18 @@ export function registerCloudCampaignRoutes(app: Express) {
   app.get('/api/cloud/campaign-templates',requireAuth,route(async(req,res)=>{
     const s=await cloudSession(getTenant(req),String(req.query.sessionId || ''));
     res.json((await s.listCampaignTemplates()).filter(t=>t.status==='APPROVED'));
+  }));
+  app.get('/api/cloud/template-library',requireAuth,route(async(req,res)=>{
+    res.json(await templateWorkflow.list(getTenant(req),String(req.query.sessionId || '')));
+  }));
+  app.post('/api/cloud/template-assistant',requireAuth,route(async(req,res)=>{
+    res.json(await templateWorkflow.draft(getTenant(req),req.body));
+  }));
+  app.post('/api/cloud/template-library',requireAuth,route(async(req,res)=>{
+    res.status(201).json(await templateWorkflow.submit(getTenant(req),req.body));
+  }));
+  app.get('/api/cloud/billing-info',requireAuth,route(async(req,res)=>{
+    res.json(await templateWorkflow.billing(getTenant(req),String(req.query.sessionId || '')));
   }));
   app.get('/api/cloud/campaigns',requireAuth,route(async(req,res)=>{res.json(await cloudStore.list(getTenant(req)));}));
   app.post('/api/cloud/campaigns',requireAuth,route(async(req,res)=>{

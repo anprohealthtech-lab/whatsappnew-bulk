@@ -18,12 +18,16 @@ export default function CloudCampaigns() {
   const cache=useQueryClient();
   const {user}=useAuth();
   const [selected,setSelected]=useState('');
-  const [creating,setCreating]=useState(false);
+  const [creating,setCreating]=useState(()=>!!new URLSearchParams(window.location.search).get('template'));
   const [error,setError]=useState('');
   const [busy,setBusy]=useState(false);
   const [name,setName]=useState('');
-  const [sessionId,setSessionId]=useState('');
-  const [templateKey,setTemplateKey]=useState('');
+  const [sessionId,setSessionId]=useState(()=>new URLSearchParams(window.location.search).get('sessionId') || '');
+  const [templateKey,setTemplateKey]=useState(()=>{
+    const query=new URLSearchParams(window.location.search);
+    return query.get('template') ? `${query.get('template')}:${query.get('language') || 'en_US'}` : '';
+  });
+  const [campaignType,setCampaignType]=useState<'UTILITY'|'MARKETING'>(()=>new URLSearchParams(window.location.search).get('category')==='MARKETING' ? 'MARKETING' : 'UTILITY');
   const [media,setMedia]=useState('');
   const [headerTexts,setHeaderTexts]=useState<string[]>([]);
   const [buttonTexts,setButtonTexts]=useState<Record<number,string>>({});
@@ -39,7 +43,8 @@ export default function CloudCampaigns() {
     queryFn:async()=> (await apiRequest('GET',`/api/cloud/campaign-templates?sessionId=${encodeURIComponent(sessionId)}`)).json()});
   const {data:report,error:reportError}=useQuery<Row>({queryKey:['/api/cloud/campaigns',user?.id,selected],enabled:!!selected,refetchInterval:5000,queryFn:async()=> (await apiRequest('GET',`/api/cloud/campaigns/${selected}`)).json()});
   const {data:events=[],error:eventsError}=useQuery<Row[]>({queryKey:['/api/cloud/status-events',user?.id],refetchInterval:10000,queryFn:async()=> (await apiRequest('GET','/api/cloud/status-events')).json()});
-  const template=templates.find(t=>`${t.name}:${t.language}`===templateKey);
+  const categoryTemplates=templates.filter(t=>t.category===campaignType);
+  const template=categoryTemplates.find(t=>`${t.name}:${t.language}`===templateKey);
   const header=template?.components?.find((p:Row)=>p.type==='HEADER');
   const body=template?.components?.find((p:Row)=>p.type==='BODY');
   const buttons:Row[]=template?.components?.find((p:Row)=>p.type==='BUTTONS')?.buttons || [];
@@ -63,7 +68,7 @@ export default function CloudCampaigns() {
     const buttonParams=buttons.flatMap((b,i)=>b.type==='URL' && parameterCount(b.url)>0
       ? [{index:i,subType:'url',text:buttonTexts[i] || ''}] : []);
     const result=await (await apiRequest('POST','/api/cloud/campaigns',{name,sessionId,templateName:template.name,
-      language:template.language,headerParams,buttonParams,intervalSeconds:interval,dailyLimit:daily,recipients})).json();
+      language:template.language,campaignType,headerParams,buttonParams,intervalSeconds:interval,dailyLimit:daily,recipients})).json();
     setSelected(result.id);setCreating(false);
   }
   const action=(value:string)=>work(async()=>{
@@ -79,14 +84,17 @@ export default function CloudCampaigns() {
   const counts:Row=report?.counts || {};
   return <main className="min-h-screen bg-background text-foreground overflow-y-auto"><div className="max-w-6xl mx-auto p-6 space-y-6">
     <Button variant="ghost" onClick={()=>{if(selected || creating){setSelected('');setCreating(false);setLaunchPreview(false);}else navigate('/');}}><ArrowLeft className="w-4 h-4 mr-2"/>Back</Button>
-    <div className="flex items-center justify-between gap-4"><div><h1 className="text-2xl font-bold flex gap-2 items-center"><ShieldCheck/>Official WhatsApp campaigns</h1>
+    <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-4"><div><h1 className="text-2xl font-bold flex gap-2 items-center"><ShieldCheck/>Official WhatsApp campaigns</h1>
       <p className="text-muted-foreground mt-2">Approved templates, scheduled batches and delivery reports.</p></div>
-      {!creating && !selected && <Button onClick={()=>{setCreating(true);setError('');}}><Plus className="w-4 h-4 mr-2"/>New campaign</Button>}</div>
+      <div className="flex flex-wrap gap-2"><Button variant="outline" onClick={()=>navigate(`/cloud-templates${sessionId ? `?sessionId=${encodeURIComponent(sessionId)}` : ''}`)}>Templates & AI helper</Button>
+      {!creating && !selected && <Button onClick={()=>{setCreating(true);setError('');}}><Plus className="w-4 h-4 mr-2"/>New campaign</Button>}</div></div>
     {(error || listError || reportError || senderError || templateError || eventsError) && <div role="alert" className="border border-destructive text-destructive rounded-lg p-4">{error || String(listError || reportError || senderError || templateError || eventsError)}</div>}
     {creating ? <form className="border rounded-xl p-6 space-y-5" onSubmit={e=>{e.preventDefault();void work(createDraft);}}>
       <div className="grid md:grid-cols-2 gap-4"><div><Label htmlFor="campaign-name">Campaign name</Label><Input id="campaign-name" required value={name} onChange={e=>setName(e.target.value)}/></div>
       <div><Label htmlFor="sender">Sender number</Label><select id="sender" className={selectClass} required value={sessionId} onChange={e=>{setSessionId(e.target.value);setTemplateKey('');}}><option value="">Select official number</option>{senders.map(s=><option key={s.id} value={s.id} disabled={s.status!=='connected'}>{s.phone_number || s.session_name} · {s.status}</option>)}</select></div></div>
-      <div><Label htmlFor="template">Approved template</Label><select id="template" className={selectClass} required value={templateKey} onChange={e=>{setTemplateKey(e.target.value);setMedia('');setHeaderTexts([]);setButtonTexts({});}}><option value="">Select template and language</option>{templates.map(t=><option key={`${t.name}:${t.language}`} value={`${t.name}:${t.language}`}>{t.name} · {t.language} · {t.category}</option>)}</select></div>
+      <div><Label htmlFor="campaign-type">Campaign type</Label><select id="campaign-type" className={selectClass} value={campaignType} onChange={e=>{setCampaignType(e.target.value as 'UTILITY'|'MARKETING');setTemplateKey('');setMedia('');setHeaderTexts([]);setButtonTexts({});}}><option value="UTILITY">Utility — existing transaction or requested update</option><option value="MARKETING">Marketing — offers, promotions and announcements</option></select><p className="text-xs text-muted-foreground mt-1">The campaign type must match Meta's approved template category.</p></div>
+      <div><Label htmlFor="template">Approved template</Label><select id="template" className={selectClass} required value={templateKey} onChange={e=>{setTemplateKey(e.target.value);setMedia('');setHeaderTexts([]);setButtonTexts({});}}><option value="">Select template and language</option>{categoryTemplates.map(t=><option key={`${t.name}:${t.language}`} value={`${t.name}:${t.language}`}>{t.name} · {t.language} · {t.category}</option>)}</select>
+        {sessionId && !categoryTemplates.length && <p className="text-sm text-muted-foreground mt-2">No approved {campaignType.toLowerCase()} templates for this number. Open Templates & AI helper to create or refresh them.</p>}</div>
       {template && <div className="rounded-lg bg-muted p-4 whitespace-pre-wrap text-sm">{header?.text && <p className="font-semibold">{header.text}</p>}<p>{body?.text}</p>{template.components?.filter((p:Row)=>p.type==='FOOTER').map((p:Row,i:number)=><p key={i} className="mt-2 text-muted-foreground">{p.text}</p>)}{buttons.length>0 && <p className="mt-3">Buttons: {buttons.map(b=>b.text).join(' · ')}</p>}</div>}
       {header && header.format!=='TEXT' && <div><Label htmlFor="media">{header.format} header URL</Label><Input id="media" type="url" placeholder="https://…" required value={media} onChange={e=>setMedia(e.target.value)}/><p className="text-xs text-muted-foreground mt-1">Use a durable HTTPS link that Meta can download.</p></div>}
       {header?.format==='TEXT' && Array.from({length:parameterCount(header.text)},(_,i)=><div key={i}><Label>Header parameter {i+1}</Label><Input required value={headerTexts[i] || ''} onChange={e=>setHeaderTexts(old=>{const next=[...old];next[i]=e.target.value;return next;})}/></div>)}

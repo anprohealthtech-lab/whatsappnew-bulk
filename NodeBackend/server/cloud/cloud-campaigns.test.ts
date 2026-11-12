@@ -18,7 +18,7 @@ test('template snapshot tolerates jsonb object key ordering but rejects real con
   assert.equal(sameTemplateComponents(meta,[jsonb[1],jsonb[0]]),false);
   assert.equal(sameTemplateComponents(meta,[{...jsonb[0],example:{body_text:[['Changed sample']]}},jsonb[1]]),false);
 });
-const template={name:'dr_amit_now_available',language:'en',status:'APPROVED',components:[
+const template={name:'dr_amit_now_available',language:'en',category:'UTILITY',status:'APPROVED',components:[
   {type:'HEADER',format:'IMAGE'}, {type:'BODY',text:'Hello {{1}}'},
   {type:'BUTTONS',buttons:[{type:'QUICK_REPLY',text:'STOP'}]},
 ]};
@@ -54,6 +54,14 @@ beforeEach(async()=>{
     ('baileys','clinic','owner','default','917777777777',NULL,NULL,'connected','baileys')`);
 });
 after(()=>pg.close());
+
+test('campaign category must match the approved template and OTP templates cannot become bulk campaigns',async()=>{
+  await assert.rejects(store.create(tenant,{...input(),campaignType:'MARKETING'},template),/must match/);
+  await assert.rejects(store.create(tenant,input(),{...template,category:'AUTHENTICATION'}),/OTP flow/);
+  const c=await store.create(tenant,{...input(),campaignType:'UTILITY'},template);
+  assert.equal(c.template_snapshot.category,'UTILITY');
+  await assert.rejects(store.session({...tenant,userId:'another-user'},'cloud'),/not found/);
+});
 
 test('additive migration and draft leave Baileys records untouched; draft does not send',async()=>{
   const c=await store.create(tenant,input(),template);

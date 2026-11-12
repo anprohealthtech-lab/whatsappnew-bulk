@@ -20,6 +20,8 @@ export class CloudCampaignStore {
     const session = await this.session(tenant, input.sessionId);
     if (!session.cloud_phone_number_id || !session.cloud_waba_id) throw new Error('Sender configuration is incomplete');
     if (template.name !== input.templateName || template.language !== input.language) throw new Error('Template mismatch');
+    if (input.campaignType && template.category !== input.campaignType) throw new Error('Campaign type must match the approved template category');
+    if (template.category === 'AUTHENTICATION') throw new Error('Authentication templates require an OTP flow and cannot be used for bulk campaigns');
     const phones = new Set<string>();
     for (const recipient of input.recipients) {
       if (phones.has(recipient.phone)) throw new Error('Duplicate recipient phone number');

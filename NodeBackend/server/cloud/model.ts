@@ -24,6 +24,7 @@ const textParam = z.string().trim().min(1).max(2000);
 export const campaignInput = z.object({
   name: z.string().trim().min(1).max(200), sessionId: z.string().min(1),
   templateName: z.string().regex(/^[a-z0-9_]+$/), language: z.string().min(2).max(20),
+  campaignType: z.enum(['UTILITY', 'MARKETING']).optional(),
   headerParams: z.array(z.union([
     z.object({ type: z.literal('text'), text: textParam }).strict(),
     z.object({ type: z.literal('image'), image: z.object({ link: z.string().url().startsWith('https://') }).strict() }).strict(),
