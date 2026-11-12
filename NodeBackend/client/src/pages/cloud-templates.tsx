@@ -9,7 +9,7 @@ import { Input } from '@/components/ui/input';
 import { Label } from '@/components/ui/label';
 import { Textarea } from '@/components/ui/textarea';
 import { Badge } from '@/components/ui/badge';
-import { templateContent, templateVariableCount, type TemplateContent, type TemplateButton } from '@shared/cloudTemplate';
+import { recruitmentAcknowledgmentBrief, templateContent, templateVariableCount, type TemplateContent, type TemplateButton } from '@shared/cloudTemplate';
 
 type Row = Record<string, any>;
 const selectClass = 'w-full border rounded-md bg-background p-2 text-sm';
@@ -31,8 +31,13 @@ function errorText(error: unknown) {
   return 'Request failed';
 }
 function Preview({ draft }: { draft: TemplateContent }) {
-  const body = draft.bodyText.replace(/\{\{(\d+)\}\}/g, (match, index) => draft.bodyExamples[Number(index) - 1] || match);
+  const [showSamples, setShowSamples] = useState(false);
+  const body = showSamples ? draft.bodyText.replace(/\{\{(\d+)\}\}/g, (match, index) => draft.bodyExamples[Number(index) - 1] || match) : draft.bodyText;
   return <div className="rounded-xl border bg-muted/40 p-5 space-y-3 max-w-lg">
+    <div className="flex flex-wrap gap-2" role="group" aria-label="Message preview mode">
+      <Button type="button" size="sm" variant={!showSamples ? 'default' : 'outline'} aria-pressed={!showSamples} onClick={() => setShowSamples(false)}>Placeholders</Button>
+      <Button type="button" size="sm" variant={showSamples ? 'default' : 'outline'} aria-pressed={showSamples} onClick={() => setShowSamples(true)}>Sample values</Button>
+    </div>
     {draft.headerText && <p className="font-semibold">{draft.headerText}</p>}
     <p className="whitespace-pre-wrap break-words">{body || 'Your message preview appears here.'}</p>
     {draft.footerText && <p className="text-xs text-muted-foreground">{draft.footerText}</p>}
@@ -132,9 +137,10 @@ export default function CloudTemplates() {
     </section> : <section className="grid lg:grid-cols-2 gap-6 items-start">
       <div className="space-y-5"><fieldset className="border rounded-xl p-5 space-y-4 disabled:opacity-60" disabled={!connected || !!busy || !!reviewed}>
         <legend className="px-2 font-semibold flex items-center gap-2"><Sparkles className="w-4 h-4" />Claude Haiku helper</legend>
-        <p className="text-sm text-muted-foreground">Describe the message and its purpose. Use fictional examples instead of real customer or patient details.</p>
+        <p className="text-sm text-muted-foreground">Describe the message and its purpose. Drafts stay short and WhatsApp-friendly, with placeholders for recipient details.</p>
         <p className="text-xs text-muted-foreground">Uses the category and language selected in the editor below.</p>
-        <Label htmlFor="template-brief">What should this template say?</Label><Textarea id="template-brief" rows={4} maxLength={3000} value={brief} onChange={e => setBrief(e.target.value)} placeholder="For an existing appointment: confirm the patient's name, appointment date and clinic. Keep the tone clear and polite." />
+        <Button type="button" size="sm" variant="outline" onClick={() => { setBrief(recruitmentAcknowledgmentBrief); update({ category: 'UTILITY' }); setNotes([]); }}>Use recruitment prompt</Button>
+        <Label htmlFor="template-brief">What should this template say?</Label><Textarea id="template-brief" rows={4} maxLength={3000} value={brief} onChange={e => setBrief(e.target.value)} placeholder="Confirm receipt of a recruitment profile/CV in 3 short lines. Use {{1}} for the candidate name and {{2}} for the role. Say HR will review and contact them about next steps." />
         <Button type="button" disabled={brief.trim().length < 10} onClick={() => void generate()}>{busy === 'ai' ? <Loader2 className="w-4 h-4 mr-2 animate-spin" /> : <Sparkles className="w-4 h-4 mr-2" />}Generate draft</Button>
       </fieldset>
       {notes.length > 0 && <div className="border rounded-xl p-4 space-y-2"><h2 className="font-semibold">AI suggestions</h2>{notes.map((note, i) => <p key={i} className="text-sm text-muted-foreground">{note}</p>)}</div>}
@@ -150,6 +156,7 @@ export default function CloudTemplates() {
           <div><Label htmlFor="template-name">Template name</Label><Input id="template-name" required pattern="[a-z0-9_]+" maxLength={512} value={draft.name} onChange={e => update({ name: e.target.value })} placeholder="appointment_confirmation" /></div>
           <div><Label htmlFor="template-header">Header (optional)</Label><Input id="template-header" maxLength={60} value={draft.headerText} onChange={e => update({ headerText: e.target.value })} /></div>
           <div><Label htmlFor="template-body">Message body</Label><Textarea id="template-body" required rows={7} maxLength={1024} value={draft.bodyText} onChange={e => update({ bodyText: e.target.value })} /><p className="text-xs text-muted-foreground mt-1">{draft.bodyText.length}/1024 · Use {'{{1}}, {{2}}'} for variables.</p></div>
+          {variableCount > 0 && <p className="text-xs text-muted-foreground">Use fictional samples. Enter only each field value, such as Asha or Accountant, without a greeting or a full message.</p>}
           {Array.from({ length: variableCount }, (_, i) => <div key={i}><Label htmlFor={`sample-${i}`}>Sample for {`{{${i + 1}}}`}</Label><Input id={`sample-${i}`} required maxLength={200} value={draft.bodyExamples[i] || ''} onChange={e => update({ bodyExamples: Array.from({ length: variableCount }, (_, index) => index === i ? e.target.value : draft.bodyExamples[index] || '') })} /></div>)}
           <div><Label htmlFor="template-footer">Footer (optional)</Label><Input id="template-footer" maxLength={60} value={draft.footerText} onChange={e => update({ footerText: e.target.value })} /></div>
           <div className="space-y-3"><div className="flex justify-between items-center"><Label>Buttons (optional)</Label><Button type="button" size="sm" variant="outline" disabled={draft.buttons.length >= 3} onClick={() => update({ buttons: [...draft.buttons, { type: 'QUICK_REPLY', text: '' }] })}>Add button</Button></div>
@@ -165,7 +172,7 @@ export default function CloudTemplates() {
       </form></div>
       <aside className="space-y-4 lg:sticky lg:top-6"><div className="flex gap-2"><Badge>{(reviewed || draft).category}</Badge><Badge variant="outline">{(reviewed || draft).language}</Badge></div>
         <h2 className="font-semibold">{reviewed ? 'Review the exact message to submit' : 'Message preview'}</h2><Preview draft={reviewed || draft} />
-        <p className="text-xs text-muted-foreground">Preview uses sample values. Campaign recipients receive the variable values you provide when sending.</p>
+        <p className="text-xs text-muted-foreground">Placeholders are replaced with each recipient's values when sending a campaign. Fictional sample values are only for preview and template review.</p>
         {reviewed && <div className="border rounded-xl p-5 space-y-3"><p>Submit <strong>{reviewed.name}</strong> to Meta for WhatsApp account <strong>{sender?.cloud_waba_id}</strong> using {sender?.phone_number || sender?.session_name}.</p>
           <p className="text-sm text-muted-foreground">Submission requests a review. It does not send a campaign or guarantee approval.</p>
           <div className="flex gap-2"><Button disabled={!!busy} onClick={() => void submit()}>{busy === 'submit' && <Loader2 className="w-4 h-4 mr-2 animate-spin" />}Submit to Meta</Button><Button variant="outline" disabled={!!busy} onClick={() => setReviewed(null)}>Keep editing</Button></div></div>}

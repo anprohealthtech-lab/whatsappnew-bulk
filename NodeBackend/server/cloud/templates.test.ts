@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict';
 import { test } from 'node:test';
-import { metaTemplatePayload, templateContent } from '@shared/cloudTemplate';
+import { metaTemplatePayload, recruitmentAcknowledgmentBrief, templateContent } from '@shared/cloudTemplate';
 import { CloudTemplateWorkflow, type TemplateAccount } from './templateWorkflow';
 import { generateTemplateDraft, readAssistantDraft, TEMPLATE_ASSISTANT_MODEL } from './templateAssistant';
 
@@ -44,6 +44,25 @@ test('AI category recommendations stay visible and cannot carry arbitrary tools 
   assert.throws(() => readAssistantDraft({ ...draft, notes: [], access_token: 'secret' }, 'en_US'));
 });
 
+test('recruitment AI samples stay separate from message text and reject the reported nested greetings', () => {
+  const { language: _, ...draft } = content();
+  const bodyText = "Hi {{1}}! Thanks for applying for {{2}}.\nWe've received your profile and CV.\nOur HR team will review them and contact you about next steps.";
+  const result = readAssistantDraft({ ...draft, headerText: '', footerText: '', buttons: [], bodyText, bodyExamples: ['Asha', 'Accountant'], notes: [] }, 'en_US');
+  assert.equal(result.template.bodyText, bodyText);
+  assert.deepEqual(result.template.bodyExamples, ['Asha', 'Accountant']);
+  const payload = metaTemplatePayload(result.template);
+  assert.equal(payload.components[0].text, bodyText);
+  assert.deepEqual(payload.components[0].example, { body_text: [['Asha', 'Accountant']] });
+  const badBody = "Hi {{1}}, welcome aboard! We're excited to have you join us as {{2}}. This message confirms we've received your recruitment profile and documents.";
+  assert.throws(() => readAssistantDraft({ ...draft, bodyText: badBody, bodyExamples: [
+    "Sarah, welcome aboard! We're excited to have you join us as Senior Software Engineer.",
+    "Marcus, welcome aboard! We're excited to have you join us as Marketing Specialist.",
+  ], notes: [] }, 'en_US'), /only one field value/);
+  for (const sample of ['Hi {{1}}', 'Asha\nAccountant']) {
+    assert.throws(() => readAssistantDraft({ ...draft, bodyText, bodyExamples: [sample, 'Accountant'], notes: [] }, 'en_US'), /only one field value/);
+  }
+});
+
 test('Haiku helper requests a structured draft with the existing SDK and never submits to Meta', async () => {
   const originalFetch = globalThis.fetch;
   const originalKey = process.env.ANTHROPIC_API_KEY;
@@ -64,6 +83,11 @@ test('Haiku helper requests a structured draft with the existing SDK and never s
     assert.equal(new URL(requests[0].url).hostname, 'api.anthropic.com');
     assert.equal(requests[0].body.model, 'claude-haiku-4-5-20251001');
     assert.deepEqual(requests[0].body.tool_choice, { type: 'tool', name: 'draft_template' });
+    assert.match(requests[0].body.system, /3 short lines and under 45 words/);
+    assert.match(requests[0].body.system, /Keep variable placeholders in bodyText/);
+    assert.match(requests[0].body.system, /Receipt of a profile\/CV is not a hiring decision/);
+    assert.match(requests[0].body.system, /never a greeting, sentence, whole message/);
+    assert.match(recruitmentAcknowledgmentBrief, /Use \{\{1\}\} for the candidate name and \{\{2\}\} for the job role/);
     assert.equal(result.template.name, 'appointment_confirmation');
     assert.equal(result.template.language, 'en_US');
     assert.equal(JSON.stringify(result).includes('fixture-anthropic-key'), false);

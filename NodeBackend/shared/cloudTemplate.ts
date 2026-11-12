@@ -1,5 +1,7 @@
 import { z } from 'zod';
 
+export const recruitmentAcknowledgmentBrief = 'Write a short, friendly WhatsApp recruitment acknowledgment in 3 lines, under 45 words. Use {{1}} for the candidate name and {{2}} for the job role. Confirm receipt of their profile/CV and say HR will review and contact them about next steps. Avoid invented names, repeated phrases, and promises of hiring or onboarding. Keep placeholders in the message body. Give one short fictional sample value per placeholder, such as Asha and Accountant, without including any greeting or message text in the sample values.';
+
 export const templateCategory = z.enum(['UTILITY', 'MARKETING']);
 export const templateLanguage = z.string().regex(/^[a-z]{2,3}(?:_[A-Z]{2})?$/, 'Choose a WhatsApp language code');
 export const templateButton = z.discriminatedUnion('type', [
