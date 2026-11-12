@@ -17,6 +17,7 @@
  */
 
 import Anthropic from "@anthropic-ai/sdk";
+import { AutomaticReplySuppressedError } from '../automaticReplies/guard';
 import type { IStorage } from "../storage";
 import type { HIMSPatient } from "@shared/schema";
 import { db } from "../db";
@@ -1323,12 +1324,12 @@ IMPORTANT: Always use organizationId="${patient.organizationId}" and patientPhon
       if (audioData) {
         this.addToConversationCache(phoneNumber, "user", "[Voice Note]");
       }
-      this.addToConversationCache(phoneNumber, "assistant", botResponse);
 
       const sendTo = replyTo || phoneNumber;
       console.log(`${tag} 📤 Sending to ${sendTo}`);
 
       await this.whatsappService.sendTextMessage(sendTo, botResponse);
+      this.addToConversationCache(phoneNumber, "assistant", botResponse);
 
       await this.storage.createMessage({
         phoneNumber,
@@ -1344,6 +1345,7 @@ IMPORTANT: Always use organizationId="${patient.organizationId}" and patientPhon
 
       console.log(`${tag} ✅ Response sent`);
     } catch (error: any) {
+      if (error instanceof AutomaticReplySuppressedError) throw error;
       console.error(`${tag} ❌ Error: ${error.message}`);
       try {
         const sendTo = replyTo || phoneNumber;
@@ -1351,7 +1353,8 @@ IMPORTANT: Always use organizationId="${patient.organizationId}" and patientPhon
           sendTo,
           buildContactFallbackMessage(ownerContactNumber),
         );
-      } catch {
+      } catch (sendError) {
+        if (sendError instanceof AutomaticReplySuppressedError) throw sendError;
         // Swallow send error
       }
     }
@@ -1394,6 +1397,7 @@ IMPORTANT: Always use organizationId="${patient.organizationId}" and patientPhon
       }
       this.addToConversationCache(patient.phoneNumber, 'assistant', greeting);
     } catch (err: any) {
+      if (err instanceof AutomaticReplySuppressedError) return;
       console.log(
         `[HIMSChatbotService] ⚠️ Welcome message failed: ${err.message}`,
       );

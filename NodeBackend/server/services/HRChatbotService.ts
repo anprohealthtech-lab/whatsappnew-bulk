@@ -1,4 +1,5 @@
 import { AccessError } from '../suiteAccessCore';
+import { AutomaticReplySuppressedError } from '../automaticReplies/guard';
 /**
  * HRChatbotService - Personal WhatsApp Assistant with Anthropic Claude
  * 
@@ -977,9 +978,6 @@ IMPORTANT: Always use userId="${hrAdmin.userId}" and organizationId="${hrAdmin.o
         this.addToConversationCache(phoneNumber, "user", "[Voice Note]");
       }
 
-      // Add assistant response to cache
-      this.addToConversationCache(phoneNumber, "assistant", botResponse);
-
       // Use replyTo if provided (preserves @lid format), otherwise fallback to phoneNumber
       const sendTo = replyTo || phoneNumber;
       log(`📤 Sending response to ${sendTo}`);
@@ -987,6 +985,7 @@ IMPORTANT: Always use userId="${hrAdmin.userId}" and organizationId="${hrAdmin.o
       // Send reply via WhatsApp
       await requireWorkforceAccess(hrAdmin.organizationId);
       await this.whatsappService.sendTextMessage(sendTo, botResponse);
+      this.addToConversationCache(phoneNumber, "assistant", botResponse);
 
       // Store outgoing message
       await this.storage.createMessage({
@@ -1009,6 +1008,7 @@ IMPORTANT: Always use userId="${hrAdmin.userId}" and organizationId="${hrAdmin.o
       });
 
     } catch (error: any) {
+      if (error instanceof AutomaticReplySuppressedError) throw error;
       log(`❌ Error processing HR message: ${error.message}`);
       
       await this.storage.createSystemLog({
@@ -1033,6 +1033,7 @@ IMPORTANT: Always use userId="${hrAdmin.userId}" and organizationId="${hrAdmin.o
           "Oops, something went wrong on my end 😅\n\nMind trying that again?"
         );
       } catch (e) {
+        if (e instanceof AutomaticReplySuppressedError) throw e;
         log(`❌ Failed to send fallback message: ${e}`);
       }
     }
@@ -1090,6 +1091,7 @@ What can I help you with?`;
       log(`✅ Welcome message sent to ${hrAdmin.phoneNumber}`);
 
     } catch (error: any) {
+      if (error instanceof AutomaticReplySuppressedError) return;
       log(`❌ Failed to send welcome message: ${error.message}`);
     }
   }

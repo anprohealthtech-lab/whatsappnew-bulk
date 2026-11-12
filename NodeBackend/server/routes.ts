@@ -20,6 +20,8 @@ import { requestHIMSBotConfiguration, resolveHIMSBotSettings } from "./services/
 import { DataManagementAgentService } from "./services/DataManagementAgentService";
 import { GuideRequestService, guideRepliesConfigured } from "./services/GuideRequestService";
 import {handleRecruitment} from './recruitment/runtime';
+import { automaticReplyGuard } from './automaticReplies/runtime';
+import { AutomaticReplySuppressedError, guardedReplySession } from './automaticReplies/guard';
 import { voiceTenantService } from "./services/VoiceTenantService";
 import { sendMessageSchema, sendReportSchema, createCampaignSchema, bulkSendSchema, chatbotConfigSchema, flagLeadSchema, registerHRAdminSchema, hrChatbotConfigSchema, demoSchedules, scheduleCampaignSchema, userRagAgentSchema, userRagAgents, userNotificationRecipientSchema, userNotificationRecipients, registerSchema, loginSchema, registerHIMSPatientSchema, leadPipelineSchema, leadPipelines } from "@shared/schema";
 import { log } from "./utils";
@@ -2072,7 +2074,7 @@ export async function registerRoutes(app: Express): Promise<Server> {
     // Get the WhatsApp session that received this message
     const ownerUserId: string = data._userId;
     const ownerSessionName: string = data._sessionName;
-    const waSession = sessionManager.getLoadedSession(ownerUserId, ownerSessionName);
+    let waSession = sessionManager.getLoadedSession(ownerUserId, ownerSessionName);
     if (!waSession) {
       console.error(`❌ Cannot process incoming message: session ${ownerUserId}/${ownerSessionName} no longer loaded`);
       return;
@@ -2149,6 +2151,17 @@ export async function registerRoutes(app: Express): Promise<Server> {
           return;
         }
       }
+
+      const replyScope = { ...scopedTenant, sessionName: ownerSessionName, phoneNumber: data.phoneNumber };
+      if (!await automaticReplyGuard.allowIncoming(replyScope, data.content || '')) {
+        console.log(`[AutomaticReplyGuard] Ignored repeated assistant introduction for ${ownerUserId}/${ownerSessionName}/${data.phoneNumber}`);
+        broadcast('incoming-message', data, ownerUserId);
+        return;
+      }
+      // All public bot replies below share one guard, including route-level
+      // media acknowledgments and error fallbacks. Manual sends keep the raw session.
+      waSession = guardedReplySession(waSession, automaticReplyGuard, replyScope,
+        [data.replyTo, data.from, data.senderPn].filter((value): value is string => typeof value === 'string' && !!value));
 
       // Load the session owner's account once. Every service below must be
       // enabled for THIS account, and the sender's record must be linked to
@@ -2383,6 +2396,7 @@ export async function registerRoutes(app: Express): Promise<Server> {
             }
           }
         } catch (err: any) {
+          if (err instanceof AutomaticReplySuppressedError) throw err;
           console.error(`⚠️ HIMS auto-registration check failed: ${err.message}`);
         }
       }
@@ -2471,7 +2485,9 @@ export async function registerRoutes(app: Express): Promise<Server> {
         // PRIORITY 3: Check auto-responses for non-leads
         // ========================================
         // Use a tenant-scoped auto-response service for this session owner
-        const autoResponseService = new AutoResponseService(storage, tenantContext!, waSession);
+        const autoResponseService = new AutoResponseService(storage, tenantContext!, waSession, {
+          guard: automaticReplyGuard, scope: replyScope,
+        });
         const responded = await withRetry(() =>
           autoResponseService.handleIncomingMessage(
             data.phoneNumber,
@@ -2480,13 +2496,17 @@ export async function registerRoutes(app: Express): Promise<Server> {
         );
 
         if (responded) {
-          console.log(`✅ Auto-response sent to ${data.phoneNumber}`);
+          console.log(`✅ Auto-response handled for ${data.phoneNumber}`);
         }
       }
 
       // Broadcast to WebSocket clients
       broadcast('incoming-message', data);
     } catch (error) {
+      if (error instanceof AutomaticReplySuppressedError) {
+        broadcast('incoming-message', data, ownerUserId);
+        return;
+      }
       console.error('❌ Failed to handle incoming message:', error);
       console.error('Error details:', {
         phoneNumber: data?.phoneNumber,

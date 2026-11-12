@@ -14,6 +14,7 @@
  */
 
 import type { IStorage } from "../storage";
+import { AutomaticReplySuppressedError } from '../automaticReplies/guard';
 import type { ChatbotConfig, Contact, Message, UserRagAgent } from "@shared/schema";
 import { userRagAgents, leadFollowups, users, leadPipelines } from "@shared/schema";
 import { db } from "../db";
@@ -418,6 +419,7 @@ export class ChatbotService {
               await this.whatsappService.sendTextMessage(info.replyToJid || phoneNumber, part.value);
             }
           } catch (sendError: any) {
+            if (sendError instanceof AutomaticReplySuppressedError) break;
             log(`⚠️ Retry failed for ${phoneNumber} part ${i + 1}: ${this.errorMessage(sendError)}`);
             if (this.errorMessage(sendError).includes('not connected')) {
               pendingGreetings.set(this.getScopedPhoneKey(phoneNumber), info);
@@ -572,6 +574,7 @@ export class ChatbotService {
           }
           sentCount++;
         } catch (sendError: any) {
+          if (sendError instanceof AutomaticReplySuppressedError) break;
           failedCount++;
           log(`⚠️ Failed to send greeting part ${i + 1}/${greetingParts.length} (${part.kind}): ${this.errorMessage(sendError)}`);
           // If WhatsApp disconnected mid-greeting, stop trying and queue for retry
@@ -1139,6 +1142,7 @@ export class ChatbotService {
       });
 
     } catch (error: any) {
+      if (error instanceof AutomaticReplySuppressedError) throw error;
       log(`❌ Error processing lead message: ${error.message}`);
 
       await this.storage.createSystemLog({
